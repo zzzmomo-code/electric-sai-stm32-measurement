@@ -5,10 +5,15 @@
 
 ## 当前状态
 - **阶段**：地基搭建 → 工具链闭环
-- **等待用户**：Gitee 注册用户名 / 跑通工具链的硬件信息确认
-- **阻塞原因**：Gitee 需手机号注册（用户操作），STM32F103C8T6 板型待确认
+- **等待用户**：跑通工具链的硬件信息确认（STM32F103C8T6 板型 + LED引脚 + 串口方式）
 
 ## 已完成
+
+### Git + Gitee
+- [x] SSH 密钥生成（ed25519）
+- [x] Gitee 账号：phz-electronic-design-competition
+- [x] 仓库：electric-sai-stm32-measurement（私有）
+- [x] 首次 push 成功
 
 ### 地基搭建
 - [x] 记忆系统 10 个文件（规则/工具链/芯片/电赛攻略）
