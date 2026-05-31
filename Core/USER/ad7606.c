@@ -3,11 +3,11 @@
 #include <stddef.h>
 
 
-extern volatile uint8_t ad7606_complete_flag = 0U;
+volatile uint8_t ad7606_complete_flag = 0U;
 int16_t ad7606_adc_data[AD7606_CH_NUM] = {0};
 float ad7606_voltage[AD7606_CH_NUM] = {0.0f};
 
-extern volatile uint8_t ad7606_conv_busy_flag = 0U;
+volatile uint8_t ad7606_conv_busy_flag = 0U;
 
 /**
  * @brief Short delay for GPIO bit-bang timing.

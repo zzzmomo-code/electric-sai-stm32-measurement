@@ -57,15 +57,24 @@
   static int16_t *volatile send_buf;
   static volatile uint8_t fill_idx;
   static volatile uint8_t send_ready;
-  static volatile uint8_t dma_done = 1U;
+  static volatile uint8_t uart_tx_idle = 1U;
   static volatile uint8_t decim;
-  static volatile uint32_t drop_cnt;
+  static volatile uint8_t adc_read_active;
+  static volatile uint8_t adc_store_sample;
+  static volatile uint32_t sample_ok_cnt;
+  static volatile uint32_t sample_skip_cnt;
+  static volatile uint32_t sample_drop_cnt;
+  static volatile uint32_t uart_dma_fail_cnt;
+  static volatile uint32_t uart_error_cnt;
   static uint8_t tx_buf[2U + BUF_BYTES];
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
+static void APP_ProcessAd7606(void);
+static void APP_StoreAd7606Sample(const int16_t raw[BUF_CH]);
+static void APP_ProcessUartTx(void);
 
 /* USER CODE END PFP */
 
@@ -118,14 +127,8 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    if (send_ready && dma_done) {
-        dma_done = 0U;
-        send_ready = 0U;
-        tx_buf[0] = 0xAA;
-        tx_buf[1] = 0x55;
-        memcpy(tx_buf + 2, (uint8_t *)send_buf, BUF_BYTES);
-        HAL_UART_Transmit_DMA(&huart3, tx_buf, sizeof(tx_buf));
-    }
+    APP_ProcessUartTx();
+    APP_ProcessAd7606();
   }
   /* USER CODE END 3 */
 }
@@ -177,11 +180,103 @@ void SystemClock_Config(void)
 
 /* USER CODE BEGIN 4 */
 
+static void APP_ProcessAd7606(void)
+{
+    int16_t raw[BUF_CH];
+    uint8_t store_sample;
+    uint8_t ret;
+
+    AD7606_BusyPoll();
+
+    if (ad7606_complete_flag == 0U) {
+        return;
+    }
+
+    __disable_irq();
+    if ((ad7606_complete_flag != 0U) &&
+        (ad7606_conv_busy_flag == 0U) &&
+        (adc_read_active == 0U)) {
+        adc_read_active = 1U;
+        store_sample = adc_store_sample;
+    } else {
+        __enable_irq();
+        return;
+    }
+    __enable_irq();
+
+    ret = AD7606_ReadData(raw);
+
+    __disable_irq();
+    adc_read_active = 0U;
+    __enable_irq();
+
+    if (ret == AD7606_OK) {
+        sample_ok_cnt++;
+        if (store_sample != 0U) {
+            APP_StoreAd7606Sample(raw);
+        }
+    } else {
+        sample_drop_cnt++;
+    }
+}
+
+static void APP_StoreAd7606Sample(const int16_t raw[BUF_CH])
+{
+    uint8_t idx = fill_idx;
+
+    if (idx < BUF_SAMPLES) {
+        for (uint8_t ch = 0U; ch < BUF_CH; ch++) {
+            fill_buf[(uint16_t)idx * BUF_CH + ch] = raw[ch];
+        }
+        fill_idx = idx + 1U;
+    }
+
+    if (fill_idx >= BUF_SAMPLES) {
+        if (send_ready == 0U) {
+            send_buf = fill_buf;
+            fill_buf = (fill_buf == buf0) ? buf1 : buf0;
+            fill_idx = 0U;
+            send_ready = 1U;
+        } else {
+            sample_drop_cnt += BUF_SAMPLES;
+            fill_idx = 0U;
+        }
+    }
+}
+
+static void APP_ProcessUartTx(void)
+{
+    HAL_StatusTypeDef status;
+
+    if ((send_ready == 0U) || (uart_tx_idle == 0U)) {
+        return;
+    }
+
+    tx_buf[0] = 0xAA;
+    tx_buf[1] = 0x55;
+    memcpy(tx_buf + 2, (uint8_t *)send_buf, BUF_BYTES);
+
+    status = HAL_UART_Transmit_DMA(&huart3, tx_buf, sizeof(tx_buf));
+    if (status == HAL_OK) {
+        uart_tx_idle = 0U;
+        send_ready = 0U;
+    } else {
+        uart_dma_fail_cnt++;
+    }
+}
+
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6) {
         decim++;
-        AD7606_ConvStart();
+        if ((ad7606_conv_busy_flag == 0U) &&
+            (ad7606_complete_flag == 0U) &&
+            (adc_read_active == 0U)) {
+            adc_store_sample = decim & 1U;
+            AD7606_ConvStart();
+        } else {
+            sample_skip_cnt++;
+        }
     }
 }
 
@@ -189,37 +284,21 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
     if (GPIO_Pin != GPIO_PIN_3) return;
 
-    int16_t raw[8];
-    if (AD7606_ReadData(raw) == AD7606_OK) {
-        if (decim & 1U) {
-            uint8_t idx = fill_idx;
-            if (idx < BUF_SAMPLES) {
-                for (uint8_t ch = 0; ch < BUF_CH; ch++) {
-                    fill_buf[(uint16_t)idx * BUF_CH + ch] = raw[ch];
-                }
-                fill_idx = idx + 1U;
-            }
-        }
-
-        if (fill_idx >= BUF_SAMPLES) {
-            if (!send_ready) {
-                int16_t *tmp = send_buf;
-                send_buf = fill_buf;
-                fill_buf = (tmp == buf0) ? buf1 : buf0;
-                fill_idx = 0U;
-                send_ready = 1U;
-            } else {
-                drop_cnt++;
-                fill_idx = BUF_SAMPLES;
-            }
-        }
-    }
+    AD7606_Busy_IRQHandler();
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART3) {
-        dma_done = 1U;
+        uart_tx_idle = 1U;
+    }
+}
+
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART3) {
+        uart_error_cnt++;
+        uart_tx_idle = 1U;
     }
 }
 
