@@ -1,0 +1,23 @@
+# STM32CubeIDE build outputs
+Debug/
+Release/
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.o
+*.d
+*.su
+*.cyclo
+
+# Local reference materials and vendor examples
+相关文件（数据手册/
+
+# Editor and OS noise
+.metadata/
+.vscode/
+*.bak
+*.tmp
+Thumbs.db
+Desktop.ini
