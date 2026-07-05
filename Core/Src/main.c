@@ -26,6 +26,8 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "system.h"
+#include <stddef.h>
+#include <string.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -58,15 +60,16 @@
   static volatile uint8_t fill_idx;
   static volatile uint8_t send_ready;
   static volatile uint8_t uart_tx_idle = 1U;
+  static volatile uint8_t uart_retry_pending;
   static volatile uint8_t decim;
-  static volatile uint8_t adc_read_active;
   static volatile uint8_t adc_store_sample;
-  static volatile uint32_t sample_ok_cnt;
-  static volatile uint32_t sample_skip_cnt;
-  static volatile uint32_t sample_drop_cnt;
-  static volatile uint32_t uart_dma_fail_cnt;
-  static volatile uint32_t uart_error_cnt;
+  static uint32_t uart_retry_at_ms;
   static uint8_t tx_buf[2U + BUF_BYTES];
+  volatile app_stats_t g_app_stats;
+
+  _Static_assert(BUF_CH == AD7606_CH_NUM, "channel count mismatch");
+  _Static_assert(BUF_BYTES == 400U, "AD7606 payload must remain 400 bytes");
+  _Static_assert(sizeof(tx_buf) == 402U, "UART frame must remain 402 bytes");
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -75,6 +78,7 @@ void SystemClock_Config(void);
 static void APP_ProcessAd7606(void);
 static void APP_StoreAd7606Sample(const int16_t raw[BUF_CH]);
 static void APP_ProcessUartTx(void);
+static bool APP_TimeReached(uint32_t now, uint32_t deadline);
 
 /* USER CODE END PFP */
 
@@ -117,7 +121,9 @@ int main(void)
   MX_TIM6_Init();
   /* USER CODE BEGIN 2 */
   System_Init();
-  HAL_TIM_Base_Start_IT(&htim6);
+  if (HAL_TIM_Base_Start_IT(&htim6) != HAL_OK) {
+    Error_Handler();
+  }
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -184,39 +190,31 @@ static void APP_ProcessAd7606(void)
 {
     int16_t raw[BUF_CH];
     uint8_t store_sample;
-    uint8_t ret;
+    ad7606_result_t result;
 
-    AD7606_BusyPoll();
+    AD7606_Service(HAL_GetTick());
+    g_app_stats.spurious_busy_edge = AD7606_GetSpuriousEdgeCount();
 
-    if (ad7606_complete_flag == 0U) {
+    if (AD7606_TakeTimeout()) {
+        g_app_stats.conversion_timeout++;
+        AD7606_Recover();
+        g_app_stats.recovery_count++;
         return;
     }
 
-    __disable_irq();
-    if ((ad7606_complete_flag != 0U) &&
-        (ad7606_conv_busy_flag == 0U) &&
-        (adc_read_active == 0U)) {
-        adc_read_active = 1U;
-        store_sample = adc_store_sample;
-    } else {
-        __enable_irq();
+    if (!AD7606_IsDataReady()) {
         return;
     }
-    __enable_irq();
 
-    ret = AD7606_ReadData(raw);
-
-    __disable_irq();
-    adc_read_active = 0U;
-    __enable_irq();
-
-    if (ret == AD7606_OK) {
-        sample_ok_cnt++;
+    store_sample = adc_store_sample;
+    result = AD7606_ReadData(raw);
+    if (result == AD7606_OK) {
+        g_app_stats.conversion_completed++;
         if (store_sample != 0U) {
             APP_StoreAd7606Sample(raw);
         }
     } else {
-        sample_drop_cnt++;
+        g_app_stats.sample_read_failed++;
     }
 }
 
@@ -229,6 +227,7 @@ static void APP_StoreAd7606Sample(const int16_t raw[BUF_CH])
             fill_buf[(uint16_t)idx * BUF_CH + ch] = raw[ch];
         }
         fill_idx = idx + 1U;
+        g_app_stats.stored_sample_sets++;
     }
 
     if (fill_idx >= BUF_SAMPLES) {
@@ -238,58 +237,89 @@ static void APP_StoreAd7606Sample(const int16_t raw[BUF_CH])
             fill_idx = 0U;
             send_ready = 1U;
         } else {
-            sample_drop_cnt += BUF_SAMPLES;
+            g_app_stats.frame_dropped++;
             fill_idx = 0U;
         }
     }
 }
 
+static bool APP_TimeReached(uint32_t now, uint32_t deadline)
+{
+    return (int32_t)(now - deadline) >= 0;
+}
+
 static void APP_ProcessUartTx(void)
 {
     HAL_StatusTypeDef status;
+    uint32_t now = HAL_GetTick();
+    bool retrying = (uart_retry_pending != 0U);
 
-    if ((send_ready == 0U) || (uart_tx_idle == 0U)) {
+    if ((uart_tx_idle == 0U) ||
+        ((!retrying) && (send_ready == 0U)) ||
+        !APP_TimeReached(now, uart_retry_at_ms)) {
         return;
     }
 
-    tx_buf[0] = 0xAA;
-    tx_buf[1] = 0x55;
-    memcpy(tx_buf + 2, (uint8_t *)send_buf, BUF_BYTES);
+    if (!retrying) {
+        tx_buf[0] = 0xAAU;
+        tx_buf[1] = 0x55U;
+        memcpy(&tx_buf[2], (const uint8_t *)send_buf, BUF_BYTES);
+    }
 
-    status = HAL_UART_Transmit_DMA(&huart3, tx_buf, sizeof(tx_buf));
+    status = HAL_UART_Transmit_DMA(&huart3,
+                                   tx_buf,
+                                   (uint16_t)sizeof(tx_buf));
     if (status == HAL_OK) {
         uart_tx_idle = 0U;
-        send_ready = 0U;
+        if (!retrying) {
+            send_ready = 0U;
+        }
     } else {
-        uart_dma_fail_cnt++;
+        g_app_stats.uart_start_failed++;
+        uart_retry_at_ms = now + 1U;
     }
+}
+
+void APP_GetStats(app_stats_t *out)
+{
+    uint32_t primask;
+
+    if (out == NULL) {
+        return;
+    }
+    primask = __get_PRIMASK();
+    __disable_irq();
+    *out = g_app_stats;
+    __set_PRIMASK(primask);
 }
 
 void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
 {
     if (htim->Instance == TIM6) {
+        ad7606_result_t result;
+
         decim++;
-        if ((ad7606_conv_busy_flag == 0U) &&
-            (ad7606_complete_flag == 0U) &&
-            (adc_read_active == 0U)) {
+        result = AD7606_ConvStart(HAL_GetTick());
+        if (result == AD7606_OK) {
             adc_store_sample = decim & 1U;
-            AD7606_ConvStart();
+            g_app_stats.conversion_started++;
         } else {
-            sample_skip_cnt++;
+            g_app_stats.trigger_skipped++;
         }
     }
 }
 
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
 {
-    if (GPIO_Pin != GPIO_PIN_3) return;
-
-    AD7606_Busy_IRQHandler();
+    if (GPIO_Pin == AD7606_BUSY_GPIO_PIN) {
+        AD7606_Busy_IRQHandler();
+    }
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART3) {
+        uart_retry_pending = 0U;
         uart_tx_idle = 1U;
     }
 }
@@ -297,7 +327,9 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart->Instance == USART3) {
-        uart_error_cnt++;
+        g_app_stats.uart_dma_error++;
+        uart_retry_pending = 1U;
+        uart_retry_at_ms = HAL_GetTick() + 1U;
         uart_tx_idle = 1U;
     }
 }
@@ -314,7 +346,7 @@ void Error_Handler(void)
   /* User can add his own implementation to report the HAL error return state */
   __disable_irq();
   HAL_GPIO_WritePin(GPIOG,GPIO_PIN_13,GPIO_PIN_SET);
-  Usart_Send_Computer(&huart3, "error");
+  (void)Usart_Send_Computer(&huart3, "error");
   while (1)
   {
   }

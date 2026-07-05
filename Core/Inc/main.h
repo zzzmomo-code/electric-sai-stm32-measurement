@@ -36,7 +36,19 @@ extern "C" {
 
 /* Exported types ------------------------------------------------------------*/
 /* USER CODE BEGIN ET */
-
+typedef struct {
+  uint32_t conversion_started;
+  uint32_t conversion_completed;
+  uint32_t trigger_skipped;
+  uint32_t conversion_timeout;
+  uint32_t spurious_busy_edge;
+  uint32_t sample_read_failed;
+  uint32_t stored_sample_sets;
+  uint32_t frame_dropped;
+  uint32_t uart_start_failed;
+  uint32_t uart_dma_error;
+  uint32_t recovery_count;
+} app_stats_t;
 /* USER CODE END ET */
 
 /* Exported constants --------------------------------------------------------*/
@@ -53,7 +65,8 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+void APP_GetStats(app_stats_t *out);
+extern volatile app_stats_t g_app_stats;
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
