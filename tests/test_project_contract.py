@@ -204,6 +204,152 @@ class ProjectContractTest(unittest.TestCase):
             ),
         )
 
+    def test_dma_stop_uses_checked_blocking_abort(self):
+        """STM32H7 必须使用受检查的阻塞 Abort，禁止调用不支持的 DMAStop。"""
+        source = strip_c_comments(
+            (user_dir / "ads8688.c").read_text(encoding="utf-8")
+        )
+        body = get_function_body(source, "ads8688_stop_dma")
+
+        self.assertNotIn("HAL_SPI_DMAStop", source)
+        self.assertIsNotNone(body, "缺少 ads8688_stop_dma()")
+        self.assertRegex(body, r"HAL_SPI_Abort\s*\(\s*&hspi2\s*\)")
+        self.assertRegex(
+            body,
+            (
+                r"HAL_SPI_Abort\s*\(\s*&hspi2\s*\)\s*!=\s*HAL_OK"
+                r"[\s\S]*?return\s+ADS8688_STATUS_HAL_ERROR\s*;"
+            ),
+        )
+        self.assertRegex(body, r"return\s+ADS8688_STATUS_OK\s*;")
+
+    def test_dma_flags_are_claimed_before_half_processing(self):
+        """主循环必须先在领取函数中清 flag，再处理耗时的 512 个样本。"""
+        source = (user_dir / "ads8688.c").read_text(encoding="utf-8")
+        body = get_function_body(source, "ads8688_process")
+
+        self.assertIsNotNone(body, "缺少 ads8688_process()")
+        for flag_name, half_index in (
+            ("ads8688_dma_half_flag", "0u"),
+            ("ads8688_dma_full_flag", "1u"),
+        ):
+            with self.subTest(flag=flag_name):
+                claim_match = re.search(
+                    (
+                        r"ads8688_claim_flag\s*\(\s*&"
+                        rf"{flag_name}\s*\)"
+                    ),
+                    body,
+                )
+                process_match = re.search(
+                    rf"ads8688_process_dma_half\s*\(\s*{half_index}\s*\)",
+                    body,
+                )
+                self.assertIsNotNone(claim_match, f"未先领取 {flag_name}")
+                self.assertIsNotNone(process_match, f"未处理 DMA 半区 {half_index}")
+                self.assertLess(claim_match.start(), process_match.start())
+
+    def test_recovery_failure_remains_pending_for_process_retry(self):
+        """恢复失败必须保留 pending，并允许后续 process 在未初始化状态下重试。"""
+        source = strip_c_comments(
+            (user_dir / "ads8688.c").read_text(encoding="utf-8")
+        )
+        process_body = get_function_body(source, "ads8688_process")
+        recover_body = get_function_body(source, "ads8688_recover")
+
+        self.assertRegex(
+            source,
+            r"\bstatic\s+uint8_t\s+ads8688_recovery_pending\s*;",
+        )
+        self.assertIsNotNone(process_body)
+        self.assertLess(
+            process_body.find("ads8688_recovery_pending"),
+            process_body.find("ads8688_initialized"),
+            "process 必须先处理 pending，再判断初始化状态",
+        )
+        self.assertRegex(
+            process_body,
+            (
+                r"ads8688_recovery_pending[\s\S]*?"
+                r"ads8688_recover\s*\(\s*\)[\s\S]*?return\s*;"
+            ),
+        )
+        self.assertIsNotNone(recover_body)
+        self.assertRegex(
+            recover_body,
+            r"ads8688_recovery_pending\s*=\s*0u\s*;",
+        )
+
+    def test_configuration_restart_failure_rolls_back_old_acquisition(self):
+        """三个配置 API 的 DMA restart 失败均必须进入旧配置回滚路径。"""
+        source = (user_dir / "ads8688.c").read_text(encoding="utf-8")
+
+        for function_name in (
+            "ads8688_set_auto_mode",
+            "ads8688_set_manual_mode",
+            "ads8688_set_channel_range",
+        ):
+            with self.subTest(function=function_name):
+                body = get_function_body(source, function_name)
+                self.assertIsNotNone(body)
+                self.assertRegex(
+                    body,
+                    (
+                        r"status\s*=\s*ads8688_start_dma\s*\(\s*\)\s*;"
+                        r"[\s\S]*?if\s*\(\s*status\s*!=\s*"
+                        r"ADS8688_STATUS_OK\s*\)"
+                        r"[\s\S]*?ads8688_rollback_after_failure"
+                    ),
+                )
+
+    def test_all_dma_stop_callers_check_failure_before_transfer(self):
+        """配置与恢复路径必须确认 Abort 成功后才进行阻塞传输或复位。"""
+        source = (user_dir / "ads8688.c").read_text(encoding="utf-8")
+
+        for function_name in (
+            "ads8688_recover",
+            "ads8688_set_auto_mode",
+            "ads8688_set_manual_mode",
+            "ads8688_set_channel_range",
+        ):
+            with self.subTest(function=function_name):
+                body = get_function_body(source, function_name)
+                self.assertIsNotNone(body)
+                self.assertRegex(
+                    body,
+                    (
+                        r"status\s*=\s*ads8688_stop_dma\s*\(\s*\)\s*;"
+                        r"[\s\S]*?if\s*\(\s*status\s*!=\s*"
+                        r"ADS8688_STATUS_OK\s*\)[\s\S]*?return"
+                    ),
+                )
+
+    def test_reinitialization_stops_active_or_faulted_dma_before_reset(self):
+        """重复初始化或故障后初始化必须确认 Abort 成功，再执行硬件初始化助手。"""
+        source = (user_dir / "ads8688.c").read_text(encoding="utf-8")
+        body = get_function_body(source, "ads8688_init")
+
+        self.assertIsNotNone(body)
+        stop_match = re.search(
+            r"status\s*=\s*ads8688_stop_dma\s*\(\s*\)\s*;",
+            body,
+        )
+        initialize_match = re.search(
+            r"status\s*=\s*ads8688_initialize_attempt\s*\(\s*\)\s*;",
+            body,
+        )
+        self.assertIsNotNone(stop_match, "重复初始化路径未停止 DMA")
+        self.assertIsNotNone(initialize_match)
+        self.assertLess(stop_match.start(), initialize_match.start())
+        self.assertRegex(
+            body,
+            (
+                r"status\s*=\s*ads8688_stop_dma\s*\(\s*\)\s*;"
+                r"[\s\S]*?if\s*\(\s*status\s*!=\s*"
+                r"ADS8688_STATUS_OK\s*\)[\s\S]*?return\s+status\s*;"
+            ),
+        )
+
     def test_api_name_in_comment_is_not_a_prototype(self):
         """仅在 C 注释中出现的 API 名称不能满足函数原型契约。"""
         comment_only_header = """

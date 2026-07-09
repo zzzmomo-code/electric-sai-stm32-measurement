@@ -74,6 +74,9 @@ volatile uint8_t ads8688_error_flag;
 /** 期望处理的 DMA 半区，0 表示前半区，1 表示后半区。 */
 static uint8_t ads8688_expected_half;
 
+/** 恢复待处理标志，恢复失败后保留并由后续主循环再次尝试。 */
+static uint8_t ads8688_recovery_pending;
+
 /**
  * @brief 构造 ADS8688 程序寄存器写帧。
  * @param address 程序寄存器地址，最高位会被屏蔽。
@@ -362,14 +365,69 @@ static ads8688_status_t ads8688_start_dma(void)
 }
 
 /**
- * @brief 停止 SPI2 DMA 采集。
+ * @brief 使用阻塞 Abort 停止 SPI2 DMA 采集。
  * @param 无。
- * @return 无。
- * @note 忽略 HAL 停止返回值，后续配置或恢复流程会重新建立采集状态。
+ * @return 停止成功返回 ADS8688_STATUS_OK，否则返回 ADS8688_STATUS_HAL_ERROR。
+ * @note 仅在返回成功后，调用者才可执行阻塞 SPI 传输或硬件复位。
  */
-static void ads8688_stop_dma(void)
+static ads8688_status_t ads8688_stop_dma(void)
 {
-    (void)HAL_SPI_DMAStop(&hspi2);
+    if (HAL_SPI_Abort(&hspi2) != HAL_OK)
+    {
+        return ADS8688_STATUS_HAL_ERROR;
+    }
+
+    return ADS8688_STATUS_OK;
+}
+
+/**
+ * @brief 在短临界区领取并清除一个中断共享标志。
+ * @param flag 待领取的 volatile 标志指针。
+ * @return 标志原先置位返回 1，否则返回 0。
+ * @note 恢复进入函数前的中断屏蔽状态，耗时处理在临界区外执行。
+ */
+static uint8_t ads8688_claim_flag(volatile uint8_t *flag)
+{
+    uint32_t primask = __get_PRIMASK();
+    uint8_t claimed = 0u;
+
+    __disable_irq();
+    if (*flag != 0u)
+    {
+        *flag = 0u;
+        claimed = 1u;
+    }
+    if (primask == 0u)
+    {
+        __enable_irq();
+    }
+
+    return claimed;
+}
+
+/**
+ * @brief 在短临界区快照 DMA 两个半区完成标志。
+ * @param 无。
+ * @return bit0 表示前半区待处理，bit1 表示后半区待处理。
+ * @note 不清除任何标志，用于区分调用开始时已经同时到达的两个事件。
+ */
+static uint8_t ads8688_snapshot_dma_flags(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    uint8_t snapshot;
+
+    __disable_irq();
+    snapshot = (ads8688_dma_half_flag != 0u) ? 1u : 0u;
+    if (ads8688_dma_full_flag != 0u)
+    {
+        snapshot |= 2u;
+    }
+    if (primask == 0u)
+    {
+        __enable_irq();
+    }
+
+    return snapshot;
 }
 
 /**
@@ -437,6 +495,7 @@ static ads8688_status_t ads8688_reapply_saved_configuration(void)
 static ads8688_status_t ads8688_restore_active_acquisition(void)
 {
     ads8688_status_t status;
+    uint8_t previous_channel = ads8688_current_channel;
 
     status = ads8688_reapply_saved_configuration();
     if (status != ADS8688_STATUS_OK)
@@ -448,7 +507,31 @@ static ads8688_status_t ads8688_restore_active_acquisition(void)
         (ads8688_mode == ADS8688_MODE_AUTO)
             ? ads8688_find_first_channel(ads8688_channel_mask)
             : ads8688_current_channel;
-    return ads8688_start_dma();
+    status = ads8688_start_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        ads8688_current_channel = previous_channel;
+    }
+
+    return status;
+}
+
+/**
+ * @brief 配置事务失败后恢复旧硬件配置和旧 DMA 采集。
+ * @param original_status 新配置事务最初产生的失败状态。
+ * @return 始终返回 original_status。
+ * @note 软件配置尚未提交；回滚失败时标记未初始化并保留恢复待处理状态。
+ */
+static ads8688_status_t ads8688_rollback_after_failure(
+    ads8688_status_t original_status)
+{
+    if (ads8688_restore_active_acquisition() != ADS8688_STATUS_OK)
+    {
+        ads8688_initialized = 0u;
+        ads8688_recovery_pending = 1u;
+    }
+
+    return original_status;
 }
 
 /**
@@ -461,20 +544,34 @@ static ads8688_status_t ads8688_recover(void)
 {
     ads8688_status_t status;
 
-    ads8688_stop_dma();
+    status = ads8688_stop_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        ads8688_initialized = 0u;
+        ads8688_recovery_pending = 1u;
+        return status;
+    }
+
     status = ads8688_initialize_attempt();
     if (status != ADS8688_STATUS_OK)
     {
+        ads8688_initialized = 0u;
+        ads8688_recovery_pending = 1u;
         return status;
     }
 
     status = ads8688_restore_active_acquisition();
-    if (status == ADS8688_STATUS_OK)
+    if (status != ADS8688_STATUS_OK)
     {
-        ads8688_diagnostics.recoveries++;
+        ads8688_initialized = 0u;
+        ads8688_recovery_pending = 1u;
+        return status;
     }
 
-    return status;
+    ads8688_initialized = 1u;
+    ads8688_recovery_pending = 0u;
+    ads8688_diagnostics.recoveries++;
+    return ADS8688_STATUS_OK;
 }
 
 /**
@@ -509,7 +606,7 @@ static void ads8688_process_dma_half(uint8_t half_index)
  * @brief 初始化 ADS8688 用户模块。
  * @param 无。
  * @return 初始化成功返回 ADS8688_STATUS_OK；三次尝试均失败时返回最后一次错误状态。
- * @note 最多复位并配置器件三次；失败会累计诊断计数，成功会清空采样存储和本地采集状态。
+ * @note 重复初始化时先阻塞终止 DMA；最多配置三次，成功会清空采样存储和本地采集状态。
  */
 ads8688_status_t ads8688_init(void)
 {
@@ -517,7 +614,20 @@ ads8688_status_t ads8688_init(void)
     uint32_t attempt;
     uint32_t channel;
 
+    if ((ads8688_initialized != 0u)
+        || (ads8688_recovery_pending != 0u))
+    {
+        status = ads8688_stop_dma();
+        if (status != ADS8688_STATUS_OK)
+        {
+            ads8688_initialized = 0u;
+            ads8688_recovery_pending = 1u;
+            return status;
+        }
+    }
+
     ads8688_initialized = 0u;
+    ads8688_recovery_pending = 0u;
 
     for (attempt = 0u; attempt < ADS8688_INITIALIZATION_RETRIES; attempt++)
     {
@@ -544,6 +654,7 @@ ads8688_status_t ads8688_init(void)
             }
 
             ads8688_initialized = 1u;
+            ads8688_recovery_pending = 0u;
             return ADS8688_STATUS_OK;
         }
 
@@ -562,63 +673,95 @@ ads8688_status_t ads8688_init(void)
  */
 void ads8688_process(void)
 {
+    ads8688_status_t status;
+    uint8_t pending_flags;
+
+    if (ads8688_recovery_pending != 0u)
+    {
+        status = ads8688_recover();
+        if (status != ADS8688_STATUS_OK)
+        {
+            return;
+        }
+        return;
+    }
+
     if (ads8688_initialized == 0u)
     {
         return;
     }
 
-    if (ads8688_error_flag != 0u)
+    if (ads8688_claim_flag(&ads8688_error_flag) != 0u)
     {
-        ads8688_error_flag = 0u;
         ads8688_diagnostics.spi_dma_errors++;
-        (void)ads8688_recover();
+        ads8688_recovery_pending = 1u;
+        status = ads8688_recover();
+        if (status != ADS8688_STATUS_OK)
+        {
+            return;
+        }
         return;
     }
 
+    pending_flags = ads8688_snapshot_dma_flags();
     if (ads8688_expected_half == 0u)
     {
-        if (ads8688_dma_half_flag != 0u)
+        if ((pending_flags & 1u) != 0u)
         {
-            ads8688_process_dma_half(0u);
-            ads8688_dma_half_flag = 0u;
-            ads8688_expected_half = 1u;
-
-            if (ads8688_dma_full_flag != 0u)
+            if (ads8688_claim_flag(&ads8688_dma_half_flag) != 0u)
             {
-                ads8688_process_dma_half(1u);
-                ads8688_dma_full_flag = 0u;
+                ads8688_expected_half = 1u;
+                ads8688_process_dma_half(0u);
+            }
+
+            if (((pending_flags & 2u) != 0u)
+                && (ads8688_claim_flag(&ads8688_dma_full_flag) != 0u))
+            {
                 ads8688_expected_half = 0u;
+                ads8688_process_dma_half(1u);
             }
         }
-        else if (ads8688_dma_full_flag != 0u)
+        else if ((pending_flags & 2u) != 0u)
         {
-            ads8688_dma_full_flag = 0u;
+            (void)ads8688_claim_flag(&ads8688_dma_full_flag);
             ads8688_diagnostics.lost_samples +=
                 ADS8688_DMA_HALF_WORD_COUNT;
-            (void)ads8688_recover();
+            ads8688_recovery_pending = 1u;
+            status = ads8688_recover();
+            if (status != ADS8688_STATUS_OK)
+            {
+                return;
+            }
         }
     }
     else
     {
-        if (ads8688_dma_full_flag != 0u)
+        if ((pending_flags & 2u) != 0u)
         {
-            ads8688_process_dma_half(1u);
-            ads8688_dma_full_flag = 0u;
-            ads8688_expected_half = 0u;
-
-            if (ads8688_dma_half_flag != 0u)
+            if (ads8688_claim_flag(&ads8688_dma_full_flag) != 0u)
             {
-                ads8688_process_dma_half(0u);
-                ads8688_dma_half_flag = 0u;
+                ads8688_expected_half = 0u;
+                ads8688_process_dma_half(1u);
+            }
+
+            if (((pending_flags & 1u) != 0u)
+                && (ads8688_claim_flag(&ads8688_dma_half_flag) != 0u))
+            {
                 ads8688_expected_half = 1u;
+                ads8688_process_dma_half(0u);
             }
         }
-        else if (ads8688_dma_half_flag != 0u)
+        else if ((pending_flags & 1u) != 0u)
         {
-            ads8688_dma_half_flag = 0u;
+            (void)ads8688_claim_flag(&ads8688_dma_half_flag);
             ads8688_diagnostics.lost_samples +=
                 ADS8688_DMA_HALF_WORD_COUNT;
-            (void)ads8688_recover();
+            ads8688_recovery_pending = 1u;
+            status = ads8688_recover();
+            if (status != ADS8688_STATUS_OK)
+            {
+                return;
+            }
         }
     }
 }
@@ -642,27 +785,36 @@ ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
-    ads8688_stop_dma();
+    status = ads8688_stop_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        return status;
+    }
+
     status = ads8688_write_and_verify_register(
         ADS8688_REGISTER_AUTO_SEQUENCE,
         channel_mask);
     if (status != ADS8688_STATUS_OK)
     {
-        (void)ads8688_restore_active_acquisition();
-        return status;
+        return ads8688_rollback_after_failure(status);
     }
 
     status = ads8688_send_command(ADS8688_COMMAND_AUTO_RST);
     if (status != ADS8688_STATUS_OK)
     {
-        (void)ads8688_restore_active_acquisition();
-        return status;
+        return ads8688_rollback_after_failure(status);
+    }
+
+    status = ads8688_start_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        return ads8688_rollback_after_failure(status);
     }
 
     ads8688_mode = ADS8688_MODE_AUTO;
     ads8688_channel_mask = channel_mask;
     ads8688_current_channel = ads8688_find_first_channel(channel_mask);
-    return ads8688_start_dma();
+    return ADS8688_STATUS_OK;
 }
 
 /**
@@ -685,18 +837,28 @@ ads8688_status_t ads8688_set_manual_mode(uint8_t channel)
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
-    ads8688_stop_dma();
+    status = ads8688_stop_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        return status;
+    }
+
     command = (uint16_t)(0xc000u + ((uint16_t)channel << 10));
     status = ads8688_send_command(command);
     if (status != ADS8688_STATUS_OK)
     {
-        (void)ads8688_restore_active_acquisition();
-        return status;
+        return ads8688_rollback_after_failure(status);
+    }
+
+    status = ads8688_start_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        return ads8688_rollback_after_failure(status);
     }
 
     ads8688_mode = ADS8688_MODE_MANUAL;
     ads8688_current_channel = channel;
-    return ads8688_start_dma();
+    return ADS8688_STATUS_OK;
 }
 
 /**
@@ -721,21 +883,30 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
-    ads8688_stop_dma();
+    status = ads8688_stop_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        return status;
+    }
+
     status = ads8688_write_and_verify_register(
         (uint8_t)(ADS8688_REGISTER_RANGE_CH0 + channel),
         (uint8_t)range);
     if (status != ADS8688_STATUS_OK)
     {
-        (void)ads8688_restore_active_acquisition();
-        return status;
+        return ads8688_rollback_after_failure(status);
     }
 
     status = ads8688_send_saved_mode_command();
     if (status != ADS8688_STATUS_OK)
     {
-        (void)ads8688_restore_active_acquisition();
-        return status;
+        return ads8688_rollback_after_failure(status);
+    }
+
+    status = ads8688_start_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        return ads8688_rollback_after_failure(status);
     }
 
     ads8688_channel_ranges[channel] = range;
@@ -744,7 +915,7 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
         ads8688_current_channel =
             ads8688_find_first_channel(ads8688_channel_mask);
     }
-    return ads8688_start_dma();
+    return ADS8688_STATUS_OK;
 }
 
 /**
