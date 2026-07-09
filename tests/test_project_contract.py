@@ -5,8 +5,24 @@ import unittest
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-USER_DIR = PROJECT_ROOT / "Core" / "User"
+project_root = Path(__file__).resolve().parents[1]
+user_dir = project_root / "Core" / "User"
+
+
+def has_function_prototype(source, function_name):
+    """判断源码文本中是否出现指定函数原型。"""
+    source_without_comments = re.sub(
+        r"/\*.*?\*/|//[^\r\n]*",
+        "",
+        source,
+        flags=re.DOTALL,
+    )
+    prototype_pattern = (
+        rf"(?m)^[ \t]*(?:[A-Za-z_]\w*[ \t]+)+"
+        rf"(?:\*[ \t]*)?{re.escape(function_name)}[ \t]*"
+        rf"\([^;{{}}]*\)[ \t]*;"
+    )
+    return re.search(prototype_pattern, source_without_comments) is not None
 
 
 class ProjectContractTest(unittest.TestCase):
@@ -17,13 +33,13 @@ class ProjectContractTest(unittest.TestCase):
         for header_name in ("ads8688.h", "ads8688_storage.h", "system.h"):
             with self.subTest(header=header_name):
                 self.assertTrue(
-                    (USER_DIR / header_name).is_file(),
+                    (user_dir / header_name).is_file(),
                     f"缺少必需头文件 Core/User/{header_name}",
                 )
 
     def test_ads8688_public_apis_are_declared(self):
         """ads8688.h 必须声明全部公共 ADS8688 API。"""
-        header = (USER_DIR / "ads8688.h").read_text(encoding="utf-8")
+        header = (user_dir / "ads8688.h").read_text(encoding="utf-8")
         required_apis = (
             "ads8688_init",
             "ads8688_process",
@@ -37,15 +53,28 @@ class ProjectContractTest(unittest.TestCase):
 
         for api_name in required_apis:
             with self.subTest(api=api_name):
-                self.assertRegex(
-                    header,
-                    rf"\b{re.escape(api_name)}\s*\(",
+                self.assertTrue(
+                    has_function_prototype(header, api_name),
                     f"ads8688.h 未声明 {api_name}()",
                 )
 
+    def test_api_name_in_comment_is_not_a_prototype(self):
+        """仅在 C 注释中出现的 API 名称不能满足函数原型契约。"""
+        comment_only_header = """
+        /* 初始化时调用 ads8688_init()。 */
+        // 主循环调用 ads8688_process()
+        """
+
+        self.assertFalse(
+            has_function_prototype(comment_only_header, "ads8688_init")
+        )
+        self.assertFalse(
+            has_function_prototype(comment_only_header, "ads8688_process")
+        )
+
     def test_ads8688_sample_contains_required_fields(self):
         """ads8688_sample_t 必须包含设计规定的四个字段。"""
-        header = (USER_DIR / "ads8688.h").read_text(encoding="utf-8")
+        header = (user_dir / "ads8688.h").read_text(encoding="utf-8")
         sample_match = re.search(
             r"typedef\s+struct\s*\{(?P<body>.*?)\}\s*ads8688_sample_t\s*;",
             header,
