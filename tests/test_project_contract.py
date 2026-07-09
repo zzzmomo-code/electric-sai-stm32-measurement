@@ -199,5 +199,30 @@ class ProjectContractTest(unittest.TestCase):
                 )
 
 
+    def test_ads8688_transport_constants_are_defined(self):
+        """ads8688.c 必须定义寄存器传输所需的精确协议常量。"""
+        source_path = user_dir / "ads8688.c"
+        self.assertTrue(source_path.is_file(), "缺少 Core/User/ads8688.c")
+        source = strip_c_comments(source_path.read_text(encoding="utf-8"))
+        required_constants = {
+            "ADS8688_COMMAND_NO_OP": "0x0000u",
+            "ADS8688_COMMAND_AUTO_RST": "0xa000u",
+            "ADS8688_REGISTER_AUTO_SEQUENCE": "0x01u",
+            "ADS8688_REGISTER_FEATURE_SELECT": "0x03u",
+            "ADS8688_REGISTER_RANGE_CH0": "0x05u",
+            "ADS8688_REGISTER_RANGE_CH7": "0x0cu",
+        }
+
+        for constant_name, constant_value in required_constants.items():
+            with self.subTest(constant=constant_name):
+                self.assertRegex(
+                    source,
+                    (
+                        rf"(?m)^[ \t]*#define[ \t]+{constant_name}"
+                        rf"[ \t]+{constant_value}[ \t]*$"
+                    ),
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
