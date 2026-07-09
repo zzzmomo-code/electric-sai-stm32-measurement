@@ -25,6 +25,16 @@ def has_function_prototype(source, function_name):
     return re.search(prototype_pattern, source_without_comments) is not None
 
 
+def strip_c_comments(source):
+    """移除 C 源码注释，避免仅在注释中提及名称就通过契约测试。"""
+    return re.sub(
+        r"/\*.*?\*/|//[^\r\n]*",
+        "",
+        source,
+        flags=re.DOTALL,
+    )
+
+
 class ProjectContractTest(unittest.TestCase):
     """验证 ADS8688 用户模块对外公开的头文件与接口契约。"""
 
@@ -95,6 +105,41 @@ class ProjectContractTest(unittest.TestCase):
                     sample_body,
                     rf"\b{field_type}\s+{field_name}\s*;",
                     f"ads8688_sample_t 缺少字段 {field_type} {field_name}",
+                )
+
+
+    def test_ads8688_storage_constants_are_declared(self):
+        """ads8688_storage.h 必须声明规定的容量和通道数量常量。"""
+        header = strip_c_comments(
+            (user_dir / "ads8688_storage.h").read_text(encoding="utf-8")
+        )
+
+        self.assertRegex(
+            header,
+            r"(?m)^[ \t]*#define[ \t]+ADS8688_HISTORY_CAPACITY[ \t]+4096u[ \t]*$",
+        )
+        self.assertRegex(
+            header,
+            r"(?m)^[ \t]*#define[ \t]+ADS8688_CHANNEL_COUNT[ \t]+8u[ \t]*$",
+        )
+
+    def test_ads8688_storage_apis_are_declared(self):
+        """ads8688_storage.h 必须声明全部内部存储 API。"""
+        header = (user_dir / "ads8688_storage.h").read_text(encoding="utf-8")
+        required_apis = (
+            "ads8688_storage_init",
+            "ads8688_storage_push",
+            "ads8688_storage_get_latest",
+            "ads8688_storage_read",
+            "ads8688_storage_clear",
+            "ads8688_storage_get_overwrite_count",
+        )
+
+        for api_name in required_apis:
+            with self.subTest(api=api_name):
+                self.assertTrue(
+                    has_function_prototype(header, api_name),
+                    f"ads8688_storage.h 未声明 {api_name}()",
                 )
 
 
