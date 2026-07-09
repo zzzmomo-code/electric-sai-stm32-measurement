@@ -1,0 +1,32 @@
+# STM32CubeIDE 构建输出
+Debug/
+Release/
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+*.o
+*.d
+*.su
+*.cyclo
+
+# IDE 工作区与本机状态
+.metadata/
+.recommenders/
+.stmcufinder/
+RemoteSystemsTempFiles/
+*.launch
+*.log
+
+# 编辑器与临时文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+Thumbs.db
+Desktop.ini
+
+# Superpowers 临时资料
+tmp/
