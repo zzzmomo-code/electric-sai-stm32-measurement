@@ -60,6 +60,28 @@ def has_exact_declaration(source, declaration):
     return normalized_declaration in source_statements
 
 
+def get_function_body(source, function_name):
+    """提取简单 C 函数的函数体，供中断回调契约检查使用。"""
+    source_without_comments = strip_c_comments(source)
+    function_match = re.search(
+        rf"\b{re.escape(function_name)}\s*\([^)]*\)\s*\{{",
+        source_without_comments,
+    )
+    if function_match is None:
+        return None
+
+    body_start = function_match.end()
+    depth = 1
+    for index in range(body_start, len(source_without_comments)):
+        if source_without_comments[index] == "{":
+            depth += 1
+        elif source_without_comments[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source_without_comments[body_start:index]
+    return None
+
+
 class ProjectContractTest(unittest.TestCase):
     """验证 ADS8688 用户模块对外公开的头文件与接口契约。"""
 
@@ -84,6 +106,7 @@ class ProjectContractTest(unittest.TestCase):
             "ads8688_get_latest",
             "ads8688_read_history",
             "ads8688_clear_history",
+            "ads8688_get_diagnostics",
         )
 
         for api_name in required_apis:
@@ -92,6 +115,94 @@ class ProjectContractTest(unittest.TestCase):
                     has_function_prototype(header, api_name),
                     f"ads8688.h 未声明 {api_name}()",
                 )
+
+    def test_ads8688_dma_contract_is_declared(self):
+        """DMA 缓冲长度、回调标志及统一头文件 extern 声明必须完整。"""
+        source = strip_c_comments(
+            (user_dir / "ads8688.c").read_text(encoding="utf-8")
+        )
+        system_header = strip_c_comments(
+            (user_dir / "system.h").read_text(encoding="utf-8")
+        )
+
+        self.assertRegex(
+            source,
+            r"(?m)^[ \t]*#define[ \t]+ADS8688_DMA_WORD_COUNT[ \t]+1024u[ \t]*$",
+        )
+        for flag_name in (
+            "ads8688_dma_half_flag",
+            "ads8688_dma_full_flag",
+            "ads8688_error_flag",
+        ):
+            with self.subTest(flag=flag_name):
+                self.assertRegex(
+                    source,
+                    rf"\bvolatile\s+uint8_t\s+{flag_name}\s*;",
+                )
+                self.assertRegex(
+                    system_header,
+                    rf"\bextern\s+volatile\s+uint8_t\s+{flag_name}\s*;",
+                )
+
+    def test_ads8688_get_diagnostics_has_full_prototype(self):
+        """诊断接口的返回值和输出参数类型必须与设计一致。"""
+        header = (user_dir / "ads8688.h").read_text(encoding="utf-8")
+        self.assertTrue(
+            has_exact_declaration(
+                header,
+                (
+                    "ads8688_status_t ads8688_get_diagnostics("
+                    "ads8688_diagnostics_t *diagnostics);"
+                ),
+            )
+        )
+
+    def test_ads8688_callbacks_only_set_their_flags(self):
+        """三个 HAL 回调只能处理未使用参数并置位各自的单一标志。"""
+        source = (user_dir / "ads8688.c").read_text(encoding="utf-8")
+        callbacks = {
+            "HAL_SPI_TxRxHalfCpltCallback": "ads8688_dma_half_flag",
+            "HAL_SPI_TxRxCpltCallback": "ads8688_dma_full_flag",
+            "HAL_SPI_ErrorCallback": "ads8688_error_flag",
+        }
+        forbidden_calls = (
+            "for",
+            "while",
+            "HAL_Delay",
+            "printf",
+            "ads8688_storage",
+            "ads8688_process",
+            "recover",
+        )
+
+        for callback_name, flag_name in callbacks.items():
+            with self.subTest(callback=callback_name):
+                body = get_function_body(source, callback_name)
+                self.assertIsNotNone(body, f"缺少回调 {callback_name}()")
+                self.assertRegex(body, rf"\b{flag_name}\s*=\s*1u\s*;")
+                assignments = re.findall(r"(?<![=!<>])=(?!=)", body)
+                self.assertEqual(assignments, ["="], "回调中存在额外赋值")
+                for forbidden in forbidden_calls:
+                    self.assertNotRegex(
+                        body,
+                        rf"\b{re.escape(forbidden)}",
+                        f"回调中禁止出现 {forbidden}",
+                    )
+
+    def test_range_change_resynchronizes_auto_channel_tracking(self):
+        """量程修改发送 AUTO_RST 后必须重置自动模式的软件通道跟踪。"""
+        source = (user_dir / "ads8688.c").read_text(encoding="utf-8")
+        body = get_function_body(source, "ads8688_set_channel_range")
+
+        self.assertIsNotNone(body, "缺少 ads8688_set_channel_range()")
+        self.assertRegex(
+            body,
+            (
+                r"ads8688_mode\s*==\s*ADS8688_MODE_AUTO[\s\S]*?"
+                r"ads8688_current_channel\s*=\s*"
+                r"ads8688_find_first_channel\s*\(\s*ads8688_channel_mask\s*\)"
+            ),
+        )
 
     def test_api_name_in_comment_is_not_a_prototype(self):
         """仅在 C 注释中出现的 API 名称不能满足函数原型契约。"""

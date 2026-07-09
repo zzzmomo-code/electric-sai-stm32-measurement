@@ -139,4 +139,13 @@ uint32_t ads8688_read_history(ads8688_sample_t *samples,
  */
 void ads8688_clear_history(void);
 
+/**
+ * @brief 读取 ADS8688 当前累计诊断信息。
+ * @param diagnostics 用于接收诊断计数的结构体指针。
+ * @return 参数有效时返回 ADS8688_STATUS_OK，空指针返回 ADS8688_STATUS_INVALID_ARGUMENT。
+ * @note 读取前会同步历史缓冲区覆盖计数。
+ */
+ads8688_status_t ads8688_get_diagnostics(
+    ads8688_diagnostics_t *diagnostics);
+
 #endif /* ADS8688_H */

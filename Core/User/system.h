@@ -17,6 +17,15 @@
 #include "ads8688.h"
 #include "ads8688_storage.h"
 
+/** DMA 前半区完成标志，由 SPI2 DMA 中断与主循环共享。 */
+extern volatile uint8_t ads8688_dma_half_flag;
+
+/** DMA 后半区完成标志，由 SPI2 DMA 中断与主循环共享。 */
+extern volatile uint8_t ads8688_dma_full_flag;
+
+/** SPI2/DMA 错误标志，由 SPI2 中断与主循环共享。 */
+extern volatile uint8_t ads8688_error_flag;
+
 /**
  * @brief 初始化全部用户模块。
  * @param 无。
