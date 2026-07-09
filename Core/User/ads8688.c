@@ -788,6 +788,9 @@ ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
     status = ads8688_stop_dma();
     if (status != ADS8688_STATUS_OK)
     {
+        ads8688_initialized = 0u;
+        ads8688_recovery_pending = 1u;
+        ads8688_diagnostics.spi_dma_errors++;
         return status;
     }
 
@@ -840,6 +843,9 @@ ads8688_status_t ads8688_set_manual_mode(uint8_t channel)
     status = ads8688_stop_dma();
     if (status != ADS8688_STATUS_OK)
     {
+        ads8688_initialized = 0u;
+        ads8688_recovery_pending = 1u;
+        ads8688_diagnostics.spi_dma_errors++;
         return status;
     }
 
@@ -886,6 +892,9 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
     status = ads8688_stop_dma();
     if (status != ADS8688_STATUS_OK)
     {
+        ads8688_initialized = 0u;
+        ads8688_recovery_pending = 1u;
+        ads8688_diagnostics.spi_dma_errors++;
         return status;
     }
 

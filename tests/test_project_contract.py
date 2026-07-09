@@ -350,6 +350,31 @@ class ProjectContractTest(unittest.TestCase):
             ),
         )
 
+    def test_configuration_stop_failure_enters_recovery_pending_state(self):
+        """三个配置 API 的 Abort 失败必须转入未初始化且待恢复状态。"""
+        source = (user_dir / "ads8688.c").read_text(encoding="utf-8")
+
+        for function_name in (
+            "ads8688_set_auto_mode",
+            "ads8688_set_manual_mode",
+            "ads8688_set_channel_range",
+        ):
+            with self.subTest(function=function_name):
+                body = get_function_body(source, function_name)
+                self.assertIsNotNone(body)
+                self.assertRegex(
+                    body,
+                    (
+                        r"status\s*=\s*ads8688_stop_dma\s*\(\s*\)\s*;"
+                        r"[\s\S]*?if\s*\(\s*status\s*!=\s*"
+                        r"ADS8688_STATUS_OK\s*\)\s*\{"
+                        r"[\s\S]*?ads8688_initialized\s*=\s*0u\s*;"
+                        r"[\s\S]*?ads8688_recovery_pending\s*=\s*1u\s*;"
+                        r"[\s\S]*?return\s+status\s*;"
+                        r"[\s\S]*?\}"
+                    ),
+                )
+
     def test_api_name_in_comment_is_not_a_prototype(self):
         """仅在 C 注释中出现的 API 名称不能满足函数原型契约。"""
         comment_only_header = """
