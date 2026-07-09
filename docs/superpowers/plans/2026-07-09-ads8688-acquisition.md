@@ -298,7 +298,11 @@ static uint32_t ads8688_make_register_read(uint8_t address)
 }
 ```
 
-Use `HAL_SPI_TransmitReceive(&hspi2, ...)` for one 32-bit data unit while DMA is stopped. Extract register readback from the received frame according to logic-analyzer-confirmed bit placement; the initial implementation uses the low byte after the 16 command clocks.
+Use `HAL_SPI_TransmitReceive(&hspi2, ...)` for one 32-bit data unit while DMA is stopped. The first 16 received bits are zero, the next eight bits are register data, and the final eight bits are zero, so extract register readback from received bits `[15:8]`:
+
+```c
+uint8_t register_value = (uint8_t)((rx_word >> 8) & 0xffu);
+```
 
 - [ ] **Step 3: Implement deterministic reset and verified initialization**
 
