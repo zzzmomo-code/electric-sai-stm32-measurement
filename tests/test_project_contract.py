@@ -1,0 +1,73 @@
+"""ADS8688 用户模块公共接口契约测试。"""
+
+import re
+import unittest
+from pathlib import Path
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+USER_DIR = PROJECT_ROOT / "Core" / "User"
+
+
+class ProjectContractTest(unittest.TestCase):
+    """验证 ADS8688 用户模块对外公开的头文件与接口契约。"""
+
+    def test_required_headers_exist(self):
+        """三个用户公共头文件必须位于 Core/User 目录。"""
+        for header_name in ("ads8688.h", "ads8688_storage.h", "system.h"):
+            with self.subTest(header=header_name):
+                self.assertTrue(
+                    (USER_DIR / header_name).is_file(),
+                    f"缺少必需头文件 Core/User/{header_name}",
+                )
+
+    def test_ads8688_public_apis_are_declared(self):
+        """ads8688.h 必须声明全部公共 ADS8688 API。"""
+        header = (USER_DIR / "ads8688.h").read_text(encoding="utf-8")
+        required_apis = (
+            "ads8688_init",
+            "ads8688_process",
+            "ads8688_set_auto_mode",
+            "ads8688_set_manual_mode",
+            "ads8688_set_channel_range",
+            "ads8688_get_latest",
+            "ads8688_read_history",
+            "ads8688_clear_history",
+        )
+
+        for api_name in required_apis:
+            with self.subTest(api=api_name):
+                self.assertRegex(
+                    header,
+                    rf"\b{re.escape(api_name)}\s*\(",
+                    f"ads8688.h 未声明 {api_name}()",
+                )
+
+    def test_ads8688_sample_contains_required_fields(self):
+        """ads8688_sample_t 必须包含设计规定的四个字段。"""
+        header = (USER_DIR / "ads8688.h").read_text(encoding="utf-8")
+        sample_match = re.search(
+            r"typedef\s+struct\s*\{(?P<body>.*?)\}\s*ads8688_sample_t\s*;",
+            header,
+            flags=re.DOTALL,
+        )
+
+        self.assertIsNotNone(sample_match, "ads8688.h 未定义 ads8688_sample_t")
+        sample_body = sample_match.group("body")
+        required_fields = {
+            "sample_index": "uint32_t",
+            "raw_code": "uint16_t",
+            "channel": "uint8_t",
+            "reserved": "uint8_t",
+        }
+        for field_name, field_type in required_fields.items():
+            with self.subTest(field=field_name):
+                self.assertRegex(
+                    sample_body,
+                    rf"\b{field_type}\s+{field_name}\s*;",
+                    f"ads8688_sample_t 缺少字段 {field_type} {field_name}",
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()
