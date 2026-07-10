@@ -28,6 +28,10 @@ RemoteSystemsTempFiles/
 Thumbs.db
 Desktop.ini
 
+# Python test cache
+__pycache__/
+*.py[cod]
+
 # Superpowers 临时资料
 .superpowers/
 tmp/
