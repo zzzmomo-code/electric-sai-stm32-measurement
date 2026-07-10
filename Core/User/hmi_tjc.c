@@ -138,7 +138,7 @@ static uint8_t hmi_tjc_format_value(char *text,
  * @param control_name main 页面内的文本控件名称。
  * @param text 待显示的 ASCII 文本。
  * @return 追加结果状态。
- * @note 成功时会追加 main.控件.txt="文本" 及三个 0xff 结束字节。
+ * @note 成功时会追加全局控件名.txt="文本" 及三个 0xff 结束字节。
  */
 static hmi_tjc_status_t hmi_tjc_append_text_command(
     uint8_t *frame,
@@ -166,7 +166,7 @@ static hmi_tjc_status_t hmi_tjc_append_text_command(
     remaining = (uint16_t)(frame_capacity - offset);
     command_length = snprintf((char *)&frame[offset],
                               remaining,
-                              "main.%s.txt=\"%s\"",
+                              "%s.txt=\"%s\"",
                               control_name,
                               text);
     if ((command_length < 0)

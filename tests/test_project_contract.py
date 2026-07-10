@@ -263,6 +263,8 @@ class ProjectContractTest(unittest.TestCase):
             with self.subTest(control=control_name):
                 self.assertIn(f'"{control_name}"', source)
 
+        self.assertIn('"%s.txt=\\"%s\\""', source)
+        self.assertNotIn('"main.%s.txt=\\"%s\\""', source)
         self.assertEqual(
             source.count("frame[offset++] = HMI_TJC_TERMINATOR_BYTE;"),
             3,

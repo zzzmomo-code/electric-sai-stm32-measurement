@@ -21,13 +21,13 @@
 
 ## 固件协议
 
-固件每约 250 ms 向 `main` 页面下发五条文本赋值指令。例如：
+固件每约 250 ms 向全局 Text 控件下发五条文本赋值指令。例如：
 
-    main.t_amp.txt="3.300 Vpp"
-    main.t_freq.txt="12.345 kHz"
-    main.t_phase.txt="-90.0 deg"
-    main.t_wave.txt="SINE"
-    main.t_status.txt="LIVE"
+    t_amp.txt="3.300 Vpp"
+    t_freq.txt="12.345 kHz"
+    t_phase.txt="-90.0 deg"
+    t_wave.txt="SINE"
+    t_status.txt="LIVE"
 
 每一条命令后都必须附加原始三个字节 `FF FF FF`，这三个字节不属于 ASCII 文本。固件上电绑定 UART 后会先发 `00 FF FF FF` 清理可能残留的串口输入。
 
