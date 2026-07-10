@@ -29,5 +29,6 @@ Thumbs.db
 Desktop.ini
 
 # Superpowers 临时资料
+.superpowers/
 tmp/
 .worktrees/
