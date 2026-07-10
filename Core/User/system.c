@@ -19,5 +19,7 @@
  */
 void system_init(void)
 {
+    measurement_result_init();
+    hmi_tjc_init();
     (void)ads8688_init();
 }

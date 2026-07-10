@@ -16,6 +16,8 @@
 #include "spi.h"
 #include "ads8688.h"
 #include "ads8688_storage.h"
+#include "measurement_result.h"
+#include "hmi_tjc.h"
 
 /** DMA 前半区完成标志，由 SPI2 DMA 中断与主循环共享。 */
 extern volatile uint8_t ads8688_dma_half_flag;

@@ -99,8 +99,14 @@ class ProjectContractTest(unittest.TestCase):
     """验证 ADS8688 用户模块对外公开的头文件与接口契约。"""
 
     def test_required_headers_exist(self):
-        """三个用户公共头文件必须位于 Core/User 目录。"""
-        for header_name in ("ads8688.h", "ads8688_storage.h", "system.h"):
+        """用户公共头文件必须位于 Core/User 目录。"""
+        for header_name in (
+            "ads8688.h",
+            "ads8688_storage.h",
+            "measurement_result.h",
+            "hmi_tjc.h",
+            "system.h",
+        ):
             with self.subTest(header=header_name):
                 self.assertTrue(
                     (user_dir / header_name).is_file(),
@@ -117,10 +123,17 @@ class ProjectContractTest(unittest.TestCase):
             get_user_code_section(main, "Includes"),
             '#include "system.h"',
         )
-        self.assertEqual(get_user_code_section(main, "2"), "system_init();")
+        self.assertRegex(
+            get_user_code_section(main, "2"),
+            (
+                r"^system_init\(\);\s*"
+                r"#if defined\(HAL_UART_MODULE_ENABLED\)\s*"
+                r"hmi_tjc_bind_uart\(\s*&huart1\s*\);\s*#endif$"
+            ),
+        )
         self.assertRegex(
             get_user_code_section(main, "3"),
-            r"^ads8688_process\(\);\s*\}$",
+            r"^ads8688_process\(\);\s*hmi_tjc_process\(\);\s*\}$",
         )
 
     def test_system_c_initializes_ads8688_through_unified_header(self):
@@ -135,7 +148,14 @@ class ProjectContractTest(unittest.TestCase):
 
         self.assertEqual(quoted_includes, ["system.h"])
         self.assertIsNotNone(body)
-        self.assertRegex(body, r"\(void\)\s*ads8688_init\s*\(\s*\)\s*;")
+        self.assertRegex(
+            body,
+            (
+                r"measurement_result_init\s*\(\s*\)\s*;[\s\S]*?"
+                r"hmi_tjc_init\s*\(\s*\)\s*;[\s\S]*?"
+                r"\(void\)\s*ads8688_init\s*\(\s*\)\s*;"
+            ),
+        )
 
     def test_user_modules_have_required_chinese_headers(self):
         """所有用户 C/H 文件必须具备中文模块说明和调用说明。"""
@@ -178,11 +198,132 @@ class ProjectContractTest(unittest.TestCase):
             "验证",
             "已知限制",
             "尚未完成实板验证",
+            "TJC4827T143_011R_I_P20",
+            "USART1",
+            "PA9",
+            "PA10",
+            "115200",
+            "measurement_result_publish",
+            "hmi_tjc_process",
         )
 
         for phrase in required_phrases:
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, readme)
+
+    def test_measurement_result_contract_is_declared(self):
+        """算法与显示之间必须只通过测量结果快照接口传递数据。"""
+        header = (user_dir / "measurement_result.h").read_text(encoding="utf-8")
+        result_match = re.search(
+            r"typedef\s+struct\s*\{(?P<body>.*?)\}\s*measurement_result_t\s*;",
+            header,
+            flags=re.DOTALL,
+        )
+
+        self.assertIsNotNone(result_match, "缺少 measurement_result_t")
+        result_body = result_match.group("body")
+        required_fields = {
+            "amplitude_vpp": "float",
+            "frequency_hz": "float",
+            "phase_deg": "float",
+            "wave_type": "measurement_wave_type_t",
+            "valid": "uint8_t",
+            "sequence": "uint32_t",
+        }
+        for field_name, field_type in required_fields.items():
+            with self.subTest(field=field_name):
+                self.assertRegex(
+                    result_body,
+                    rf"\b{field_type}\s+{field_name}\s*;",
+                )
+
+        for declaration in (
+            "void measurement_result_init(void);",
+            "void measurement_result_publish(const measurement_result_t *result);",
+            "uint8_t measurement_result_get_snapshot(measurement_result_t *result);",
+        ):
+            with self.subTest(declaration=declaration):
+                self.assertTrue(has_exact_declaration(header, declaration))
+
+    def test_hmi_tjc_frame_contract_is_preserved(self):
+        """串口屏帧必须固定更新五个文本控件并使用原始三字节结束符。"""
+        header = strip_c_comments(
+            (user_dir / "hmi_tjc.h").read_text(encoding="utf-8")
+        )
+        source = strip_c_comments(
+            (user_dir / "hmi_tjc.c").read_text(encoding="utf-8")
+        )
+
+        self.assertRegex(
+            header,
+            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_REFRESH_MS[ \t]+100u[ \t]*$",
+        )
+        self.assertRegex(
+            header,
+            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_TX_BUFFER_SIZE[ \t]+192u[ \t]*$",
+        )
+        for control_name in ("t_amp", "t_freq", "t_phase", "t_wave", "t_status"):
+            with self.subTest(control=control_name):
+                self.assertIn(f'"{control_name}"', source)
+
+        self.assertEqual(
+            source.count("frame[offset++] = HMI_TJC_TERMINATOR_BYTE;"),
+            3,
+        )
+        self.assertIn("HAL_UART_Transmit_DMA", source)
+        self.assertIn("HAL_UART_TxCpltCallback", source)
+        self.assertIn("snprintf", source)
+        self.assertNotIn("sprintf(", source)
+
+    def test_hmi_callbacks_only_mark_hmi_state(self):
+        """UART 回调不得格式化文本、读取 ADS 数据或重启传输。"""
+        source = (user_dir / "hmi_tjc.c").read_text(encoding="utf-8")
+
+        for callback_name, flag_name in (
+            ("HAL_UART_TxCpltCallback", "hmi_tjc_tx_complete_flag"),
+            ("HAL_UART_ErrorCallback", "hmi_tjc_uart_error_flag"),
+        ):
+            with self.subTest(callback=callback_name):
+                body = get_function_body(source, callback_name)
+                self.assertIsNotNone(body)
+                self.assertRegex(body, rf"\b{flag_name}\s*=\s*1u\s*;")
+                for forbidden in (
+                    "snprintf",
+                    "HAL_UART_Transmit_DMA",
+                    "HAL_UART_AbortTransmit",
+                    "measurement_result",
+                    "ads8688",
+                ):
+                    self.assertNotIn(forbidden, body)
+
+    def test_hmi_page_document_exists(self):
+        """HMI 页面工程必须有可交接的控件和串口配置说明。"""
+        hmi_readme_path = project_root / "hmi" / "README.md"
+        self.assertTrue(hmi_readme_path.is_file())
+        hmi_readme = hmi_readme_path.read_text(encoding="utf-8")
+
+        for phrase in (
+            "TJC4827T143_011R_I_P20",
+            "480 x 272",
+            "115200",
+            "vscope",
+            "txt_maxl",
+            "t_amp",
+            "t_freq",
+            "t_phase",
+            "t_wave",
+            "t_status",
+            "FF FF FF",
+            "USART1",
+            "PA9",
+            "PA10",
+            "DMA1 Stream0",
+            "DMA1 Stream1",
+            "DMA1 Stream2",
+            "待硬件验证",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, hmi_readme)
 
     def test_ads8688_public_apis_are_declared(self):
         """ads8688.h 必须声明全部公共 ADS8688 API。"""
