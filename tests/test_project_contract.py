@@ -137,6 +137,53 @@ class ProjectContractTest(unittest.TestCase):
         self.assertIsNotNone(body)
         self.assertRegex(body, r"\(void\)\s*ads8688_init\s*\(\s*\)\s*;")
 
+    def test_user_modules_have_required_chinese_headers(self):
+        """所有用户 C/H 文件必须具备中文模块说明和调用说明。"""
+        required_phrases = (
+            "模块用途",
+            "GPIO 引脚映射",
+            "依赖的外设和 CubeIDE 配置",
+            "初始化方法",
+            "调用方法",
+        )
+
+        for path in sorted(user_dir.glob("*.[ch]")):
+            text = path.read_text(encoding="utf-8")
+            with self.subTest(file=path.name):
+                for phrase in required_phrases:
+                    self.assertIn(phrase, text)
+
+    def test_readme_documents_ads8688_integration(self):
+        """README 必须说明硬件连接、CubeIDE 配置、使用方法和未上板验证项。"""
+        readme = (project_root / "README.md").read_text(encoding="utf-8")
+        required_phrases = (
+            "STM32H750VBT6",
+            "STM32CubeIDE 1.19.0",
+            "PB12",
+            "PB13",
+            "PB14",
+            "PB15",
+            "PD8",
+            "PD9",
+            "自动循环扫描",
+            "单通道采集",
+            "内部 4.096 V 基准",
+            "16.125 MHz",
+            "约 393 kSPS",
+            "4096",
+            "200 kSPS",
+            "编译",
+            "烧录",
+            "运行",
+            "验证",
+            "已知限制",
+            "尚未完成实板验证",
+        )
+
+        for phrase in required_phrases:
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, readme)
+
     def test_ads8688_public_apis_are_declared(self):
         """ads8688.h 必须声明全部公共 ADS8688 API。"""
         header = (user_dir / "ads8688.h").read_text(encoding="utf-8")

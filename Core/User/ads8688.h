@@ -3,8 +3,9 @@
  * @brief ADS8688 采集模块公共接口。
  *
  * 模块用途：提供 ADS8688 初始化、采集模式、量程、最新数据及历史数据接口。
- * GPIO 引脚映射：本接口层无直接 GPIO 引脚，实际映射由后续硬件适配实现确定。
- * 依赖的外设和 CubeIDE 配置：依赖 SPI 及后续设计指定的 DMA/GPIO 配置；本文件不修改配置。
+ * GPIO 引脚映射：PB12/SPI2_NSS 连接 CS，PB13/SPI2_SCK 连接 SCLK，PB14/SPI2_MISO
+ * 连接 SDO，PB15/SPI2_MOSI 连接 SDI，PD8 连接 RST/PD，PD9 连接 DAISY。
+ * 依赖的外设和 CubeIDE 配置：依赖 SPI2、DMA1 Stream0/1、PD8/PD9 GPIO 输出和 SPI2/DMA 中断。
  * 初始化方法：CubeMX 外设初始化完成后调用 ads8688_init()。
  * 调用方法：主循环调用 ads8688_process()，其他接口用于配置和读取采样结果。
  */
