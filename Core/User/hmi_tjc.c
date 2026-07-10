@@ -2,11 +2,11 @@
  * @file hmi_tjc.c
  * @brief 淘晶驰串口屏显示模块实现。
  *
- * 模块用途：低频读取测量结果快照，构建淘晶驰文本指令并通过 UART TX DMA 发送。
+ * 模块用途：低频读取测量结果快照，构建淘晶驰文本指令并通过 UART 轮询发送。
  * GPIO 引脚映射：无硬编码 GPIO；UART 引脚由 CubeMX 和 hmi_tjc_bind_uart() 决定。
- * 依赖的外设和 CubeIDE 配置：运行发送依赖 UART 9600 8N1、TX DMA 和 UART 中断。
+ * 依赖的外设和 CubeIDE 配置：运行发送依赖 UART 9600 8N1；不使用 TX DMA 或 UART 中断。
  * 初始化方法：系统启动调用 hmi_tjc_init()，CubeMX UART 初始化后绑定 UART 句柄。
- * 调用方法：主循环调用 hmi_tjc_process()，UART 回调只设置完成或错误标志。
+ * 调用方法：主循环调用 hmi_tjc_process()；发送在主循环中完成。
  */
 
 #include "system.h"
@@ -326,12 +326,8 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
 /** 绑定的 CubeMX UART 句柄。 */
 static UART_HandleTypeDef *hmi_tjc_uart;
 
-/** UART TX DMA 使用的固定帧缓冲区，长度为 32 字节的整数倍。 */
-static uint8_t hmi_tjc_tx_buffer[HMI_TJC_TX_BUFFER_SIZE]
-    __attribute__((aligned(32)));
-
-/** UART DMA 发送期间禁止覆盖缓冲区的状态标志。 */
-static uint8_t hmi_tjc_tx_busy;
+/** UART 轮询发送使用的固定帧缓冲区。 */
+static uint8_t hmi_tjc_tx_buffer[HMI_TJC_TX_BUFFER_SIZE];
 
 /** 上电后先发送清理帧的标志。 */
 static uint8_t hmi_tjc_flush_pending;
@@ -339,38 +335,13 @@ static uint8_t hmi_tjc_flush_pending;
 /** 上一次成功或尝试刷新屏幕的 HAL 时基。 */
 static uint32_t hmi_tjc_last_refresh_ms;
 
-/** UART TX 完成标志，由中断回调置位。 */
-static volatile uint8_t hmi_tjc_tx_complete_flag;
-
-/** UART 错误标志，由中断回调置位。 */
-static volatile uint8_t hmi_tjc_uart_error_flag;
-
 /**
- * @brief 在短临界区中领取并清除一个 UART 回调标志。
- * @param flag 待领取的中断共享标志。
- * @return 领取到置位标志时返回 1，否则返回 0。
- * @note 临界区只读写一个字节，避免丢失紧邻主循环的中断事件。
- */
-static uint8_t hmi_tjc_claim_flag(volatile uint8_t *flag)
-{
-    uint32_t primask;
-    uint8_t claimed;
-
-    primask = __get_PRIMASK();
-    __disable_irq();
-    claimed = *flag;
-    *flag = 0u;
-    __set_PRIMASK(primask);
-    return claimed;
-}
-
-/**
- * @brief 启动一帧 UART TX DMA 发送。
+ * @brief 轮询发送一帧 UART 数据。
  * @param frame_size 待发送的帧长度。
- * @return 发送启动结果状态。
- * @note 发送前清理 D-Cache，确保 DMA 读取到最新构建的帧数据。
+ * @return 发送结果状态。
+ * @note 此函数在主循环中阻塞等待 UART 发送完成，不使用 DMA 或 D-Cache 维护。
  */
-static hmi_tjc_status_t hmi_tjc_start_tx(uint16_t frame_size)
+static hmi_tjc_status_t hmi_tjc_send_frame(uint16_t frame_size)
 {
     if (hmi_tjc_uart == 0)
     {
@@ -381,32 +352,27 @@ static hmi_tjc_status_t hmi_tjc_start_tx(uint16_t frame_size)
         return HMI_TJC_STATUS_INVALID_ARGUMENT;
     }
 
-    SCB_CleanDCache_by_Addr((uint32_t *)hmi_tjc_tx_buffer,
-                            HMI_TJC_TX_BUFFER_SIZE);
-    if (HAL_UART_Transmit_DMA(hmi_tjc_uart,
-                              hmi_tjc_tx_buffer,
-                              frame_size) != HAL_OK)
+    if (HAL_UART_Transmit(hmi_tjc_uart,
+                          hmi_tjc_tx_buffer,
+                          frame_size,
+                          HMI_TJC_TX_TIMEOUT_MS) != HAL_OK)
     {
         return HMI_TJC_STATUS_HAL_ERROR;
     }
 
-    hmi_tjc_tx_busy = 1u;
     return HMI_TJC_STATUS_OK;
 }
 
 /**
  * @brief 绑定 CubeMX 生成的 UART 句柄。
- * @param huart 已配置为 9600 8N1 且启用 TX DMA 的 UART 句柄。
+ * @param huart 已配置为 9600 8N1 的 UART 句柄。
  * @return 无。
- * @note 重新绑定会清空发送状态，并在下一次 process 中发送清理帧。
+ * @note 重新绑定后在下一次 process 中发送清理帧，无 DMA 或中断依赖。
  */
 void hmi_tjc_bind_uart(UART_HandleTypeDef *huart)
 {
     hmi_tjc_uart = huart;
-    hmi_tjc_tx_busy = 0u;
     hmi_tjc_flush_pending = 1u;
-    hmi_tjc_tx_complete_flag = 0u;
-    hmi_tjc_uart_error_flag = 0u;
     hmi_tjc_last_refresh_ms = HAL_GetTick();
 }
 
@@ -422,19 +388,16 @@ void hmi_tjc_init(void)
 {
 #if defined(HAL_UART_MODULE_ENABLED)
     hmi_tjc_uart = 0;
-    hmi_tjc_tx_busy = 0u;
     hmi_tjc_flush_pending = 1u;
-    hmi_tjc_tx_complete_flag = 0u;
-    hmi_tjc_uart_error_flag = 0u;
     hmi_tjc_last_refresh_ms = HAL_GetTick();
 #endif
 }
 
 /**
- * @brief 处理 HMI 发送完成、错误恢复和周期刷新。
+ * @brief 处理 HMI 上电清理和周期刷新。
  * @param 无。
  * @return 无。
- * @note UART 尚未配置时无操作；UART 就绪后每 100 ms 最多发送一帧。
+ * @note UART 尚未配置时无操作；UART 就绪后每 250 ms 最多轮询发送一帧。
  */
 void hmi_tjc_process(void)
 {
@@ -449,30 +412,13 @@ void hmi_tjc_process(void)
         return;
     }
 
-    if (hmi_tjc_claim_flag(&hmi_tjc_tx_complete_flag) != 0u)
-    {
-        hmi_tjc_tx_busy = 0u;
-    }
-
-    if (hmi_tjc_claim_flag(&hmi_tjc_uart_error_flag) != 0u)
-    {
-        (void)HAL_UART_AbortTransmit(hmi_tjc_uart);
-        hmi_tjc_tx_busy = 0u;
-        hmi_tjc_flush_pending = 1u;
-    }
-
-    if (hmi_tjc_tx_busy != 0u)
-    {
-        return;
-    }
-
     if (hmi_tjc_flush_pending != 0u)
     {
         hmi_tjc_tx_buffer[0] = 0x00u;
         hmi_tjc_tx_buffer[1] = HMI_TJC_TERMINATOR_BYTE;
         hmi_tjc_tx_buffer[2] = HMI_TJC_TERMINATOR_BYTE;
         hmi_tjc_tx_buffer[3] = HMI_TJC_TERMINATOR_BYTE;
-        status = hmi_tjc_start_tx(4u);
+        status = hmi_tjc_send_frame(4u);
         if (status == HMI_TJC_STATUS_OK)
         {
             hmi_tjc_flush_pending = 0u;
@@ -497,38 +443,6 @@ void hmi_tjc_process(void)
         return;
     }
 
-    (void)hmi_tjc_start_tx(frame_size);
+    (void)hmi_tjc_send_frame(frame_size);
 #endif
 }
-
-#if defined(HAL_UART_MODULE_ENABLED)
-
-/**
- * @brief UART DMA 发送完成回调。
- * @param huart 触发回调的 UART 句柄。
- * @return 无。
- * @note 中断上下文只设置完成标志，发送状态更新由主循环处理。
- */
-void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
-{
-    if (huart == hmi_tjc_uart)
-    {
-        hmi_tjc_tx_complete_flag = 1u;
-    }
-}
-
-/**
- * @brief UART 错误回调。
- * @param huart 触发回调的 UART 句柄。
- * @return 无。
- * @note 中断上下文只设置错误标志，终止 DMA 和重试由主循环处理。
- */
-void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
-{
-    if (huart == hmi_tjc_uart)
-    {
-        hmi_tjc_uart_error_flag = 1u;
-    }
-}
-
-#endif

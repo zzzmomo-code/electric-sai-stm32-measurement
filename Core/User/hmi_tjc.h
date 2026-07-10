@@ -2,9 +2,9 @@
  * @file hmi_tjc.h
  * @brief 淘晶驰串口屏显示模块公共接口。
  *
- * 模块用途：将测量结果格式化为淘晶驰文本指令，并在 UART 可用时低频 DMA 发送。
+ * 模块用途：将测量结果格式化为淘晶驰文本指令，并在 UART 可用时低频轮询发送。
  * GPIO 引脚映射：由 CubeMX 为后续选定 UART 分配，不在本模块硬编码引脚。
- * 依赖的外设和 CubeIDE 配置：运行发送依赖一个异步 UART、TX DMA 和 UART 全局中断。
+ * 依赖的外设和 CubeIDE 配置：运行发送依赖一个异步 UART；不使用 UART DMA 或 UART 全局中断。
  * 初始化方法：系统启动时调用 hmi_tjc_init()；CubeMX 启用 UART 后再绑定 UART 句柄。
  * 调用方法：主循环持续调用 hmi_tjc_process()。
  */
@@ -17,9 +17,12 @@
 #include "measurement_result.h"
 
 /** HMI 刷新间隔，单位为毫秒。 */
-#define HMI_TJC_REFRESH_MS 100u
+#define HMI_TJC_REFRESH_MS 250u
 
-/** UART TX DMA 帧缓冲区长度，同时满足 32 字节缓存行对齐要求。 */
+/** UART 轮询发送超时，单位为毫秒。9600 波特率下可完整发送最大帧。 */
+#define HMI_TJC_TX_TIMEOUT_MS 250u
+
+/** UART 轮询发送帧缓冲区长度。 */
 #define HMI_TJC_TX_BUFFER_SIZE 192u
 
 /** HMI 模块接口返回状态。 */
@@ -55,10 +58,10 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
                                      uint16_t *frame_size);
 
 /**
- * @brief 处理 HMI 发送完成、错误恢复和周期刷新。
+ * @brief 处理 HMI 上电清理和周期刷新。
  * @param 无。
  * @return 无。
- * @note 必须由主循环调用，不会阻塞 ADS8688 的 DMA 采集。
+ * @note 必须由主循环调用；轮询发送会短暂阻塞，刷新率固定为约 4 Hz。
  */
 void hmi_tjc_process(void);
 
@@ -67,9 +70,9 @@ void hmi_tjc_process(void);
 
 /**
  * @brief 绑定 CubeMX 生成的 UART 句柄。
- * @param huart 已配置为 9600 8N1 且启用 TX DMA 的 UART 句柄。
+ * @param huart 已配置为 9600 8N1 的 UART 句柄。
  * @return 无。
- * @note 只能在 UART 初始化完成后调用；重新绑定会重新发送串口屏清理帧。
+ * @note 只能在 UART 初始化完成后调用；不要求 DMA 或 UART 全局中断，重新绑定会重新发送串口屏清理帧。
  */
 void hmi_tjc_bind_uart(UART_HandleTypeDef *huart);
 #endif

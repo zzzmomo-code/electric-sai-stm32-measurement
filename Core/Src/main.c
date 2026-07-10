@@ -101,9 +101,6 @@ int main(void)
   MX_NVIC_Init();
   /* USER CODE BEGIN 2 */
   system_init();
-#if defined(HAL_UART_MODULE_ENABLED)
-  hmi_tjc_bind_uart(&huart1);
-#endif
 
   /* USER CODE END 2 */
 

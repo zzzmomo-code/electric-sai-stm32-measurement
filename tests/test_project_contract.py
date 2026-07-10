@@ -125,11 +125,7 @@ class ProjectContractTest(unittest.TestCase):
         )
         self.assertRegex(
             get_user_code_section(main, "2"),
-            (
-                r"^system_init\(\);\s*"
-                r"#if defined\(HAL_UART_MODULE_ENABLED\)\s*"
-                r"hmi_tjc_bind_uart\(\s*&huart1\s*\);\s*#endif$"
-            ),
+            r"^system_init\(\);$",
         )
         self.assertRegex(
             get_user_code_section(main, "3"),
@@ -153,6 +149,7 @@ class ProjectContractTest(unittest.TestCase):
             (
                 r"measurement_result_init\s*\(\s*\)\s*;[\s\S]*?"
                 r"hmi_tjc_init\s*\(\s*\)\s*;[\s\S]*?"
+                r"hmi_tjc_bind_uart\s*\(\s*&huart1\s*\);[\s\S]*?"
                 r"\(void\)\s*ads8688_init\s*\(\s*\)\s*;"
             ),
         )
@@ -256,7 +253,7 @@ class ProjectContractTest(unittest.TestCase):
 
         self.assertRegex(
             header,
-            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_REFRESH_MS[ \t]+100u[ \t]*$",
+            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_REFRESH_MS[ \t]+250u[ \t]*$",
         )
         self.assertRegex(
             header,
@@ -270,31 +267,26 @@ class ProjectContractTest(unittest.TestCase):
             source.count("frame[offset++] = HMI_TJC_TERMINATOR_BYTE;"),
             3,
         )
-        self.assertIn("HAL_UART_Transmit_DMA", source)
-        self.assertIn("HAL_UART_TxCpltCallback", source)
+        self.assertIn("HAL_UART_Transmit", source)
+        self.assertNotIn("HAL_UART_Transmit_DMA", source)
+        self.assertNotIn("HAL_UART_TxCpltCallback", source)
         self.assertIn("snprintf", source)
         self.assertNotIn("sprintf(", source)
 
-    def test_hmi_callbacks_only_mark_hmi_state(self):
-        """UART 回调不得格式化文本、读取 ADS 数据或重启传输。"""
+    def test_hmi_uses_polling_uart_without_dma_or_interrupt_callbacks(self):
+        """串口屏必须使用轮询发送，且不得定义 DMA 或 UART 中断回调。"""
         source = (user_dir / "hmi_tjc.c").read_text(encoding="utf-8")
 
-        for callback_name, flag_name in (
-            ("HAL_UART_TxCpltCallback", "hmi_tjc_tx_complete_flag"),
-            ("HAL_UART_ErrorCallback", "hmi_tjc_uart_error_flag"),
+        self.assertIn("HAL_UART_Transmit", source)
+        for forbidden in (
+            "HAL_UART_Transmit_DMA",
+            "HAL_UART_TxCpltCallback",
+            "HAL_UART_ErrorCallback",
+            "HAL_UART_AbortTransmit",
+            "SCB_CleanDCache",
         ):
-            with self.subTest(callback=callback_name):
-                body = get_function_body(source, callback_name)
-                self.assertIsNotNone(body)
-                self.assertRegex(body, rf"\b{flag_name}\s*=\s*1u\s*;")
-                for forbidden in (
-                    "snprintf",
-                    "HAL_UART_Transmit_DMA",
-                    "HAL_UART_AbortTransmit",
-                    "measurement_result",
-                    "ads8688",
-                ):
-                    self.assertNotIn(forbidden, body)
+            with self.subTest(forbidden=forbidden):
+                self.assertNotIn(forbidden, source)
 
     def test_hmi_page_document_exists(self):
         """HMI 页面工程必须有可交接的控件和串口配置说明。"""
@@ -319,7 +311,8 @@ class ProjectContractTest(unittest.TestCase):
             "PA10",
             "DMA1 Stream0",
             "DMA1 Stream1",
-            "DMA1 Stream2",
+            "不使用 USART1 DMA",
+            "不启用 USART1 global interrupt",
             "待硬件验证",
         ):
             with self.subTest(phrase=phrase):

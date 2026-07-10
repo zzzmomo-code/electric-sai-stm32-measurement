@@ -21,7 +21,7 @@
 
 ## 固件协议
 
-固件每约 100 ms 向 `main` 页面下发五条文本赋值指令。例如：
+固件每约 250 ms 向 `main` 页面下发五条文本赋值指令。例如：
 
     main.t_amp.txt="3.300 Vpp"
     main.t_freq.txt="12.345 kHz"
@@ -43,7 +43,7 @@
 | RX | PA10 | 预留接串口屏 TX，第一版不处理触摸输入 |
 | GND | 任一公共地 | 与屏幕 GND 共地 |
 
-SPI2/ADS8688 已占用 PB12-PB15、PD8、PD9，且 DMA1 Stream0、DMA1 Stream1 已被 SPI2 DMA 使用。CubeMX 为 USART1_TX 选择一个不冲突的空闲 DMA 通道，优先 `DMA1 Stream2`，模式 Normal、Memory to Peripheral、Byte/Byte、Memory Increment Enable，优先级 Low。启用 USART1 global interrupt。
+SPI2/ADS8688 已占用 PB12-PB15、PD8、PD9，且 DMA1 Stream0、DMA1 Stream1 已被 SPI2 DMA 使用。第一版串口屏明确不使用 USART1 DMA；保持 USART1 的 DMA Settings 为空，也不启用 USART1 global interrupt。固件使用主循环中的轮询发送。
 
 屏幕供电需要单独确认 5 V 供电能力和公共地；屏幕 TX 是否接入 PA10 留待触摸版本确认。两项均为待硬件验证。
 
@@ -52,4 +52,4 @@ SPI2/ADS8688 已占用 PB12-PB15、PD8、PD9，且 DMA1 Stream0、DMA1 Stream1 �
 1. 用 USART HMI 调试器确认页面为 `main`、控件名完全一致、`txt_maxl` 足够，并以 9600 验证上述命令。
 2. 在 CubeIDE 的 CubeMX 页面启用 USART1 Asynchronous，配置 9600、8 Bits、None、1 Stop Bit、No Flow Control，并生成代码。
 3. 烧录后确认屏幕先显示 `WAIT`。算法模块调用 `measurement_result_publish()` 后，屏幕应刷新为 `LIVE`。
-4. 上板检查 PA9 到屏幕 RX、公共地、SPI2 DMA 连续采集和约 10 Hz 的 HMI 刷新。ADC 精度和测量结果均为待硬件验证。
+4. 上板检查 PA9 到屏幕 RX、公共地、SPI2 DMA 连续采集和约 4 Hz 的 HMI 刷新。轮询发送每次会短暂阻塞主循环，需确认不会影响 SPI2 DMA 连续采集。ADC 精度和测量结果均为待硬件验证。
