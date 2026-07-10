@@ -82,6 +82,19 @@ def get_function_body(source, function_name):
     return None
 
 
+def get_user_code_section(source, section_name):
+    """提取 CubeMX USER CODE 区域正文，确保 main.c 只放置允许的用户调用。"""
+    pattern = (
+        rf"/\* USER CODE BEGIN {re.escape(section_name)} \*/"
+        rf"(?P<body>.*?)"
+        rf"/\* USER CODE END {re.escape(section_name)} \*/"
+    )
+    match = re.search(pattern, source, flags=re.DOTALL)
+    if match is None:
+        return None
+    return match.group("body").strip()
+
+
 class ProjectContractTest(unittest.TestCase):
     """验证 ADS8688 用户模块对外公开的头文件与接口契约。"""
 
@@ -93,6 +106,36 @@ class ProjectContractTest(unittest.TestCase):
                     (user_dir / header_name).is_file(),
                     f"缺少必需头文件 Core/User/{header_name}",
                 )
+
+    def test_main_c_uses_only_system_entry_points(self):
+        """main.c 的用户区只能包含统一头文件、初始化入口和功能处理调用。"""
+        main = (project_root / "Core" / "Src" / "main.c").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertEqual(
+            get_user_code_section(main, "Includes"),
+            '#include "system.h"',
+        )
+        self.assertEqual(get_user_code_section(main, "2"), "system_init();")
+        self.assertRegex(
+            get_user_code_section(main, "3"),
+            r"^ads8688_process\(\);\s*\}$",
+        )
+
+    def test_system_c_initializes_ads8688_through_unified_header(self):
+        """system.c 必须只包含 system.h，并通过 system_init() 启动 ADS8688。"""
+        source = (user_dir / "system.c").read_text(encoding="utf-8")
+        quoted_includes = re.findall(
+            r'^\s*#include\s+"([^"]+)"',
+            source,
+            re.MULTILINE,
+        )
+        body = get_function_body(source, "system_init")
+
+        self.assertEqual(quoted_includes, ["system.h"])
+        self.assertIsNotNone(body)
+        self.assertRegex(body, r"\(void\)\s*ads8688_init\s*\(\s*\)\s*;")
 
     def test_ads8688_public_apis_are_declared(self):
         """ads8688.h 必须声明全部公共 ADS8688 API。"""
