@@ -4,7 +4,7 @@
  *
  * 模块用途：低频读取测量结果快照，构建淘晶驰文本指令并通过 UART TX DMA 发送。
  * GPIO 引脚映射：无硬编码 GPIO；UART 引脚由 CubeMX 和 hmi_tjc_bind_uart() 决定。
- * 依赖的外设和 CubeIDE 配置：运行发送依赖 UART 115200 8N1、TX DMA 和 UART 中断。
+ * 依赖的外设和 CubeIDE 配置：运行发送依赖 UART 9600 8N1、TX DMA 和 UART 中断。
  * 初始化方法：系统启动调用 hmi_tjc_init()，CubeMX UART 初始化后绑定 UART 句柄。
  * 调用方法：主循环调用 hmi_tjc_process()，UART 回调只设置完成或错误标志。
  */
@@ -396,7 +396,7 @@ static hmi_tjc_status_t hmi_tjc_start_tx(uint16_t frame_size)
 
 /**
  * @brief 绑定 CubeMX 生成的 UART 句柄。
- * @param huart 已配置为 115200 8N1 且启用 TX DMA 的 UART 句柄。
+ * @param huart 已配置为 9600 8N1 且启用 TX DMA 的 UART 句柄。
  * @return 无。
  * @note 重新绑定会清空发送状态，并在下一次 process 中发送清理帧。
  */

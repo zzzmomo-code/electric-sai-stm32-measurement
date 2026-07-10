@@ -30,7 +30,7 @@ ADS8688 使用内部 4.096 V 基准，`DAISY` 接地，工作在非 daisy-chain 
 串口屏型号为 `TJC4827T143_011R_I_P20`，第一版显示幅度 Vpp、频率、相位、波类型和状态，不读取 ADS8688 DMA 缓冲区。测量算法只通过 `measurement_result_publish()` 发布结果；`hmi_tjc_process()` 在主循环末尾按约 10 Hz 刷新屏幕。
 
 - 选定 `USART1`：PA9 为 TX，接串口屏 RX；PA10 为 RX，预留给后续触摸控制。它们不与 ADS8688 的 PB12-PB15、PD8、PD9 冲突。
-- CubeMX 配置为 Asynchronous、115200、8N1、无校验、无流控；USART1_TX DMA 使用空闲的低优先级通道，不能复用 SPI2 的 DMA1 Stream0 或 DMA1 Stream1。
+- CubeMX 配置为 Asynchronous、9600、8N1、无校验、无流控；USART1_TX DMA 使用空闲的低优先级通道，不能复用 SPI2 的 DMA1 Stream0 或 DMA1 Stream1。
 - 每条文本命令均以原始 `FF FF FF` 结束。固件动态文本只发送 ASCII，避免运行时中文编码问题。
 - 页面控件和 USART HMI 制作步骤见 `hmi/README.md`。HMI 工程源文件完成后保存为 `hmi/ads8688_measure.HMI` 并提交。
 
@@ -140,7 +140,7 @@ git diff --check
 - 确认 NSS 高电平和总帧率接近约 393 kSPS。
 - 在双极性 ±10.24 V 量程下，将输入接地，原始码应接近 `0x8000`。
 - 检查自动循环扫描通道顺序、单通道采集标签和电压换算精度。
-- 确认 USART1 的 PA9 接屏幕 RX、屏幕与 MCU 共地，115200 下每条命令均以 `FF FF FF` 结束。
+- 确认 USART1 的 PA9 接屏幕 RX、屏幕与 MCU 共地，9600 下每条命令均以 `FF FF FF` 结束。
 - 算法尚未发布结果时确认 `t_status` 为 `WAIT`；发布有效结果后确认约 10 Hz 刷新为 `LIVE`。
 
 ## 已知限制

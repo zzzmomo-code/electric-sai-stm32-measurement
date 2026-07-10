@@ -202,7 +202,7 @@ class ProjectContractTest(unittest.TestCase):
             "USART1",
             "PA9",
             "PA10",
-            "115200",
+            "9600",
             "measurement_result_publish",
             "hmi_tjc_process",
         )
@@ -305,7 +305,7 @@ class ProjectContractTest(unittest.TestCase):
         for phrase in (
             "TJC4827T143_011R_I_P20",
             "480 x 272",
-            "115200",
+            "9600",
             "vscope",
             "txt_maxl",
             "t_amp",

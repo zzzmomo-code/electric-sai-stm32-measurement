@@ -5,7 +5,7 @@
 ## USART HMI 页面
 
 1. 新建分辨率为 480 x 272 的工程，建立页面 `main`。
-2. 在项目串口设置中选择 `115200`、8N1、无校验、无硬件流控。
+2. 在项目串口设置中选择 `9600`、8N1、无校验、无硬件流控。
 3. 在 `main` 中建立下面五个 Text 控件。每个控件的 `vscope` 设为 global，动态内容只使用 ASCII。
 4. 将工程保存为 `hmi/ads8688_measure.HMI`，并将对应的编译产物按需要保留在本目录。
 
@@ -49,7 +49,7 @@ SPI2/ADS8688 已占用 PB12-PB15、PD8、PD9，且 DMA1 Stream0、DMA1 Stream1 �
 
 ## 联调顺序
 
-1. 用 USART HMI 调试器确认页面为 `main`、控件名完全一致、`txt_maxl` 足够，并以 115200 验证上述命令。
-2. 在 CubeIDE 的 CubeMX 页面启用 USART1 Asynchronous，配置 115200、8 Bits、None、1 Stop Bit、No Flow Control，并生成代码。
+1. 用 USART HMI 调试器确认页面为 `main`、控件名完全一致、`txt_maxl` 足够，并以 9600 验证上述命令。
+2. 在 CubeIDE 的 CubeMX 页面启用 USART1 Asynchronous，配置 9600、8 Bits、None、1 Stop Bit、No Flow Control，并生成代码。
 3. 烧录后确认屏幕先显示 `WAIT`。算法模块调用 `measurement_result_publish()` 后，屏幕应刷新为 `LIVE`。
 4. 上板检查 PA9 到屏幕 RX、公共地、SPI2 DMA 连续采集和约 10 Hz 的 HMI 刷新。ADC 精度和测量结果均为待硬件验证。

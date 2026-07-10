@@ -67,7 +67,7 @@ void hmi_tjc_process(void);
 
 /**
  * @brief 绑定 CubeMX 生成的 UART 句柄。
- * @param huart 已配置为 115200 8N1 且启用 TX DMA 的 UART 句柄。
+ * @param huart 已配置为 9600 8N1 且启用 TX DMA 的 UART 句柄。
  * @return 无。
  * @note 只能在 UART 初始化完成后调用；重新绑定会重新发送串口屏清理帧。
  */
