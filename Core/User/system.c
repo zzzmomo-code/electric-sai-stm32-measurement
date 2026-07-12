@@ -15,7 +15,7 @@
  * 串口屏硬件联调开关：1 为发布固定自检结果，0 为等待真实测量算法结果。
  * 完成 PA9 到串口屏 RX 的实屏验证后，改为 0 并重新烧录。
  */
-#define HMI_TJC_SELF_TEST_ENABLE 1u
+#define HMI_TJC_SELF_TEST_ENABLE 0u
 
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
 /**
