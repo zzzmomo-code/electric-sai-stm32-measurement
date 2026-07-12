@@ -12,6 +12,33 @@
 #include "system.h"
 
 /**
+ * 串口屏硬件联调开关：1 为发布固定自检结果，0 为等待真实测量算法结果。
+ * 完成 PA9 到串口屏 RX 的实屏验证后，改为 0 并重新烧录。
+ */
+#define HMI_TJC_SELF_TEST_ENABLE 1u
+
+#if (HMI_TJC_SELF_TEST_ENABLE != 0u)
+/**
+ * @brief 发布用于验证串口屏通信的固定测量结果。
+ * @param 无。
+ * @return 无。
+ * @note 仅用于 HMI 联调，不读取或修改 ADS8688 DMA 数据；关闭开关后该函数不会参与编译。
+ */
+static void hmi_tjc_publish_self_test(void)
+{
+    measurement_result_t result;
+
+    result.amplitude_vpp = 3.300f;
+    result.frequency_hz = 12345.0f;
+    result.phase_deg = -90.0f;
+    result.wave_type = MEASUREMENT_WAVE_SINE;
+    result.valid = 1u;
+    result.sequence = 1u;
+    measurement_result_publish(&result);
+}
+#endif
+
+/**
  * @brief 初始化全部用户功能模块。
  * @param 无。
  * @return 无。
@@ -23,6 +50,9 @@ void system_init(void)
     hmi_tjc_init();
 #if defined(SYSTEM_USART1_AVAILABLE)
     hmi_tjc_bind_uart(&huart1);
+#endif
+#if (HMI_TJC_SELF_TEST_ENABLE != 0u)
+    hmi_tjc_publish_self_test();
 #endif
     (void)ads8688_init();
 }
