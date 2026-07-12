@@ -18,7 +18,7 @@
 #define HMI_TJC_SELF_TEST_ENABLE 0u
 
 /* AIN0 硬件联调开关：1 表示 DMA 仅采集 AIN0，便于核对已接入的 5 V；0 恢复八通道自动扫描。 */
-#define ADS8688_AIN0_TEST_ENABLE 1u
+#define ADS8688_AIN0_TEST_ENABLE 0u
 
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
 /**
