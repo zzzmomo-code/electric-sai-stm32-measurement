@@ -595,6 +595,9 @@ static void ads8688_process_dma_half(uint8_t half_index)
             (uint16_t)(ads8688_dma_rx[index] & 0xffffu),
             ads8688_channel_ranges[ads8688_current_channel],
             ads8688_sample_index);
+        measurement_fft_ingest_sample(
+            ads8688_current_channel,
+            (uint16_t)(ads8688_dma_rx[index] & 0xffffu));
         ads8688_sample_index++;
         ads8688_advance_channel();
     }

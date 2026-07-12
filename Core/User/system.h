@@ -19,7 +19,7 @@
 #include "ads8688_storage.h"
 #include "measurement_result.h"
 #include "hmi_tjc.h"
-#include "fft_probe.h"
+#include "measurement_fft.h"
 
 /* USART1 由 CubeMX 生成后，统一头文件自动纳入其句柄声明。 */
 #if defined(__has_include)

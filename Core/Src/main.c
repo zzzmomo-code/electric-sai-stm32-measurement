@@ -114,7 +114,11 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     ads8688_process();
-    hmi_tjc_process();
+    measurement_fft_process();
+    if (measurement_fft_hmi_refresh_allowed() != 0u)
+    {
+      hmi_tjc_process();
+    }
   }
   /* USER CODE END 3 */
 }

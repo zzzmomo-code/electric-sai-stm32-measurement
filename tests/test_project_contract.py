@@ -104,6 +104,7 @@ class ProjectContractTest(unittest.TestCase):
             "ads8688.h",
             "ads8688_storage.h",
             "measurement_result.h",
+            "measurement_fft.h",
             "hmi_tjc.h",
             "system.h",
         ):
@@ -129,7 +130,12 @@ class ProjectContractTest(unittest.TestCase):
         )
         self.assertRegex(
             get_user_code_section(main, "3"),
-            r"^ads8688_process\(\);\s*hmi_tjc_process\(\);\s*\}$",
+            (
+                r"^ads8688_process\(\);\s*"
+                r"measurement_fft_process\(\);\s*"
+                r"if\s*\(\s*measurement_fft_hmi_refresh_allowed\(\)\s*!=\s*0u\s*\)\s*"
+                r"\{\s*hmi_tjc_process\(\);\s*\}\s*\}$"
+            ),
         )
 
     def test_system_c_initializes_ads8688_through_unified_header(self):

@@ -50,7 +50,7 @@ static void hmi_tjc_publish_self_test(void)
 void system_init(void)
 {
     measurement_result_init();
-    fft_probe_init();
+    measurement_fft_init();
     hmi_tjc_init();
 #if defined(SYSTEM_USART1_AVAILABLE)
     hmi_tjc_bind_uart(&huart1);
