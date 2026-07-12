@@ -19,7 +19,8 @@
 #define ADS8688_REGISTER_FEATURE_SELECT   0x03u
 #define ADS8688_REGISTER_RANGE_CH0        0x05u
 #define ADS8688_REGISTER_RANGE_CH7        0x0cu
-#define ADS8688_DEFAULT_CHANNEL_MASK      0xffu
+/* 默认仅扫描 AIN0 与 AIN1，为双通道频率和相位测量保留采样率。 */
+#define ADS8688_DEFAULT_CHANNEL_MASK      0x03u
 #define ADS8688_INITIALIZATION_RETRIES    3u
 #define ADS8688_SPI_TIMEOUT_MS            10u
 #define ADS8688_DMA_WORD_COUNT            1024u
@@ -40,7 +41,7 @@ static uint8_t ads8688_initialized;
 /** 当前采集模式，初始化成功后默认为自动扫描。 */
 static ads8688_mode_t ads8688_mode;
 
-/** 自动扫描通道掩码，初始化成功后启用全部八个通道。 */
+/** 自动扫描通道掩码，初始化成功后默认启用 AIN0 与 AIN1。 */
 static uint8_t ads8688_channel_mask;
 
 /** 当前待处理通道号，初始化成功后从通道零开始。 */
