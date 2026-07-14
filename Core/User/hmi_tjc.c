@@ -2,11 +2,11 @@
  * @file hmi_tjc.c
  * @brief 淘晶驰串口屏显示模块实现。
  *
- * 模块用途：低频读取测量结果快照，构建淘晶驰文本指令并通过 UART 轮询发送。
+ * 模块用途：读取测量结果快照，构建淘晶驰文本和频谱指令，并通过 UART 轮询发送基础页面。
  * GPIO 引脚映射：无硬编码 GPIO；UART 引脚由 CubeMX 和 hmi_tjc_bind_uart() 决定。
  * 依赖的外设和 CubeIDE 配置：运行发送依赖 UART 9600 8N1；不使用 TX DMA 或 UART 中断。
  * 初始化方法：系统启动调用 hmi_tjc_init()，CubeMX UART 初始化后绑定 UART 句柄。
- * 调用方法：主循环调用 hmi_tjc_process()；发送在主循环中完成。
+ * 调用方法：主循环调用 hmi_tjc_process()；扩展控件准备完成后可调用详细指标和频谱构帧接口。
  */
 
 #include "system.h"
@@ -23,7 +23,10 @@
 /** 动态数值字段的固定显示格式。 */
 typedef enum
 {
+    HMI_TJC_VALUE_FORMAT_DC,
     HMI_TJC_VALUE_FORMAT_AMPLITUDE,
+    HMI_TJC_VALUE_FORMAT_RMS,
+    HMI_TJC_VALUE_FORMAT_THD,
     HMI_TJC_VALUE_FORMAT_FREQUENCY_HZ,
     HMI_TJC_VALUE_FORMAT_FREQUENCY_KHZ,
     HMI_TJC_VALUE_FORMAT_PHASE
@@ -58,26 +61,56 @@ static const char *hmi_tjc_wave_type_text(measurement_wave_type_t wave_type)
  * @brief 判断测量快照是否可安全显示。
  * @param result 待检查的结果指针。
  * @return 可显示返回 1，否则返回 0。
- * @note 无效、非有限浮点数、负幅度或负频率均显示为 FAULT。
+ * @note 只检查 valid_mask 声明为有效的字段，允许单通道结果把相位显示为 --。
  */
 static uint8_t hmi_tjc_result_is_displayable(const measurement_result_t *result)
 {
-    if ((result == 0) || (result->valid == 0u))
+    if ((result == 0) || (result->valid_mask == 0u))
     {
         return 0u;
     }
 
-    if ((!isfinite(result->amplitude_vpp))
-        || (!isfinite(result->frequency_hz))
-        || (!isfinite(result->phase_deg))
-        || (result->amplitude_vpp < 0.0f)
-        || (result->frequency_hz < 0.0f))
+    if (((result->valid_mask & MEASUREMENT_VALID_DC_VOLTAGE) != 0u)
+        && (!isfinite(result->dc_voltage)))
+    {
+        return 0u;
+    }
+    if (((result->valid_mask & MEASUREMENT_VALID_AMPLITUDE) != 0u)
+        && ((!isfinite(result->amplitude_vpp))
+            || (result->amplitude_vpp < 0.0f)))
+    {
+        return 0u;
+    }
+    if (((result->valid_mask & MEASUREMENT_VALID_FREQUENCY) != 0u)
+        && ((!isfinite(result->frequency_hz))
+            || (result->frequency_hz < 0.0f)))
+    {
+        return 0u;
+    }
+    if (((result->valid_mask & MEASUREMENT_VALID_PHASE) != 0u)
+        && (!isfinite(result->phase_deg)))
+    {
+        return 0u;
+    }
+    if (((result->valid_mask & MEASUREMENT_VALID_RMS) != 0u)
+        && ((!isfinite(result->rms_voltage))
+            || (result->rms_voltage < 0.0f)))
+    {
+        return 0u;
+    }
+    if (((result->valid_mask & MEASUREMENT_VALID_THD) != 0u)
+        && ((!isfinite(result->thd_percent))
+            || (result->thd_percent < 0.0f)))
     {
         return 0u;
     }
 
     return 1u;
 }
+
+static hmi_tjc_status_t hmi_tjc_append_terminator(uint8_t *frame,
+                                                   uint16_t frame_capacity,
+                                                   uint16_t *frame_size);
 
 /**
  * @brief 格式化一个动态文本字段并确认结果未被截断。
@@ -102,8 +135,20 @@ static uint8_t hmi_tjc_format_value(char *text,
 
     switch (value_format)
     {
+        case HMI_TJC_VALUE_FORMAT_DC:
+            text_length = snprintf(text, text_capacity, "%.3f Vdc", value);
+            break;
+
         case HMI_TJC_VALUE_FORMAT_AMPLITUDE:
             text_length = snprintf(text, text_capacity, "%.3f Vpp", value);
+            break;
+
+        case HMI_TJC_VALUE_FORMAT_RMS:
+            text_length = snprintf(text, text_capacity, "%.3f Vrms", value);
+            break;
+
+        case HMI_TJC_VALUE_FORMAT_THD:
+            text_length = snprintf(text, text_capacity, "%.2f %%", value);
             break;
 
         case HMI_TJC_VALUE_FORMAT_FREQUENCY_HZ:
@@ -175,17 +220,8 @@ static hmi_tjc_status_t hmi_tjc_append_text_command(
         return HMI_TJC_STATUS_BUFFER_TOO_SMALL;
     }
 
-    offset = (uint16_t)(offset + (uint16_t)command_length);
-    if ((uint16_t)(frame_capacity - offset) < 3u)
-    {
-        return HMI_TJC_STATUS_BUFFER_TOO_SMALL;
-    }
-
-    frame[offset++] = HMI_TJC_TERMINATOR_BYTE;
-    frame[offset++] = HMI_TJC_TERMINATOR_BYTE;
-    frame[offset++] = HMI_TJC_TERMINATOR_BYTE;
-    *frame_size = offset;
-    return HMI_TJC_STATUS_OK;
+    *frame_size = (uint16_t)(offset + (uint16_t)command_length);
+    return hmi_tjc_append_terminator(frame, frame_capacity, frame_size);
 }
 
 /**
@@ -216,7 +252,7 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
     }
 
     displayable = hmi_tjc_result_is_displayable(result);
-    if (result->valid == 0u)
+    if (result->valid_mask == 0u)
     {
         (void)snprintf(amplitude_text, sizeof(amplitude_text), "--");
         (void)snprintf(frequency_text, sizeof(frequency_text), "--");
@@ -232,13 +268,38 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
         wave_text = "UNKNOWN";
         status_text = "FAULT";
     }
-    else
+    else if ((result->mode == MEASUREMENT_MODE_DC)
+             && ((result->valid_mask & MEASUREMENT_VALID_DC_VOLTAGE) != 0u))
     {
         displayable = hmi_tjc_format_value(amplitude_text,
                                            sizeof(amplitude_text),
-                                           HMI_TJC_VALUE_FORMAT_AMPLITUDE,
-                                           (double)result->amplitude_vpp);
-        if (result->frequency_hz < 1000.0f)
+                                           HMI_TJC_VALUE_FORMAT_DC,
+                                           (double)result->dc_voltage);
+        (void)snprintf(frequency_text, sizeof(frequency_text), "--");
+        (void)snprintf(phase_text, sizeof(phase_text), "--");
+        wave_text = "DC";
+        status_text = (displayable != 0u) ? "LIVE" : "FAULT";
+    }
+    else
+    {
+        if ((result->valid_mask & MEASUREMENT_VALID_AMPLITUDE) != 0u)
+        {
+            displayable = hmi_tjc_format_value(
+                amplitude_text,
+                sizeof(amplitude_text),
+                HMI_TJC_VALUE_FORMAT_AMPLITUDE,
+                (double)result->amplitude_vpp);
+        }
+        else
+        {
+            (void)snprintf(amplitude_text, sizeof(amplitude_text), "--");
+        }
+
+        if ((result->valid_mask & MEASUREMENT_VALID_FREQUENCY) == 0u)
+        {
+            (void)snprintf(frequency_text, sizeof(frequency_text), "--");
+        }
+        else if (result->frequency_hz < 1000.0f)
         {
              displayable &= hmi_tjc_format_value(frequency_text,
                                                  sizeof(frequency_text),
@@ -253,10 +314,17 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
                 HMI_TJC_VALUE_FORMAT_FREQUENCY_KHZ,
                  (double)(result->frequency_hz / 1000.0f));
         }
-        displayable &= hmi_tjc_format_value(phase_text,
-                                             sizeof(phase_text),
-                                             HMI_TJC_VALUE_FORMAT_PHASE,
-                                             (double)result->phase_deg);
+        if ((result->valid_mask & MEASUREMENT_VALID_PHASE) != 0u)
+        {
+            displayable &= hmi_tjc_format_value(phase_text,
+                                                 sizeof(phase_text),
+                                                 HMI_TJC_VALUE_FORMAT_PHASE,
+                                                 (double)result->phase_deg);
+        }
+        else
+        {
+            (void)snprintf(phase_text, sizeof(phase_text), "--");
+        }
 
         if (displayable == 0u)
         {
@@ -268,7 +336,10 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
         }
         else
         {
-            wave_text = hmi_tjc_wave_type_text(result->wave_type);
+            wave_text =
+                ((result->valid_mask & MEASUREMENT_VALID_WAVE_TYPE) != 0u)
+                    ? hmi_tjc_wave_type_text(result->wave_type)
+                    : "UNKNOWN";
             status_text = "LIVE";
         }
     }
@@ -321,6 +392,256 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
                                        status_text);
 }
 
+/**
+ * @brief 向帧尾追加三个淘晶驰命令结束字节。
+ * @param frame UART 数据帧缓冲区。
+ * @param frame_capacity 缓冲区总容量。
+ * @param frame_size 当前帧长度及追加后的帧长度。
+ * @return 追加结果状态。
+ * @note 统一由文本、曲线清空和曲线加点命令复用。
+ */
+static hmi_tjc_status_t hmi_tjc_append_terminator(uint8_t *frame,
+                                                   uint16_t frame_capacity,
+                                                   uint16_t *frame_size)
+{
+    uint16_t offset;
+
+    if ((frame == 0) || (frame_size == 0))
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+    offset = *frame_size;
+    if ((offset > frame_capacity)
+        || ((uint16_t)(frame_capacity - offset) < 3u))
+    {
+        return HMI_TJC_STATUS_BUFFER_TOO_SMALL;
+    }
+
+    frame[offset++] = HMI_TJC_TERMINATOR_BYTE;
+    frame[offset++] = HMI_TJC_TERMINATOR_BYTE;
+    frame[offset++] = HMI_TJC_TERMINATOR_BYTE;
+    *frame_size = offset;
+    return HMI_TJC_STATUS_OK;
+}
+
+/**
+ * @brief 构建 DC、RMS 和 THD 三个扩展文本控件的指令帧。
+ * @param result 待显示的测量结果快照。
+ * @param frame 用于接收 UART 数据的缓冲区。
+ * @param frame_capacity 缓冲区容量，单位为字节。
+ * @param frame_size 用于接收实际帧长度的指针。
+ * @return 帧构建结果状态。
+ * @note HMI 页面尚未增加对应控件时只构帧、不在主循环自动发送。
+ */
+hmi_tjc_status_t hmi_tjc_build_detail_frame(
+    const measurement_result_t *result,
+    uint8_t *frame,
+    uint16_t frame_capacity,
+    uint16_t *frame_size)
+{
+    char dc_text[HMI_TJC_TEXT_VALUE_SIZE] = "--";
+    char rms_text[HMI_TJC_TEXT_VALUE_SIZE] = "--";
+    char thd_text[HMI_TJC_TEXT_VALUE_SIZE] = "--";
+    hmi_tjc_status_t status;
+
+    if ((result == 0) || (frame == 0) || (frame_size == 0))
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+    if ((result->valid_mask != 0u)
+        && (hmi_tjc_result_is_displayable(result) == 0u))
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+
+    if (((result->valid_mask & MEASUREMENT_VALID_DC_VOLTAGE) != 0u)
+        && (hmi_tjc_format_value(dc_text,
+                                 sizeof(dc_text),
+                                 HMI_TJC_VALUE_FORMAT_DC,
+                                 (double)result->dc_voltage) == 0u))
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+    if (((result->valid_mask & MEASUREMENT_VALID_RMS) != 0u)
+        && (hmi_tjc_format_value(rms_text,
+                                 sizeof(rms_text),
+                                 HMI_TJC_VALUE_FORMAT_RMS,
+                                 (double)result->rms_voltage) == 0u))
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+    if (((result->valid_mask & MEASUREMENT_VALID_THD) != 0u)
+        && (hmi_tjc_format_value(thd_text,
+                                 sizeof(thd_text),
+                                 HMI_TJC_VALUE_FORMAT_THD,
+                                 (double)result->thd_percent) == 0u))
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+
+    *frame_size = 0u;
+    status = hmi_tjc_append_text_command(frame,
+                                         frame_capacity,
+                                         frame_size,
+                                         "t_dc",
+                                         dc_text);
+    if (status != HMI_TJC_STATUS_OK)
+    {
+        return status;
+    }
+    status = hmi_tjc_append_text_command(frame,
+                                         frame_capacity,
+                                         frame_size,
+                                         "t_rms",
+                                         rms_text);
+    if (status != HMI_TJC_STATUS_OK)
+    {
+        return status;
+    }
+    return hmi_tjc_append_text_command(frame,
+                                       frame_capacity,
+                                       frame_size,
+                                       "t_thd",
+                                       thd_text);
+}
+
+/**
+ * @brief 向帧中追加一条曲线清空或加点命令。
+ * @param frame UART 数据帧缓冲区。
+ * @param frame_capacity 缓冲区总容量。
+ * @param frame_size 当前帧长度及追加后的帧长度。
+ * @param component_id 曲线控件数字 ID。
+ * @param channel 曲线通道号。
+ * @param value 负数表示清空，0 至 255 表示加入一个曲线点。
+ * @return 追加结果状态。
+ */
+static hmi_tjc_status_t hmi_tjc_append_curve_command(
+    uint8_t *frame,
+    uint16_t frame_capacity,
+    uint16_t *frame_size,
+    uint8_t component_id,
+    uint8_t channel,
+    int16_t value)
+{
+    int command_length;
+    uint16_t remaining;
+
+    if ((frame == 0) || (frame_size == 0))
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+    if (*frame_size >= frame_capacity)
+    {
+        return HMI_TJC_STATUS_BUFFER_TOO_SMALL;
+    }
+    if (value > 255)
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+
+    remaining = (uint16_t)(frame_capacity - *frame_size);
+    if (value < 0)
+    {
+        command_length = snprintf((char *)&frame[*frame_size],
+                                  remaining,
+                                  "cle %u,%u",
+                                  (unsigned int)component_id,
+                                  (unsigned int)channel);
+    }
+    else
+    {
+        command_length = snprintf((char *)&frame[*frame_size],
+                                  remaining,
+                                  "add %u,%u,%u",
+                                  (unsigned int)component_id,
+                                  (unsigned int)channel,
+                                  (unsigned int)value);
+    }
+    if ((command_length < 0)
+        || ((uint32_t)command_length >= (uint32_t)remaining))
+    {
+        return HMI_TJC_STATUS_BUFFER_TOO_SMALL;
+    }
+
+    *frame_size = (uint16_t)(*frame_size + (uint16_t)command_length);
+    return hmi_tjc_append_terminator(frame, frame_capacity, frame_size);
+}
+
+/**
+ * @brief 构建清空并重绘 64 点频谱曲线的淘晶驰指令帧。
+ * @param spectrum 待显示的 0 至 20 kHz 相对 dB 频谱。
+ * @param component_id USART HMI 中曲线控件的实际数字 ID。
+ * @param channel 曲线通道号，范围为 0 至 3。
+ * @param frame 用于接收 UART 数据的缓冲区。
+ * @param frame_capacity 缓冲区容量，单位为字节。
+ * @param frame_size 用于接收实际帧长度的指针。
+ * @return 帧构建结果状态。
+ * @note 普通 add 命令不依赖屏幕回传；当前 9600 波特率下应低频触发。
+ */
+hmi_tjc_status_t hmi_tjc_build_spectrum_frame(
+    const measurement_fft_spectrum_t *spectrum,
+    uint8_t component_id,
+    uint8_t channel,
+    uint8_t *frame,
+    uint16_t frame_capacity,
+    uint16_t *frame_size)
+{
+    hmi_tjc_status_t status;
+    uint32_t index;
+
+    if ((spectrum == 0) || (frame == 0) || (frame_size == 0)
+        || (spectrum->valid == 0u)
+        || (component_id == HMI_TJC_SPECTRUM_COMPONENT_DISABLED)
+        || (channel > 3u))
+    {
+        return HMI_TJC_STATUS_INVALID_ARGUMENT;
+    }
+
+    *frame_size = 0u;
+    status = hmi_tjc_append_curve_command(frame,
+                                          frame_capacity,
+                                          frame_size,
+                                          component_id,
+                                          channel,
+                                          -1);
+    if (status != HMI_TJC_STATUS_OK)
+    {
+        return status;
+    }
+
+    for (index = 0u; index < MEASUREMENT_FFT_SPECTRUM_POINT_COUNT; index++)
+    {
+        int32_t db_x10 = spectrum->relative_db_x10[index];
+        int32_t curve_value;
+
+        if (db_x10 < MEASUREMENT_FFT_SPECTRUM_FLOOR_DB_X10)
+        {
+            db_x10 = MEASUREMENT_FFT_SPECTRUM_FLOOR_DB_X10;
+        }
+        else if (db_x10 > 0)
+        {
+            db_x10 = 0;
+        }
+        curve_value = ((db_x10 - MEASUREMENT_FFT_SPECTRUM_FLOOR_DB_X10)
+                       * 255 + 400) / 800;
+        status = hmi_tjc_append_curve_command(frame,
+                                              frame_capacity,
+                                              frame_size,
+                                              component_id,
+                                              channel,
+                                              (int16_t)curve_value);
+        if (status != HMI_TJC_STATUS_OK)
+        {
+            return status;
+        }
+    }
+
+    return HMI_TJC_STATUS_OK;
+}
+
+/** 串口屏帧构建与 UART 轮询发送累计诊断。 */
+static hmi_tjc_diagnostics_t hmi_tjc_diagnostics;
+
 #if defined(HAL_UART_MODULE_ENABLED)
 
 /** 绑定的 CubeMX UART 句柄。 */
@@ -345,21 +666,29 @@ static hmi_tjc_status_t hmi_tjc_send_frame(uint16_t frame_size)
 {
     if (hmi_tjc_uart == 0)
     {
+        hmi_tjc_diagnostics.last_status = HMI_TJC_STATUS_UART_UNAVAILABLE;
         return HMI_TJC_STATUS_UART_UNAVAILABLE;
     }
     if ((frame_size == 0u) || (frame_size > HMI_TJC_TX_BUFFER_SIZE))
     {
+        hmi_tjc_diagnostics.last_status = HMI_TJC_STATUS_INVALID_ARGUMENT;
         return HMI_TJC_STATUS_INVALID_ARGUMENT;
     }
 
+    hmi_tjc_diagnostics.transmit_attempts++;
+    hmi_tjc_diagnostics.last_frame_size = frame_size;
     if (HAL_UART_Transmit(hmi_tjc_uart,
                           hmi_tjc_tx_buffer,
                           frame_size,
                           HMI_TJC_TX_TIMEOUT_MS) != HAL_OK)
     {
+        hmi_tjc_diagnostics.transmit_failures++;
+        hmi_tjc_diagnostics.last_status = HMI_TJC_STATUS_HAL_ERROR;
         return HMI_TJC_STATUS_HAL_ERROR;
     }
 
+    hmi_tjc_diagnostics.transmit_successes++;
+    hmi_tjc_diagnostics.last_status = HMI_TJC_STATUS_OK;
     return HMI_TJC_STATUS_OK;
 }
 
@@ -386,6 +715,12 @@ void hmi_tjc_bind_uart(UART_HandleTypeDef *huart)
  */
 void hmi_tjc_init(void)
 {
+    hmi_tjc_diagnostics.transmit_attempts = 0u;
+    hmi_tjc_diagnostics.transmit_successes = 0u;
+    hmi_tjc_diagnostics.transmit_failures = 0u;
+    hmi_tjc_diagnostics.build_failures = 0u;
+    hmi_tjc_diagnostics.last_frame_size = 0u;
+    hmi_tjc_diagnostics.last_status = HMI_TJC_STATUS_UART_UNAVAILABLE;
 #if defined(HAL_UART_MODULE_ENABLED)
     hmi_tjc_uart = 0;
     hmi_tjc_flush_pending = 1u;
@@ -440,9 +775,28 @@ void hmi_tjc_process(void)
                                  &frame_size);
     if (status != HMI_TJC_STATUS_OK)
     {
+        hmi_tjc_diagnostics.build_failures++;
+        hmi_tjc_diagnostics.last_status = status;
         return;
     }
 
     (void)hmi_tjc_send_frame(frame_size);
 #endif
+}
+
+/**
+ * @brief 读取串口屏模块累计诊断数据。
+ * @param diagnostics 用于接收诊断快照的指针。
+ * @return 指针有效时返回 1，否则返回 0。
+ * @note 只复制主循环维护的状态，不访问 UART 硬件。
+ */
+uint8_t hmi_tjc_get_diagnostics(hmi_tjc_diagnostics_t *diagnostics)
+{
+    if (diagnostics == 0)
+    {
+        return 0u;
+    }
+
+    *diagnostics = hmi_tjc_diagnostics;
+    return 1u;
 }

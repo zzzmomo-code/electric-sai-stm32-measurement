@@ -25,10 +25,15 @@ static uint8_t measurement_result_available;
  */
 void measurement_result_init(void)
 {
+    measurement_result_latest.dc_voltage = 0.0f;
     measurement_result_latest.amplitude_vpp = 0.0f;
+    measurement_result_latest.rms_voltage = 0.0f;
     measurement_result_latest.frequency_hz = 0.0f;
+    measurement_result_latest.thd_percent = 0.0f;
     measurement_result_latest.phase_deg = 0.0f;
     measurement_result_latest.wave_type = MEASUREMENT_WAVE_UNKNOWN;
+    measurement_result_latest.mode = MEASUREMENT_MODE_UNKNOWN;
+    measurement_result_latest.valid_mask = 0u;
     measurement_result_latest.valid = 0u;
     measurement_result_latest.sequence = 0u;
     measurement_result_available = 0u;

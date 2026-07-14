@@ -932,6 +932,29 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
 }
 
 /**
+ * @brief 读取指定通道当前使用的输入量程。
+ * @param channel 待读取通道号。
+ * @param range 用于接收当前量程的指针。
+ * @return 成功返回 ADS8688_STATUS_OK；参数无效或模块未初始化时返回对应错误状态。
+ * @note 只读取软件保存的已生效量程，不发起 SPI 传输。
+ */
+ads8688_status_t ads8688_get_channel_range(uint8_t channel,
+                                            ads8688_range_t *range)
+{
+    if ((channel >= ADS8688_CHANNEL_COUNT) || (range == 0))
+    {
+        return ADS8688_STATUS_INVALID_ARGUMENT;
+    }
+    if (ads8688_initialized == 0u)
+    {
+        return ADS8688_STATUS_NOT_INITIALIZED;
+    }
+
+    *range = ads8688_channel_ranges[channel];
+    return ADS8688_STATUS_OK;
+}
+
+/**
  * @brief 读取指定通道的最新采样值。
  * @param channel 待读取通道号。
  * @param latest 用于接收结果的结构体指针。

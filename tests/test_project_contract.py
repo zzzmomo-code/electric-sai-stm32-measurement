@@ -177,7 +177,7 @@ class ProjectContractTest(unittest.TestCase):
                     self.assertIn(phrase, text)
 
     def test_readme_documents_ads8688_integration(self):
-        """README 必须说明硬件连接、CubeIDE 配置、使用方法和未上板验证项。"""
+        """README 必须说明当前硬件、算法、构建结果和待上板验证项。"""
         readme = (project_root / "README.md").read_text(encoding="utf-8")
         required_phrases = (
             "STM32H750VBT6",
@@ -188,19 +188,16 @@ class ProjectContractTest(unittest.TestCase):
             "PB15",
             "PD8",
             "PD9",
-            "自动循环扫描",
-            "单通道采集",
+            "自动循环采集",
+            "0x03",
             "内部 4.096 V 基准",
             "16.125 MHz",
-            "约 393 kSPS",
             "4096",
-            "200 kSPS",
+            "196.646 kSPS",
             "编译",
             "烧录",
-            "运行",
             "验证",
-            "已知限制",
-            "尚未完成实板验证",
+            "待硬件验证",
             "TJC4827T143_011R_I_P20",
             "USART1",
             "PA9",
@@ -226,10 +223,15 @@ class ProjectContractTest(unittest.TestCase):
         self.assertIsNotNone(result_match, "缺少 measurement_result_t")
         result_body = result_match.group("body")
         required_fields = {
+            "dc_voltage": "float",
             "amplitude_vpp": "float",
+            "rms_voltage": "float",
             "frequency_hz": "float",
+            "thd_percent": "float",
             "phase_deg": "float",
             "wave_type": "measurement_wave_type_t",
+            "mode": "measurement_mode_t",
+            "valid_mask": "uint16_t",
             "valid": "uint8_t",
             "sequence": "uint32_t",
         }
@@ -321,7 +323,7 @@ class ProjectContractTest(unittest.TestCase):
             "DMA1 Stream1",
             "不使用 USART1 DMA",
             "不启用 USART1 global interrupt",
-            "待硬件验证",
+            "实屏",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, hmi_readme)

@@ -27,37 +27,52 @@ static uint32_t ads8688_history_count;
 static uint32_t ads8688_history_overwrite_count;
 
 /**
- * @brief 将 ADS8688 直二进制原始码换算为电压。
+ * @brief 按指定量程将 ADS8688 直二进制原始码换算为电压。
  * @param raw_code ADC 原始码。
  * @param range 输入量程。
- * @return 对应量程下的电压值；未知量程返回 0.0 V。
- * @note 无副作用。
+ * @param voltage 用于接收换算电压的指针，单位为伏。
+ * @return 换算成功返回 ADS8688_STATUS_OK，参数或量程无效时返回 ADS8688_STATUS_INVALID_ARGUMENT。
+ * @note 纯计算接口，无硬件访问和内部状态副作用。
  */
-static float ads8688_storage_convert_voltage(uint16_t raw_code,
-                                             ads8688_range_t range)
+ads8688_status_t ads8688_convert_raw_to_voltage(uint16_t raw_code,
+                                                 ads8688_range_t range,
+                                                 float *voltage)
 {
     float raw_value = (float)raw_code;
+
+    if (voltage == 0)
+    {
+        return ADS8688_STATUS_INVALID_ARGUMENT;
+    }
 
     switch (range)
     {
         case ADS8688_RANGE_BIPOLAR_10V24:
-            return raw_value * 20.48f / 65536.0f - 10.24f;
+            *voltage = raw_value * 20.48f / 65536.0f - 10.24f;
+            break;
 
         case ADS8688_RANGE_BIPOLAR_5V12:
-            return raw_value * 10.24f / 65536.0f - 5.12f;
+            *voltage = raw_value * 10.24f / 65536.0f - 5.12f;
+            break;
 
         case ADS8688_RANGE_BIPOLAR_2V56:
-            return raw_value * 5.12f / 65536.0f - 2.56f;
+            *voltage = raw_value * 5.12f / 65536.0f - 2.56f;
+            break;
 
         case ADS8688_RANGE_UNIPOLAR_10V24:
-            return raw_value * 10.24f / 65536.0f;
+            *voltage = raw_value * 10.24f / 65536.0f;
+            break;
 
         case ADS8688_RANGE_UNIPOLAR_5V12:
-            return raw_value * 5.12f / 65536.0f;
+            *voltage = raw_value * 5.12f / 65536.0f;
+            break;
 
         default:
-            return 0.0f;
+            *voltage = 0.0f;
+            return ADS8688_STATUS_INVALID_ARGUMENT;
     }
+
+    return ADS8688_STATUS_OK;
 }
 
 /**
@@ -97,6 +112,7 @@ void ads8688_storage_push(uint8_t channel,
                           ads8688_range_t range,
                           uint32_t sample_index)
 {
+    float voltage;
     uint32_t write_index;
 
     if (channel >= ADS8688_CHANNEL_COUNT)
@@ -104,10 +120,15 @@ void ads8688_storage_push(uint8_t channel,
         return;
     }
 
+    if (ads8688_convert_raw_to_voltage(raw_code, range, &voltage)
+        != ADS8688_STATUS_OK)
+    {
+        return;
+    }
+
     ads8688_latest[channel].sample_index = sample_index;
     ads8688_latest[channel].raw_code = raw_code;
-    ads8688_latest[channel].voltage =
-        ads8688_storage_convert_voltage(raw_code, range);
+    ads8688_latest[channel].voltage = voltage;
     ads8688_latest[channel].valid = 1u;
 
     if (ads8688_history_count < ADS8688_HISTORY_CAPACITY)

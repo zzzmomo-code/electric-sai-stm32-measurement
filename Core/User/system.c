@@ -17,7 +17,7 @@
  */
 #define HMI_TJC_SELF_TEST_ENABLE 0u
 
-/* AIN0 硬件联调开关：1 表示 DMA 仅采集 AIN0，便于核对已接入的 5 V；0 恢复八通道自动扫描。 */
+/* AIN0 硬件联调开关：1 表示 DMA 仅采集 AIN0；0 恢复默认 AIN0/AIN1 双通道扫描。 */
 #define ADS8688_AIN0_TEST_ENABLE 0u
 
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
@@ -31,10 +31,21 @@ static void hmi_tjc_publish_self_test(void)
 {
     measurement_result_t result;
 
+    result.dc_voltage = 0.0f;
     result.amplitude_vpp = 3.300f;
+    result.rms_voltage = 1.1667f;
     result.frequency_hz = 12345.0f;
+    result.thd_percent = 0.10f;
     result.phase_deg = -90.0f;
     result.wave_type = MEASUREMENT_WAVE_SINE;
+    result.mode = MEASUREMENT_MODE_AC;
+    result.valid_mask = MEASUREMENT_VALID_DC_VOLTAGE
+                        | MEASUREMENT_VALID_AMPLITUDE
+                        | MEASUREMENT_VALID_RMS
+                        | MEASUREMENT_VALID_FREQUENCY
+                        | MEASUREMENT_VALID_THD
+                        | MEASUREMENT_VALID_WAVE_TYPE
+                        | MEASUREMENT_VALID_PHASE;
     result.valid = 1u;
     result.sequence = 1u;
     measurement_result_publish(&result);

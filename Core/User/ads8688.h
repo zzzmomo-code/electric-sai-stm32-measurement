@@ -113,6 +113,28 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
                                             ads8688_range_t range);
 
 /**
+ * @brief 读取指定通道当前使用的输入量程。
+ * @param channel 待读取通道号。
+ * @param range 用于接收当前量程的指针。
+ * @return 成功返回 ADS8688_STATUS_OK；参数无效或模块未初始化时返回对应错误状态。
+ * @note 只读取软件保存的已生效量程，不发起 SPI 传输。
+ */
+ads8688_status_t ads8688_get_channel_range(uint8_t channel,
+                                            ads8688_range_t *range);
+
+/**
+ * @brief 按指定量程将 ADS8688 直二进制原始码换算为电压。
+ * @param raw_code ADC 原始码。
+ * @param range 输入量程。
+ * @param voltage 用于接收换算电压的指针，单位为伏。
+ * @return 换算成功返回 ADS8688_STATUS_OK，参数或量程无效时返回 ADS8688_STATUS_INVALID_ARGUMENT。
+ * @note 纯计算接口，不访问硬件，也不依赖 ADS8688 是否已经初始化。
+ */
+ads8688_status_t ads8688_convert_raw_to_voltage(uint16_t raw_code,
+                                                 ads8688_range_t range,
+                                                 float *voltage);
+
+/**
  * @brief 读取指定通道的最新采样结果。
  * @param channel 待读取通道号。
  * @param latest 用于接收最新采样结果的指针。
