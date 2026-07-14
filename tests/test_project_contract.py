@@ -96,13 +96,14 @@ def get_user_code_section(source, section_name):
 
 
 class ProjectContractTest(unittest.TestCase):
-    """验证 ADS8688 用户模块对外公开的头文件与接口契约。"""
+    """验证片上双 ADC 主链路以及保留的 ADS8688 历史模块契约。"""
 
     def test_required_headers_exist(self):
         """用户公共头文件必须位于 Core/User 目录。"""
         for header_name in (
             "ads8688.h",
             "ads8688_storage.h",
+            "adc_dual.h",
             "measurement_result.h",
             "measurement_fft.h",
             "hmi_tjc.h",
@@ -113,6 +114,20 @@ class ProjectContractTest(unittest.TestCase):
                     (user_dir / header_name).is_file(),
                     f"缺少必需头文件 Core/User/{header_name}",
                 )
+
+    def test_h7_adc_hal_driver_files_exist(self):
+        """精简的 ADS8688 基线必须补齐片上 ADC 所需官方 HAL/LL 文件。"""
+        driver_root = project_root / "Drivers" / "STM32H7xx_HAL_Driver"
+        for relative_path in (
+            "Inc/stm32h7xx_hal_adc.h",
+            "Inc/stm32h7xx_hal_adc_ex.h",
+            "Inc/stm32h7xx_ll_adc.h",
+            "Src/stm32h7xx_hal_adc.c",
+            "Src/stm32h7xx_hal_adc_ex.c",
+            "Src/stm32h7xx_ll_adc.c",
+        ):
+            with self.subTest(path=relative_path):
+                self.assertTrue((driver_root / relative_path).is_file())
 
     def test_main_c_uses_only_system_entry_points(self):
         """main.c 的用户区只能包含统一头文件、初始化入口和功能处理调用。"""
@@ -130,16 +145,11 @@ class ProjectContractTest(unittest.TestCase):
         )
         self.assertRegex(
             get_user_code_section(main, "3"),
-            (
-                r"^ads8688_process\(\);\s*"
-                r"measurement_fft_process\(\);\s*"
-                r"if\s*\(\s*measurement_fft_hmi_refresh_allowed\(\)\s*!=\s*0u\s*\)\s*"
-                r"\{\s*hmi_tjc_process\(\);\s*\}\s*\}$"
-            ),
+            r"^system_process\(\);\s*\}$",
         )
 
-    def test_system_c_initializes_ads8688_through_unified_header(self):
-        """system.c 必须只包含 system.h，并通过 system_init() 启动 ADS8688。"""
+    def test_system_c_initializes_onchip_adc_through_unified_header(self):
+        """system.c 必须只包含 system.h，并统一管理采集、FFT 和 HMI。"""
         source = (user_dir / "system.c").read_text(encoding="utf-8")
         quoted_includes = re.findall(
             r'^\s*#include\s+"([^"]+)"',
@@ -154,11 +164,67 @@ class ProjectContractTest(unittest.TestCase):
             body,
             (
                 r"measurement_result_init\s*\(\s*\)\s*;[\s\S]*?"
+                r"measurement_fft_init\s*\(\s*\)\s*;[\s\S]*?"
                 r"hmi_tjc_init\s*\(\s*\)\s*;[\s\S]*?"
                 r"hmi_tjc_bind_uart\s*\(\s*&huart1\s*\);[\s\S]*?"
-                r"\(void\)\s*ads8688_init\s*\(\s*\)\s*;"
+                r"adc_dual_init\s*\(\s*\)\s*;"
             ),
         )
+        process_body = get_function_body(source, "system_process")
+        self.assertIsNotNone(process_body)
+        for required_call in (
+            "adc_dual_process",
+            "measurement_fft_process",
+            "hmi_tjc_process",
+        ):
+            self.assertRegex(process_body, rf"\b{required_call}\s*\(")
+
+    def test_onchip_dual_adc_dma_contract_is_declared(self):
+        """双 ADC DMA 缓冲区、拆包顺序和 M7 缓存维护必须固定。"""
+        header = (user_dir / "adc_dual.h").read_text(encoding="utf-8")
+        source = (user_dir / "adc_dual.c").read_text(encoding="utf-8")
+
+        self.assertIn("ADC_DUAL_DMA_WORD_COUNT 1024u", header)
+        self.assertIn("__attribute__((aligned(32)))", source)
+        self.assertIn("packed_word & 0xffffu", source)
+        self.assertIn("packed_word >> 16", source)
+        self.assertIn("SCB_InvalidateDCache_by_Addr", source)
+        self.assertIn("HAL_ADCEx_MultiModeStart_DMA", source)
+        self.assertIn("measurement_fft_ingest_pair(ch1_code, ch2_code)", source)
+
+        packed_word = 0xABCD1234
+        self.assertEqual(packed_word & 0xFFFF, 0x1234)
+        self.assertEqual(packed_word >> 16, 0xABCD)
+
+    def test_onchip_adc_error_and_uncalibrated_voltage_states_are_visible(self):
+        """溢出错误和未校准电压都必须可诊断，不能静默发布假幅度。"""
+        adc_source = (user_dir / "adc_dual.c").read_text(encoding="utf-8")
+        fft_source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
+
+        self.assertIn("hadc1.ErrorCode & HAL_ADC_ERROR_OVR", adc_source)
+        self.assertIn("adc_dual_stats.state = ADC_DUAL_STATE_ERROR", adc_source)
+        self.assertIn("measurement_fft_diagnostics.amplitude_vpp = NAN", fft_source)
+        self.assertRegex(
+            fft_source,
+            r"if\s*\(\(voltage_status\[0\]\s*!=\s*0u\)[\s\S]*?"
+            r"valid_mask\s*\|=\s*MEASUREMENT_VALID_AMPLITUDE",
+        )
+
+    def test_onchip_adc_callbacks_only_set_their_flags(self):
+        """ADC DMA 三个 HAL 回调只能置位各自的单一标志。"""
+        source = (user_dir / "adc_dual.c").read_text(encoding="utf-8")
+        callbacks = {
+            "HAL_ADC_ConvHalfCpltCallback": "adc_dual_dma_half_flag",
+            "HAL_ADC_ConvCpltCallback": "adc_dual_dma_full_flag",
+            "HAL_ADC_ErrorCallback": "adc_dual_error_flag",
+        }
+
+        for callback_name, flag_name in callbacks.items():
+            with self.subTest(callback=callback_name):
+                body = get_function_body(source, callback_name)
+                self.assertIsNotNone(body)
+                self.assertRegex(body, rf"\b{flag_name}\s*=\s*1u\s*;")
+                self.assertNotRegex(body, r"\b(for|while|printf|HAL_Delay)\b")
 
     def test_user_modules_have_required_chinese_headers(self):
         """所有用户 C/H 文件必须具备中文模块说明和调用说明。"""
@@ -176,26 +242,19 @@ class ProjectContractTest(unittest.TestCase):
                 for phrase in required_phrases:
                     self.assertIn(phrase, text)
 
-    def test_readme_documents_ads8688_integration(self):
-        """README 必须说明当前硬件、算法、构建结果和待上板验证项。"""
+    def test_readme_documents_onchip_adc_migration(self):
+        """README 必须区分已完成软件、待生成 CubeMX 配置和硬件验证。"""
         readme = (project_root / "README.md").read_text(encoding="utf-8")
         required_phrases = (
             "STM32H750VBT6",
             "STM32CubeIDE 1.19.0",
-            "PB12",
-            "PB13",
-            "PB14",
-            "PB15",
-            "PD8",
-            "PD9",
-            "自动循环采集",
-            "0x03",
-            "内部 4.096 V 基准",
-            "16.125 MHz",
-            "4096",
-            "196.646 kSPS",
+            "PC4",
+            "PB1",
+            "Dual Regular Simultaneous",
+            "500 kHz",
+            "OVRMOD=1",
+            "8192",
             "编译",
-            "烧录",
             "验证",
             "待硬件验证",
             "TJC4827T143_011R_I_P20",
@@ -204,7 +263,9 @@ class ProjectContractTest(unittest.TestCase):
             "PA10",
             "9600",
             "measurement_result_publish",
-            "hmi_tjc_process",
+            "system_process",
+            "前级",
+            "未完成",
         )
 
         for phrase in required_phrases:

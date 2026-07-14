@@ -3,10 +3,11 @@
  * @brief 用户自定义模块统一初始化入口。
  *
  * 模块用途：集中调用用户模块初始化函数，避免在 main.c 中堆放业务逻辑。
- * GPIO 引脚映射：无直接 GPIO 引脚；ADS8688 引脚映射见 ads8688.c 模块说明。
- * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 已完成 GPIO、DMA、SPI2 和 NVIC 初始化；启用串口屏时还依赖 USART1。
+ * GPIO 引脚映射：无直接 GPIO 引脚；片上 ADC 计划使用 PC4/ADC1_INP4 与 PB1/ADC2_INP5。
+ * 依赖的外设和 CubeIDE 配置：当前等待 CubeMX 生成 ADC1/ADC2、TIM2、DMA 和 NVIC；
+ * 串口屏继续依赖 USART1，9600 8N1，轮询发送且不使用 USART DMA。
  * 初始化方法：在 main.c 的 USER CODE BEGIN 2 区域调用 system_init()。
- * 调用方法：系统启动时调用一次，主循环继续调用各功能处理函数。
+ * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
  */
 
 #include "system.h"
@@ -17,15 +18,12 @@
  */
 #define HMI_TJC_SELF_TEST_ENABLE 0u
 
-/* AIN0 硬件联调开关：1 表示 DMA 仅采集 AIN0；0 恢复默认 AIN0/AIN1 双通道扫描。 */
-#define ADS8688_AIN0_TEST_ENABLE 0u
-
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
 /**
  * @brief 发布用于验证串口屏通信的固定测量结果。
  * @param 无。
  * @return 无。
- * @note 仅用于 HMI 联调，不读取或修改 ADS8688 DMA 数据；关闭开关后该函数不会参与编译。
+ * @note 仅用于 HMI 联调，不读取或修改双 ADC DMA 数据；关闭开关后该函数不会参与编译。
  */
 static void hmi_tjc_publish_self_test(void)
 {
@@ -56,7 +54,7 @@ static void hmi_tjc_publish_self_test(void)
  * @brief 初始化全部用户功能模块。
  * @param 无。
  * @return 无。
- * @note 当前启动 ADS8688 采集；返回值被显式忽略，失败状态可通过 ADS8688 诊断接口查询。
+ * @note CubeMX 未生成片上 ADC 配置时，adc_dual_init() 安全返回“未配置”状态。
  */
 void system_init(void)
 {
@@ -69,8 +67,22 @@ void system_init(void)
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
     hmi_tjc_publish_self_test();
 #endif
-    (void)ads8688_init();
-#if (ADS8688_AIN0_TEST_ENABLE != 0u)
-    (void)ads8688_set_manual_mode(0u);
-#endif
+    adc_dual_init();
+}
+
+/**
+ * @brief 执行双 ADC、FFT 和串口屏主循环处理。
+ * @param 无。
+ * @return 无。
+ * @note 第二次 adc_dual_process() 只同步 TIM2 启停状态，不重复处理已领取的 DMA 标志。
+ */
+void system_process(void)
+{
+    adc_dual_process();
+    measurement_fft_process();
+    adc_dual_process();
+    if (measurement_fft_hmi_refresh_allowed() != 0u)
+    {
+        hmi_tjc_process();
+    }
 }

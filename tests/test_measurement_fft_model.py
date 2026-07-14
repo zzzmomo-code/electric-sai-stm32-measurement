@@ -10,10 +10,7 @@ except ImportError:  # pragma: no cover - 无 NumPy 环境仍可运行其他契�
 
 
 FFT_LENGTH = 8192
-SPI_CLOCK_HZ = 16_125_000.0
-CLOCKS_PER_FRAME = 41.0
-RAW_SAMPLE_RATE_HZ = SPI_CLOCK_HZ / CLOCKS_PER_FRAME / 2.0
-INTERCHANNEL_DELAY_S = CLOCKS_PER_FRAME / SPI_CLOCK_HZ
+RAW_SAMPLE_RATE_HZ = 500_000.0
 INITIAL_DECIMATION = 4
 LOW_BAND_DECIMATION = 8
 SPECTRUM_POINT_COUNT = 64
@@ -129,18 +126,12 @@ class MeasurementFftModelTest(unittest.TestCase):
 
         self.assertLess(abs(measured_hz - self.frequency_hz), 1.0)
 
-    def test_sequential_channel_delay_compensation_recovers_phase(self):
-        """扣除 AIN0 到 AIN1 的一个转换帧时差后应恢复真实相位差。"""
+    def test_synchronous_channels_recover_phase_without_delay_compensation(self):
+        """同一 TIM2 触发时刻的双 ADC 样本应直接恢复真实相位差。"""
         expected_phase_deg = 67.0
         first_signal = np.sin(self.base_phase)
-        second_signal = np.sin(
-            2.0
-            * np.pi
-            * self.frequency_hz
-            * (self.time_s + INTERCHANNEL_DELAY_S)
-            + np.deg2rad(expected_phase_deg)
-        )
-        first_spectrum, _, first_bin, _, measured_hz = _analyze(
+        second_signal = np.sin(self.base_phase + np.deg2rad(expected_phase_deg))
+        first_spectrum, _, first_bin, _, _ = _analyze(
             first_signal, self.sample_rate_hz
         )
         second_spectrum, _, second_bin, _, _ = _analyze(
@@ -152,10 +143,7 @@ class MeasurementFftModelTest(unittest.TestCase):
             first_spectrum[first_bin]
         )
         raw_phase_deg = math.degrees(float(np.angle(cross_spectrum)))
-        corrected_phase_deg = _wrap_phase(
-            raw_phase_deg
-            - 360.0 * measured_hz * INTERCHANNEL_DELAY_S
-        )
+        corrected_phase_deg = _wrap_phase(raw_phase_deg)
 
         self.assertLess(abs(corrected_phase_deg - expected_phase_deg), 0.1)
 
@@ -211,22 +199,23 @@ class MeasurementFftModelTest(unittest.TestCase):
         self.assertAlmostEqual(measured_thd, math.sqrt(0.10**2 + 0.05**2) * 100.0, delta=0.35)
 
     def test_time_domain_dc_rms_and_sine_vpp_conversion(self):
-        """已知 2 V 偏置、1 V 峰值正弦应恢复 DC、RMS 和 2 Vpp。"""
+        """已知 1 V 偏置、0.5 V 峰值正弦应恢复 DC、RMS 和 Vpp。"""
         frequency_hz = 1_000.0
         sample_rate_hz = RAW_SAMPLE_RATE_HZ / LOW_BAND_DECIMATION
         time_s = np.arange(FFT_LENGTH) / sample_rate_hz
-        voltage = 2.0 + np.sin(2.0 * np.pi * frequency_hz * time_s)
-        raw_code = np.rint((voltage + 10.24) * 65536.0 / 20.48)
+        voltage = 1.0 + 0.5 * np.sin(2.0 * np.pi * frequency_hz * time_s)
+        volts_per_code = 5.0 / 65536.0
+        offset_v = -2.5
+        raw_code = np.rint((voltage - offset_v) / volts_per_code)
         mean_raw = raw_code.mean()
         rms_raw = np.sqrt(np.mean((raw_code - mean_raw) ** 2))
-        lsb_voltage = 20.48 / 65536.0
-        dc_voltage = -10.24 + mean_raw * lsb_voltage
-        rms_voltage = rms_raw * lsb_voltage
+        dc_voltage = offset_v + mean_raw * volts_per_code
+        rms_voltage = rms_raw * volts_per_code
         amplitude_vpp = 2.0 * math.sqrt(2.0) * rms_voltage
 
-        self.assertAlmostEqual(dc_voltage, 2.0, delta=0.001)
-        self.assertAlmostEqual(rms_voltage, 1.0 / math.sqrt(2.0), delta=0.001)
-        self.assertAlmostEqual(amplitude_vpp, 2.0, delta=0.003)
+        self.assertAlmostEqual(dc_voltage, 1.0, delta=0.001)
+        self.assertAlmostEqual(rms_voltage, 0.5 / math.sqrt(2.0), delta=0.001)
+        self.assertAlmostEqual(amplitude_vpp, 1.0, delta=0.003)
 
     def test_compressed_spectrum_marks_fundamental_bucket(self):
         """64 点压缩频谱的最高点应落入已知基波所在频段。"""
@@ -243,13 +232,16 @@ class MeasurementFftModelTest(unittest.TestCase):
         self.assertEqual(peak_point, expected_point)
         self.assertAlmostEqual(compressed[peak_point], 0.0, places=6)
 
-    def test_bipolar_10v24_conversion_matches_known_codes(self):
-        """双极性 10.24 V 量程的中点和 5 V 已知码必须换算正确。"""
+    def test_linear_front_end_calibration_matches_known_codes(self):
+        """前级比例和偏置确认后应按统一线性校准参数换算原始码。"""
+        volts_per_code = 5.0 / 65536.0
+        offset_v = -2.5
+
         def convert(raw_code):
-            return raw_code * 20.48 / 65536.0 - 10.24
+            return raw_code * volts_per_code + offset_v
 
         self.assertAlmostEqual(convert(32768), 0.0, places=6)
-        self.assertAlmostEqual(convert(48768), 5.0, places=6)
+        self.assertAlmostEqual(convert(65535), 2.5 - volts_per_code, places=6)
 
 
 if __name__ == "__main__":

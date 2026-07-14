@@ -113,12 +113,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-    ads8688_process();
-    measurement_fft_process();
-    if (measurement_fft_hmi_refresh_allowed() != 0u)
-    {
-      hmi_tjc_process();
-    }
+    system_process();
   }
   /* USER CODE END 3 */
 }

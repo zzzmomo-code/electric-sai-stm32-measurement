@@ -38,15 +38,17 @@ class MeasurementFftContractTest(unittest.TestCase):
         )
 
     def test_fft_publishes_only_through_measurement_result(self):
-        """FFT 模块发布结果但不得直接操作 UART、HMI 或 ADS8688 DMA 缓冲区。"""
+        """FFT 模块只接收同步样本对并通过结果快照发布。"""
         source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
 
         self.assertIn("measurement_result_publish(&result);", source)
-        self.assertIn("ads8688_get_channel_range", source)
-        self.assertIn("ads8688_convert_raw_to_voltage", source)
+        self.assertIn("measurement_fft_ingest_pair", source)
         self.assertNotIn("HAL_UART_", source)
         self.assertNotIn("hmi_tjc_", source)
         self.assertNotIn("ads8688_dma_rx", source)
+        self.assertNotIn("ads8688_get_channel_range", source)
+        self.assertNotIn("ads8688_convert_raw_to_voltage", source)
+        self.assertNotIn("MEASUREMENT_FFT_INTERCHANNEL_DELAY_S", source)
 
     def test_fft_keeps_quality_and_debug_observability(self):
         """上板时需要的直流、幅频、THD、相位和采样率诊断字段必须保留。"""
@@ -73,6 +75,7 @@ class MeasurementFftContractTest(unittest.TestCase):
             "harmonic_ratio_5",
             "clipping_mask",
             "result_valid",
+            "voltage_calibrated_mask",
         )
 
         for name in required_names:
@@ -167,15 +170,25 @@ class MeasurementFftContractTest(unittest.TestCase):
             "measurement_fft_calibration_t",
             "measurement_fft_set_calibration",
             "measurement_fft_get_calibration",
-            "measurement_fft_apply_calibration",
-            "calibration->gain <= 0.0f",
+            "calibration->valid > 1u",
+            "calibration->volts_per_code == 0.0f",
             "!isfinite(calibration->offset_v)",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, header + source)
 
-        self.assertIn("measurement_fft_calibration[channel].gain", source)
-        self.assertIn("measurement_fft_calibration[channel].offset_v", source)
+        self.assertIn("calibration->volts_per_code", source)
+        self.assertIn("measurement_fft_calibration[channel]", source)
+        self.assertIn("voltage_status[0] != 0u", source)
+
+    def test_synchronized_pair_sample_rate_contract(self):
+        """片上双 ADC 必须以 500 kSPS 同步样本对进入 FFT。"""
+        header = (user_dir / "measurement_fft.h").read_text(encoding="utf-8")
+        source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
+
+        self.assertIn("measurement_fft_ingest_pair(uint16_t ch1_raw_code", header)
+        self.assertIn("MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ 500000.0f", source)
+        self.assertIn("measurement_fft_sampling_required", header + source)
 
     def test_hmi_detail_and_spectrum_builders_are_available_but_not_automatic(self):
         """扩展控件和频谱应可构帧，但未知控件 ID 时不得自动发送。"""

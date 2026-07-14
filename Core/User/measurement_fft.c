@@ -1,15 +1,15 @@
 /**
  * @file measurement_fft.c
- * @brief ADS8688 双通道直流、幅频、失真、频谱、相位差和波形类型测量实现。
+ * @brief 片上双 ADC 同步采样的直流、幅频、失真、频谱、相位差和波形类型测量实现。
  *
- * 模块用途：以 AIN0、AIN1 的直二进制采样构成双缓冲 8192 点窗口，计算平均直流、
+ * 模块用途：以 ADC1/CH1、ADC2/CH2 的同步 16 位采样构成双缓冲 8192 点窗口，计算平均直流、
  * 峰峰值和交流有效值，去直流并加 Hann 窗后执行 Q15 RFFT，再完成亚频点插值、
  * THD、压缩频谱、双通道相位差和谐波分类。
  * GPIO 引脚映射：无直接 GPIO 引脚。
- * 依赖的外设和 CubeIDE 配置：依赖 ADS8688 使用 AIN0/AIN1 双通道自动扫描、SPI2 DMA
- * 主循环处理和 CMSIS-DSP Q15 RFFT；当前标称采样率依赖 16.125 MHz SCLK 与 9 周期帧间空闲。
+ * 依赖的外设和 CubeIDE 配置：依赖 adc_dual 在主循环提交同步样本对和 CMSIS-DSP Q15 RFFT；
+ * 当前软件目标采样率为每通道 500 kSPS。
  * 初始化方法：system_init() 调用 measurement_fft_init()。
- * 调用方法：ads8688_process() 内逐样本调用 measurement_fft_ingest_sample()，主循环随后调用
+ * 调用方法：adc_dual_process() 调用 measurement_fft_ingest_pair()，主循环随后调用
  * measurement_fft_process()；测量结果只通过 measurement_result_publish() 对外发布。
  */
 
@@ -24,19 +24,8 @@
 #define MEASUREMENT_FFT_SQRT_2 1.41421356237309504880f
 #define MEASUREMENT_FFT_SQRT_3 1.73205080756887729353f
 
-/** SPI2 标称 SCLK，来自当前 h7_pre.ioc 的 129 MHz / 8 配置。 */
-#define MEASUREMENT_FFT_SPI_CLOCK_HZ 16125000.0f
-
-/** 每个 ADS8688 转换帧包含 32 个数据时钟和 9 个帧间空闲时钟。 */
-#define MEASUREMENT_FFT_CLOCKS_PER_FRAME 41.0f
-
-/** AIN0/AIN1 双通道轮询时每通道的标称原始采样率。 */
-#define MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ \
-    (MEASUREMENT_FFT_SPI_CLOCK_HZ / MEASUREMENT_FFT_CLOCKS_PER_FRAME / 2.0f)
-
-/** 相邻通道样本之间的标称时间差，用于 AIN1-AIN0 相位补偿。 */
-#define MEASUREMENT_FFT_INTERCHANNEL_DELAY_S \
-    (MEASUREMENT_FFT_CLOCKS_PER_FRAME / MEASUREMENT_FFT_SPI_CLOCK_HZ)
+/** TIM2 TRGO 驱动 ADC1/ADC2 同步转换的目标每通道采样率。 */
+#define MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ 500000.0f
 
 /** 首帧采用的全频带抽取因子，奈奎斯特频率仍高于题目要求的 20 kHz。 */
 #define MEASUREMENT_FFT_INITIAL_DECIMATION 4u
@@ -68,8 +57,8 @@
 /** HMI 阻塞发送后，开始下一窗口前每通道主动丢弃的过渡样本数量。 */
 #define MEASUREMENT_FFT_SETTLE_SAMPLE_COUNT 1024u
 
-/** 小于该峰峰值的输入不用于频率和相位发布，单位为伏。 */
-#define MEASUREMENT_FFT_MINIMUM_VPP 0.020f
+/** 小于该峰峰原始码跨度的输入不用于频率和相位发布。 */
+#define MEASUREMENT_FFT_MINIMUM_SPAN_CODE 128u
 
 /** 距离正负满量程小于该码值时判定存在削顶风险。 */
 #define MEASUREMENT_FFT_CLIP_MARGIN_CODE 64u
@@ -168,6 +157,10 @@ static measurement_fft_spectrum_t measurement_fft_spectrum;
 static measurement_fft_calibration_t
     measurement_fft_calibration[MEASUREMENT_FFT_CHANNEL_COUNT];
 
+/** 迁移期间旧 ADS8688 顺序接口暂存的一对通道样本。 */
+static uint16_t measurement_fft_legacy_pair[MEASUREMENT_FFT_CHANNEL_COUNT];
+static uint8_t measurement_fft_legacy_pair_mask;
+
 /**
  * @brief 使能 Cortex-M7 DWT 周期计数器。
  * @param 无。
@@ -251,70 +244,51 @@ static measurement_fft_time_metrics_t measurement_fft_analyze_time_domain(
 /**
  * @brief 将一帧原始码统计量换算为电压统计量。
  * @param metrics 原始码范围、平均值和交流有效值。
- * @param range 当前通道输入量程。
+ * @param channel 本地同步通道号，只允许 0 或 1。
  * @param amplitude_vpp 用于接收峰峰值电压的指针。
  * @param dc_voltage 用于接收平均直流电压的指针。
  * @param rms_voltage 用于接收去直流交流有效值的指针。
- * @return 换算成功返回 ADS8688_STATUS_OK，否则返回对应错误状态。
- * @note 只调用 ADS8688 纯计算接口，不访问 SPI。
+ * @return 校准有效且换算成功返回 1，否则返回 0。
+ * @note 前级比例未确认时输出 NAN，FFT 频率和相位分析仍可继续。
  */
-static ads8688_status_t measurement_fft_convert_time_metrics(
+static uint8_t measurement_fft_convert_time_metrics(
     measurement_fft_time_metrics_t metrics,
-    ads8688_range_t range,
+    uint8_t channel,
     float *amplitude_vpp,
     float *dc_voltage,
     float *rms_voltage)
 {
-    ads8688_status_t status;
-    float zero_code_voltage;
-    float one_code_voltage;
-    float lsb_voltage;
+    const measurement_fft_calibration_t *calibration;
+    float volts_per_code;
 
-    if ((amplitude_vpp == 0) || (dc_voltage == 0) || (rms_voltage == 0))
+    if ((channel >= MEASUREMENT_FFT_CHANNEL_COUNT)
+        || (amplitude_vpp == 0)
+        || (dc_voltage == 0)
+        || (rms_voltage == 0))
     {
-        return ADS8688_STATUS_INVALID_ARGUMENT;
+        return 0u;
     }
 
-    status = ads8688_convert_raw_to_voltage(0u, range, &zero_code_voltage);
-    if (status != ADS8688_STATUS_OK)
+    calibration = &measurement_fft_calibration[channel];
+    if ((calibration->valid == 0u)
+        || (!isfinite(calibration->volts_per_code))
+        || (calibration->volts_per_code == 0.0f)
+        || (!isfinite(calibration->offset_v)))
     {
-        return status;
-    }
-    status = ads8688_convert_raw_to_voltage(1u, range, &one_code_voltage);
-    if (status != ADS8688_STATUS_OK)
-    {
-        return status;
+        *amplitude_vpp = NAN;
+        *dc_voltage = NAN;
+        *rms_voltage = NAN;
+        return 0u;
     }
 
-    lsb_voltage = one_code_voltage - zero_code_voltage;
+    volts_per_code = calibration->volts_per_code;
     *amplitude_vpp =
         (float)(metrics.span.maximum_code - metrics.span.minimum_code)
-        * lsb_voltage;
-    *dc_voltage = zero_code_voltage + metrics.mean_raw_code * lsb_voltage;
-    *rms_voltage = metrics.rms_ac_code * fabsf(lsb_voltage);
-    return ADS8688_STATUS_OK;
-}
-
-/**
- * @brief 对单通道电压统计量应用增益和零点校准。
- * @param channel 本地通道号，只允许 0 或 1。
- * @param amplitude_vpp 待修正的峰峰值指针。
- * @param dc_voltage 待修正的直流电压指针。
- * @param rms_voltage 待修正的交流有效值指针。
- * @return 无。
- * @note 幅度和有效值只乘正增益；直流值还会叠加 offset_v。
- */
-static void measurement_fft_apply_calibration(uint8_t channel,
-                                              float *amplitude_vpp,
-                                              float *dc_voltage,
-                                              float *rms_voltage)
-{
-    float gain = measurement_fft_calibration[channel].gain;
-
-    *amplitude_vpp *= gain;
-    *rms_voltage *= gain;
-    *dc_voltage = *dc_voltage * gain
-                  + measurement_fft_calibration[channel].offset_v;
+        * fabsf(volts_per_code);
+    *dc_voltage = metrics.mean_raw_code * volts_per_code
+                  + calibration->offset_v;
+    *rms_voltage = metrics.rms_ac_code * fabsf(volts_per_code);
+    return 1u;
 }
 
 /**
@@ -881,7 +855,7 @@ static void measurement_fft_publish(uint8_t valid,
  * @brief 初始化 8192 点 RFFT、Hann 窗和测量状态。
  * @param 无。
  * @return 无。
- * @note 不启动 ADS8688；采样从 ADS8688 主循环逐样本输入开始。
+ * @note 不启动 ADC；采样从 adc_dual 主循环按同步样本对输入开始。
  */
 void measurement_fft_init(void)
 {
@@ -900,6 +874,9 @@ void measurement_fft_init(void)
     measurement_fft_state = MEASUREMENT_FFT_STATE_CAPTURE;
     measurement_fft_display_start_ms = 0u;
     measurement_fft_result_sequence = 0u;
+    measurement_fft_legacy_pair[0] = 0u;
+    measurement_fft_legacy_pair[1] = 0u;
+    measurement_fft_legacy_pair_mask = 0u;
 
     measurement_fft_diagnostics.init_status =
         (int32_t)arm_rfft_init_q15(&measurement_fft_instance,
@@ -936,6 +913,7 @@ void measurement_fft_init(void)
     measurement_fft_diagnostics.clipping_mask = 0u;
     measurement_fft_diagnostics.result_valid = 0u;
     measurement_fft_diagnostics.fft_ready = 0u;
+    measurement_fft_diagnostics.voltage_calibrated_mask = 0u;
 
     measurement_fft_spectrum.point_width_hz =
         MEASUREMENT_FFT_SPECTRUM_MAX_HZ
@@ -944,10 +922,12 @@ void measurement_fft_init(void)
         measurement_fft_diagnostics.effective_sample_rate_hz * 0.5f;
     measurement_fft_spectrum.sequence = 0u;
     measurement_fft_spectrum.valid = 0u;
-    measurement_fft_calibration[0].gain = 1.0f;
+    measurement_fft_calibration[0].volts_per_code = 0.0f;
     measurement_fft_calibration[0].offset_v = 0.0f;
-    measurement_fft_calibration[1].gain = 1.0f;
+    measurement_fft_calibration[0].valid = 0u;
+    measurement_fft_calibration[1].volts_per_code = 0.0f;
     measurement_fft_calibration[1].offset_v = 0.0f;
+    measurement_fft_calibration[1].valid = 0u;
     for (index = 0u; index < MEASUREMENT_FFT_SPECTRUM_POINT_COUNT; index++)
     {
         measurement_fft_spectrum.relative_db_x10[index] =
@@ -968,38 +948,34 @@ void measurement_fft_init(void)
 }
 
 /**
- * @brief 接收一条 ADS8688 原始采样记录。
- * @param channel ADS8688 通道号，仅接收 AIN0 与 AIN1。
- * @param raw_code ADS8688 直二进制原始码。
+ * @brief 接收同一触发时刻的双通道原始采样对。
+ * @param ch1_raw_code ADC1/CH1 的 16 位原始码。
+ * @param ch2_raw_code ADC2/CH2 的 16 位原始码。
  * @return 无。
- * @note 本函数只复制样本，不执行 FFT；由 ADS8688 主循环处理函数调用，不放入中断。
+ * @note 两个通道共用抽取计数和写入索引，从软件边界保证窗口严格对齐。
  */
-void measurement_fft_ingest_sample(uint8_t channel, uint16_t raw_code)
+void measurement_fft_ingest_pair(uint16_t ch1_raw_code,
+                                 uint16_t ch2_raw_code)
 {
-    uint8_t local_channel;
     uint16_t write_index;
 
-    if ((measurement_fft_diagnostics.init_status != (int32_t)ARM_MATH_SUCCESS)
-        || (channel > MEASUREMENT_FFT_SECOND_CHANNEL))
+    if (measurement_fft_diagnostics.init_status != (int32_t)ARM_MATH_SUCCESS)
     {
         return;
     }
 
-    local_channel = channel;
-
     if (measurement_fft_state == MEASUREMENT_FFT_STATE_SETTLING)
     {
-        measurement_fft_diagnostics.discarded_sample_count++;
-        if (measurement_fft_settle_count[local_channel]
+        measurement_fft_diagnostics.discarded_sample_count += 2u;
+        if (measurement_fft_settle_count[0]
             < MEASUREMENT_FFT_SETTLE_SAMPLE_COUNT)
         {
-            measurement_fft_settle_count[local_channel]++;
+            measurement_fft_settle_count[0]++;
+            measurement_fft_settle_count[1]++;
         }
 
-        if ((measurement_fft_settle_count[0]
-             == MEASUREMENT_FFT_SETTLE_SAMPLE_COUNT)
-            && (measurement_fft_settle_count[1]
-                == MEASUREMENT_FFT_SETTLE_SAMPLE_COUNT))
+        if (measurement_fft_settle_count[0]
+            == MEASUREMENT_FFT_SETTLE_SAMPLE_COUNT)
         {
             measurement_fft_sample_count[0] = 0u;
             measurement_fft_sample_count[1] = 0u;
@@ -1015,32 +991,38 @@ void measurement_fft_ingest_sample(uint8_t channel, uint16_t raw_code)
 
     if (measurement_fft_state != MEASUREMENT_FFT_STATE_CAPTURE)
     {
-        measurement_fft_diagnostics.discarded_sample_count++;
+        measurement_fft_diagnostics.discarded_sample_count += 2u;
         return;
     }
 
-    if (measurement_fft_decimation_count[local_channel] != 0u)
+    if (measurement_fft_decimation_count[0] != 0u)
     {
-        measurement_fft_decimation_count[local_channel]--;
-        measurement_fft_diagnostics.discarded_sample_count++;
+        measurement_fft_decimation_count[0]--;
+        measurement_fft_decimation_count[1]--;
+        measurement_fft_diagnostics.discarded_sample_count += 2u;
         return;
     }
-    measurement_fft_decimation_count[local_channel] =
+    measurement_fft_decimation_count[0] =
+        measurement_fft_decimation_factor - 1u;
+    measurement_fft_decimation_count[1] =
         measurement_fft_decimation_factor - 1u;
 
-    write_index = measurement_fft_sample_count[local_channel];
-    if (write_index >= MEASUREMENT_FFT_LENGTH)
+    write_index = measurement_fft_sample_count[0];
+    if ((write_index >= MEASUREMENT_FFT_LENGTH)
+        || (measurement_fft_sample_count[1] != write_index))
     {
-        measurement_fft_diagnostics.discarded_sample_count++;
+        measurement_fft_diagnostics.discarded_sample_count += 2u;
         return;
     }
 
-    measurement_fft_input[measurement_fft_active_buffer][local_channel][write_index] =
-        (q15_t)((int32_t)raw_code - 32768);
-    measurement_fft_sample_count[local_channel] = write_index + 1u;
+    measurement_fft_input[measurement_fft_active_buffer][0][write_index] =
+        (q15_t)((int32_t)ch1_raw_code - 32768);
+    measurement_fft_input[measurement_fft_active_buffer][1][write_index] =
+        (q15_t)((int32_t)ch2_raw_code - 32768);
+    measurement_fft_sample_count[0] = write_index + 1u;
+    measurement_fft_sample_count[1] = write_index + 1u;
 
-    if ((measurement_fft_sample_count[0] == MEASUREMENT_FFT_LENGTH)
-        && (measurement_fft_sample_count[1] == MEASUREMENT_FFT_LENGTH))
+    if (measurement_fft_sample_count[0] == MEASUREMENT_FFT_LENGTH)
     {
         measurement_fft_ready_buffer = measurement_fft_active_buffer;
         measurement_fft_active_buffer ^= 1u;
@@ -1052,6 +1034,38 @@ void measurement_fft_ingest_sample(uint8_t channel, uint16_t raw_code)
 }
 
 /**
+ * @brief 迁移期间接收一条旧 ADS8688 顺序采样记录。
+ * @param channel 旧通道号，仅接收 0 与 1。
+ * @param raw_code 旧 ADS8688 直二进制原始码。
+ * @return 无。
+ * @note 收齐两个通道后转交同步样本对入口；片上 ADC 正式链路不调用本函数。
+ */
+void measurement_fft_ingest_sample(uint8_t channel, uint16_t raw_code)
+{
+    if (channel > MEASUREMENT_FFT_SECOND_CHANNEL)
+    {
+        return;
+    }
+
+    measurement_fft_legacy_pair[channel] = raw_code;
+    measurement_fft_legacy_pair_mask |= (uint8_t)(1u << channel);
+    if (measurement_fft_legacy_pair_mask == 0x03u)
+    {
+        measurement_fft_legacy_pair_mask = 0u;
+        measurement_fft_ingest_pair(measurement_fft_legacy_pair[0],
+                                    measurement_fft_legacy_pair[1]);
+    }
+}
+
+uint8_t measurement_fft_sampling_required(void)
+{
+    return ((measurement_fft_state == MEASUREMENT_FFT_STATE_CAPTURE)
+            || (measurement_fft_state == MEASUREMENT_FFT_STATE_SETTLING))
+               ? 1u
+               : 0u;
+}
+
+/**
  * @brief 处理已收齐窗口，计算并发布幅度、频率、相位差和波形类型。
  * @param 无。
  * @return 无。
@@ -1059,17 +1073,17 @@ void measurement_fft_ingest_sample(uint8_t channel, uint16_t raw_code)
  */
 void measurement_fft_process(void)
 {
-    ads8688_range_t ranges[MEASUREMENT_FFT_CHANNEL_COUNT];
-    ads8688_status_t range_status[MEASUREMENT_FFT_CHANNEL_COUNT];
     int64_t peak_power[MEASUREMENT_FFT_CHANNEL_COUNT];
     measurement_fft_time_metrics_t time_metrics[MEASUREMENT_FFT_CHANNEL_COUNT];
     float span_vpp[MEASUREMENT_FFT_CHANNEL_COUNT];
     float peak_offset[MEASUREMENT_FFT_CHANNEL_COUNT];
     float peak_position[MEASUREMENT_FFT_CHANNEL_COUNT];
+    uint16_t span_code[MEASUREMENT_FFT_CHANNEL_COUNT];
     measurement_fft_quality_t quality;
     measurement_mode_t mode;
     uint32_t cycle_start;
     uint16_t valid_mask;
+    uint8_t voltage_status[MEASUREMENT_FFT_CHANNEL_COUNT];
     uint8_t channel;
     uint8_t valid;
 
@@ -1079,9 +1093,10 @@ void measurement_fft_process(void)
         {
             time_metrics[channel] = measurement_fft_analyze_time_domain(
                 measurement_fft_input[measurement_fft_ready_buffer][channel]);
-            range_status[channel] = ads8688_get_channel_range(channel,
-                                                               &ranges[channel]);
-            span_vpp[channel] = 0.0f;
+            span_code[channel] =
+                time_metrics[channel].span.maximum_code
+                - time_metrics[channel].span.minimum_code;
+            span_vpp[channel] = NAN;
         }
 
         measurement_fft_diagnostics.clipping_mask = 0u;
@@ -1094,40 +1109,21 @@ void measurement_fft_process(void)
             measurement_fft_diagnostics.clipping_mask |= 0x02u;
         }
 
-        if (range_status[0] == ADS8688_STATUS_OK)
-        {
-            range_status[0] = measurement_fft_convert_time_metrics(
-                time_metrics[0],
-                ranges[0],
-                &span_vpp[0],
-                &measurement_fft_diagnostics.dc_voltage,
-                &measurement_fft_diagnostics.rms_voltage);
-            if (range_status[0] == ADS8688_STATUS_OK)
-            {
-                measurement_fft_apply_calibration(
-                    0u,
-                    &span_vpp[0],
-                    &measurement_fft_diagnostics.dc_voltage,
-                    &measurement_fft_diagnostics.rms_voltage);
-            }
-        }
-        if (range_status[1] == ADS8688_STATUS_OK)
-        {
-            range_status[1] = measurement_fft_convert_time_metrics(
-                time_metrics[1],
-                ranges[1],
-                &span_vpp[1],
-                &measurement_fft_diagnostics.secondary_dc_voltage,
-                &measurement_fft_diagnostics.secondary_rms_voltage);
-            if (range_status[1] == ADS8688_STATUS_OK)
-            {
-                measurement_fft_apply_calibration(
-                    1u,
-                    &span_vpp[1],
-                    &measurement_fft_diagnostics.secondary_dc_voltage,
-                    &measurement_fft_diagnostics.secondary_rms_voltage);
-            }
-        }
+        voltage_status[0] = measurement_fft_convert_time_metrics(
+            time_metrics[0],
+            0u,
+            &span_vpp[0],
+            &measurement_fft_diagnostics.dc_voltage,
+            &measurement_fft_diagnostics.rms_voltage);
+        voltage_status[1] = measurement_fft_convert_time_metrics(
+            time_metrics[1],
+            1u,
+            &span_vpp[1],
+            &measurement_fft_diagnostics.secondary_dc_voltage,
+            &measurement_fft_diagnostics.secondary_rms_voltage);
+        measurement_fft_diagnostics.voltage_calibrated_mask =
+            (uint8_t)((voltage_status[0] != 0u ? 0x01u : 0u)
+                      | (voltage_status[1] != 0u ? 0x02u : 0u));
         measurement_fft_diagnostics.amplitude_vpp = span_vpp[0];
         measurement_fft_diagnostics.secondary_amplitude_vpp = span_vpp[1];
 
@@ -1179,11 +1175,18 @@ void measurement_fft_process(void)
             measurement_fft_classify_wave(
                 measurement_fft_diagnostics.harmonic_ratio_3,
                 measurement_fft_diagnostics.harmonic_ratio_5);
-        measurement_fft_diagnostics.amplitude_vpp =
-            measurement_fft_rms_to_vpp(
-                measurement_fft_diagnostics.rms_voltage,
-                measurement_fft_diagnostics.wave_type,
-                span_vpp[0]);
+        if (voltage_status[0] != 0u)
+        {
+            measurement_fft_diagnostics.amplitude_vpp =
+                measurement_fft_rms_to_vpp(
+                    measurement_fft_diagnostics.rms_voltage,
+                    measurement_fft_diagnostics.wave_type,
+                    span_vpp[0]);
+        }
+        else
+        {
+            measurement_fft_diagnostics.amplitude_vpp = NAN;
+        }
         measurement_fft_diagnostics.thd_percent =
             measurement_fft_calculate_thd(
                 measurement_fft_output[0],
@@ -1199,9 +1202,7 @@ void measurement_fft_process(void)
                                                 measurement_fft_output[1],
                                                 measurement_fft_diagnostics.peak_bin);
             measurement_fft_diagnostics.phase_deg = measurement_fft_wrap_phase(
-                measurement_fft_diagnostics.raw_phase_deg
-                - 360.0f * measurement_fft_diagnostics.peak_frequency_hz
-                    * MEASUREMENT_FFT_INTERCHANNEL_DELAY_S);
+                measurement_fft_diagnostics.raw_phase_deg);
         }
         else
         {
@@ -1216,24 +1217,17 @@ void measurement_fft_process(void)
         measurement_fft_next_decimation_factor =
             MEASUREMENT_FFT_INITIAL_DECIMATION;
 
-        if (range_status[0] != ADS8688_STATUS_OK)
-        {
-            quality = MEASUREMENT_FFT_QUALITY_RANGE_ERROR;
-        }
-        else if ((measurement_fft_diagnostics.clipping_mask & 0x01u) != 0u)
+        if ((measurement_fft_diagnostics.clipping_mask & 0x01u) != 0u)
         {
             quality = MEASUREMENT_FFT_QUALITY_CLIPPED;
         }
-        else if ((!isfinite(measurement_fft_diagnostics.dc_voltage))
-                 || (!isfinite(measurement_fft_diagnostics.amplitude_vpp))
-                 || (!isfinite(measurement_fft_diagnostics.rms_voltage)))
-        {
-            quality = MEASUREMENT_FFT_QUALITY_SIGNAL_TOO_SMALL;
-        }
         else
         {
-            valid_mask |= MEASUREMENT_VALID_DC_VOLTAGE;
-            if (span_vpp[0] < MEASUREMENT_FFT_MINIMUM_VPP)
+            if (voltage_status[0] != 0u)
+            {
+                valid_mask |= MEASUREMENT_VALID_DC_VOLTAGE;
+            }
+            if (span_code[0] < MEASUREMENT_FFT_MINIMUM_SPAN_CODE)
             {
                 mode = MEASUREMENT_MODE_DC;
                 quality = MEASUREMENT_FFT_QUALITY_DC_INPUT;
@@ -1257,9 +1251,14 @@ void measurement_fft_process(void)
             else
             {
                 mode = MEASUREMENT_MODE_AC;
-                valid_mask |= MEASUREMENT_VALID_AMPLITUDE
-                              | MEASUREMENT_VALID_RMS
-                              | MEASUREMENT_VALID_FREQUENCY;
+                valid_mask |= MEASUREMENT_VALID_FREQUENCY;
+                if ((voltage_status[0] != 0u)
+                    && isfinite(measurement_fft_diagnostics.amplitude_vpp)
+                    && isfinite(measurement_fft_diagnostics.rms_voltage))
+                {
+                    valid_mask |= MEASUREMENT_VALID_AMPLITUDE
+                                  | MEASUREMENT_VALID_RMS;
+                }
                 if ((measurement_fft_diagnostics.thd_harmonic_count != 0u)
                     && isfinite(measurement_fft_diagnostics.thd_percent))
                 {
@@ -1279,10 +1278,9 @@ void measurement_fft_process(void)
                     measurement_fft_select_decimation(
                         measurement_fft_diagnostics.peak_frequency_hz);
 
-                if ((range_status[1] != ADS8688_STATUS_OK)
-                    || ((measurement_fft_diagnostics.clipping_mask & 0x02u)
+                if (((measurement_fft_diagnostics.clipping_mask & 0x02u)
                         != 0u)
-                    || (span_vpp[1] < MEASUREMENT_FFT_MINIMUM_VPP)
+                    || (span_code[1] < MEASUREMENT_FFT_MINIMUM_SPAN_CODE)
                     || (peak_power[1] <= 0)
                     || (fabsf(peak_position[0] - peak_position[1])
                         > MEASUREMENT_FFT_CHANNEL_MATCH_TOLERANCE_BINS)
@@ -1372,9 +1370,9 @@ uint8_t measurement_fft_get_spectrum(measurement_fft_spectrum_t *spectrum)
 }
 
 /**
- * @brief 设置 AIN0 或 AIN1 的软件校准系数。
+ * @brief 设置 ADC1/CH1 或 ADC2/CH2 的软件校准系数。
  * @param channel 通道号，只允许 0 或 1。
- * @param calibration 正增益和有限零点修正。
+ * @param calibration 码值比例、零码偏置和有效状态。
  * @return 参数有效时返回 1，否则返回 0。
  * @note 应在主循环上下文调用；新系数从下一帧时域换算开始生效。
  */
@@ -1384,19 +1382,34 @@ uint8_t measurement_fft_set_calibration(
 {
     if ((channel >= MEASUREMENT_FFT_CHANNEL_COUNT)
         || (calibration == 0)
-        || (!isfinite(calibration->gain))
-        || (calibration->gain <= 0.0f)
+        || (calibration->valid > 1u)
         || (!isfinite(calibration->offset_v)))
+    {
+        return 0u;
+    }
+    if ((calibration->valid != 0u)
+        && ((!isfinite(calibration->volts_per_code))
+            || (calibration->volts_per_code == 0.0f)))
     {
         return 0u;
     }
 
     measurement_fft_calibration[channel] = *calibration;
+    if (calibration->valid != 0u)
+    {
+        measurement_fft_diagnostics.voltage_calibrated_mask |=
+            (uint8_t)(1u << channel);
+    }
+    else
+    {
+        measurement_fft_diagnostics.voltage_calibrated_mask &=
+            (uint8_t)~(1u << channel);
+    }
     return 1u;
 }
 
 /**
- * @brief 读取 AIN0 或 AIN1 当前的软件校准系数。
+ * @brief 读取 ADC1/CH1 或 ADC2/CH2 当前的软件校准系数。
  * @param channel 通道号，只允许 0 或 1。
  * @param calibration 用于接收校准系数的指针。
  * @return 参数有效时返回 1，否则返回 0。

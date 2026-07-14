@@ -1,15 +1,15 @@
 /**
  * @file measurement_fft.h
- * @brief ADS8688 双通道信号分析与 8192 点 Q15 RFFT 公共接口。
+ * @brief 双通道同步信号分析与 8192 点 Q15 RFFT 公共接口。
  *
- * 模块用途：采集 AIN0 与 AIN1 的同步序列，计算直流、峰峰值、有效值、主频率、
- * 失真度、频谱和波形类型，并计算 AIN1 相对 AIN0 的相位差。
- * GPIO 引脚映射：无直接 GPIO 引脚；输入数据来自 ADS8688 模块。
- * 依赖的外设和 CubeIDE 配置：依赖 ADS8688 以 AIN0/AIN1 双通道自动扫描，依赖
- * SPI2 DMA 和 CMSIS-DSP Q15 RFFT；不直接访问 DMA 缓冲区。
+ * 模块用途：接收 CH1 与 CH2 的同步样本对，计算直流、峰峰值、有效值、主频率、
+ * 失真度、频谱和波形类型，并计算 CH2 相对 CH1 的相位差。
+ * GPIO 引脚映射：无直接 GPIO 引脚；输入数据由 adc_dual 模块提交。
+ * 依赖的外设和 CubeIDE 配置：依赖片上 ADC1/ADC2 同步采样和 CMSIS-DSP Q15 RFFT；
+ * 不直接访问 ADC 或 DMA 缓冲区。
  * 初始化方法：系统启动时调用 measurement_fft_init()。
- * 调用方法：ADS8688 主循环处理每个样本后调用 measurement_fft_ingest_sample()；主循环
- * 调用 measurement_fft_process()，并仅在 measurement_fft_hmi_refresh_allowed() 允许时刷新 HMI。
+ * 调用方法：采集模块调用 measurement_fft_ingest_pair()；主循环调用
+ * measurement_fft_process()，并仅在 measurement_fft_hmi_refresh_allowed() 允许时刷新 HMI。
  */
 
 #ifndef MEASUREMENT_FFT_H
@@ -57,11 +57,12 @@ typedef struct
     uint8_t valid;             /**< 非零表示数组已由一帧有效 FFT 更新。 */
 } measurement_fft_spectrum_t;
 
-/** 单通道测量校准系数；先乘增益，再叠加直流零点修正。 */
+/** 单通道原始码到输入电压的线性校准系数。 */
 typedef struct
 {
-    float gain;       /**< 幅度和电压增益修正，默认 1.0。 */
-    float offset_v;   /**< 仅作用于直流测量值的零点修正，单位为 V。 */
+    float volts_per_code; /**< 每个 ADC 原始码对应的输入电压，单位为 V/code。 */
+    float offset_v;       /**< 原始码为零时对应的输入电压，单位为 V。 */
+    uint8_t valid;        /**< 非零表示前级比例与偏置已经确认，可发布电压字段。 */
 } measurement_fft_calibration_t;
 
 /** FFT 运行状态及最近一次完整测量诊断数据。 */
@@ -73,7 +74,7 @@ typedef struct
     uint32_t fft_count;                 /**< 已完成双通道 RFFT 的次数。 */
     uint32_t publish_count;             /**< 已发布到 measurement_result 的结果数量。 */
     uint32_t last_fft_cycles;           /**< 最近一次双通道 RFFT 的 Cortex-M7 周期数。 */
-    float raw_sample_rate_hz;           /**< ADS8688 每通道标称原始采样率，单位为 Hz。 */
+    float raw_sample_rate_hz;           /**< ADC1/ADC2 每通道同步原始采样率，单位为 Hz。 */
     float effective_sample_rate_hz;     /**< 当前抽取后的 FFT 有效采样率，单位为 Hz。 */
     float bin_width_hz;                 /**< 当前 FFT 本征频点间隔，单位为 Hz。 */
     uint8_t decimation_factor;          /**< 当前每通道输入样本抽取因子。 */
@@ -98,6 +99,7 @@ typedef struct
     uint8_t clipping_mask;              /**< 位 0/1 分别表示 AIN0/AIN1 接近满量程削顶。 */
     uint8_t result_valid;               /**< 非零表示最近一次结果已经作为 LIVE 数据发布。 */
     uint8_t fft_ready;                  /**< 非零表示至少完成过一次双通道 RFFT。 */
+    uint8_t voltage_calibrated_mask;    /**< 位 0/1 表示 CH1/CH2 已具备有效电压校准。 */
 } measurement_fft_diagnostics_t;
 
 /**
@@ -109,13 +111,31 @@ typedef struct
 void measurement_fft_init(void);
 
 /**
- * @brief 接收一条 ADS8688 原始采样记录。
- * @param channel ADS8688 通道号，仅接收 AIN0 与 AIN1。
- * @param raw_code ADS8688 直二进制原始码。
+ * @brief 接收同一触发时刻的双通道原始采样对。
+ * @param ch1_raw_code ADC1/CH1 的 16 位原始码。
+ * @param ch2_raw_code ADC2/CH2 的 16 位原始码。
  * @return 无。
- * @note 本函数只复制样本，不执行 FFT；由 ADS8688 主循环处理函数调用，不放入中断。
+ * @note 本函数只复制样本，不执行 FFT；只能由主循环中的采集处理函数调用。
+ */
+void measurement_fft_ingest_pair(uint16_t ch1_raw_code,
+                                 uint16_t ch2_raw_code);
+
+/**
+ * @brief 迁移期间接收一条旧 ADS8688 顺序采样记录。
+ * @param channel 旧 ADS8688 通道号，仅接收 0 与 1。
+ * @param raw_code 旧 ADS8688 直二进制原始码。
+ * @return 无。
+ * @note 仅用于让旧驱动继续编译；片上 ADC 正式链路不得调用本接口。
  */
 void measurement_fft_ingest_sample(uint8_t channel, uint16_t raw_code);
+
+/**
+ * @brief 判断采集模块当前是否应继续提供同步样本对。
+ * @param 无。
+ * @return 采集或过渡状态返回 1，FFT 就绪或 HMI 显示状态返回 0。
+ * @note adc_dual 模块据此启停 TIM2，避免 9600 波特率发送期间覆盖窗口。
+ */
+uint8_t measurement_fft_sampling_required(void);
 
 /**
  * @brief 处理已收齐窗口，计算并发布幅度、频率、相位差和波形类型。
@@ -152,9 +172,9 @@ uint8_t measurement_fft_get_spectrum(measurement_fft_spectrum_t *spectrum);
 /**
  * @brief 设置 AIN0 或 AIN1 的软件校准系数。
  * @param channel 通道号，只允许 0 或 1。
- * @param calibration 正增益和有限零点修正。
+ * @param calibration 码值比例、零码偏置和有效状态。
  * @return 参数有效时返回 1，否则返回 0。
- * @note 只影响后续发布的电压、有效值和幅度，不改变原始采样、频率和相位。
+ * @note valid 为零时仍分析频率、相位和波形，但不发布电压、幅度和有效值。
  */
 uint8_t measurement_fft_set_calibration(
     uint8_t channel,
@@ -165,7 +185,7 @@ uint8_t measurement_fft_set_calibration(
  * @param channel 通道号，只允许 0 或 1。
  * @param calibration 用于接收校准系数的指针。
  * @return 参数有效时返回 1，否则返回 0。
- * @note 默认增益为 1.0，零点修正为 0 V。
+ * @note 默认 valid 为零，前级方案确认前不得把原始码标注为真实电压。
  */
 uint8_t measurement_fft_get_calibration(
     uint8_t channel,

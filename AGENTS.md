@@ -2,7 +2,7 @@
 
 ## 1. 适用范围与开发环境
 
-- 本规则适用于 `D:\CubeIDE\h7_pre` 下现有及未来的实际 STM32 工程。
+- 本规则适用于当前 `h7_onchip_adc` 实际 STM32 工程。
 - 不得把 `.metadata`、`STM32CubeIDE_1.19.0`、`STM32CubeIDE_2.1.1` 或其他 IDE 安装目录当作项目进行编辑或初始化 Git。
 - 开发软件为 STM32CubeIDE 1.19.0。
 - 目标 MCU 为 STM32H750VBT6。
@@ -150,3 +150,15 @@ system_init();
 - `git add` 加 `git commit` 表示提交到本地历史；`git push` 才会发送到远程。
 - 同步公共基线时优先使用 `git pull --ff-only`，避免自动生成无意义的合并提交。
 - 发现远程分支与当前分支没有共同历史时，立即停止 merge，先确认它是否属于同一工程和同一硬件平台。
+
+## 13. H750 片上双 ADC 迁移覆盖规则
+
+- 本节覆盖第 12 节中关于当前硬件基线的表述；第 12 节保留为团队协作和 ADS8688 历史背景。
+- 当前活动工程为 `C:\Users\48747\STM32CubeIDE\workspace_1.19.0\h7_onchip_adc`，活动分支为 `momo/onchip-adc`。
+- 原 `h7_pre` 是 ADS8688 只读历史工程，不得从本工程修改、删除或覆盖其文件。
+- 新活动采集链路为 STM32H750 ADC1/ADC2 Dual Regular Simultaneous；ADS8688 源码仅在迁移期保留，不得重新接入 `system_init()` 或 `system_process()`。
+- 串口屏固定使用 USART1、PA9/PA10、9600 8N1、阻塞轮询发送；不使用 USART DMA，也不启用 USART1 global interrupt。
+- 片上 ADC 的 `.ioc`、Pinout、Clock、DMA、NVIC 和生成代码必须由用户在 STM32CubeIDE 1.19.0 的 CubeMX 图形界面修改；Codex 负责给出步骤、审查生成结果和完成用户模块。
+- 默认计划引脚为 PC4/ADC1_INP4 和 PB1/ADC2_INP5。前级参考电路未确认前，不锁定电压换算系数，也不得宣称幅度精度。
+- 双 ADC DMA 使用 32 位 packed word：ADC1 低 16 位、ADC2 高 16 位；缓冲区 32 字节对齐并执行 Cortex-M7 D-Cache 维护。
+- 完成本地测试和 CubeMX 生成后的全量编译前不得 push；任何 push 仍需用户明确许可。
