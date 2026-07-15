@@ -25,6 +25,17 @@ static uint32_t adc_dual_dma_buffer[ADC_DUAL_DMA_WORD_COUNT]
     __attribute__((aligned(32)));
 
 /**
+ * @brief 判断 Cortex-M7 数据缓存是否已经启用。
+ * @param 无。
+ * @return D-Cache 已启用时返回 1，否则返回 0。
+ * @note 未启用 D-Cache 时禁止执行按地址清理操作，避免触发 AXI 写总线故障。
+ */
+static uint8_t adc_dual_dcache_is_enabled(void)
+{
+    return ((SCB->CCR & SCB_CCR_DC_Msk) != 0u) ? 1u : 0u;
+}
+
+/**
  * @brief 领取并清除三个中断共享标志。
  * @param half_flag 用于接收前半区标志的指针。
  * @param full_flag 用于接收后半区标志的指针。
@@ -112,9 +123,12 @@ static void adc_dual_process_block(uint32_t start_index,
 {
     uint32_t index;
 
-    SCB_InvalidateDCache_by_Addr(
-        (uint32_t *)&adc_dual_dma_buffer[start_index],
-        (int32_t)(word_count * sizeof(adc_dual_dma_buffer[0])));
+    if (adc_dual_dcache_is_enabled() != 0u)
+    {
+        SCB_InvalidateDCache_by_Addr(
+            (uint32_t *)&adc_dual_dma_buffer[start_index],
+            (int32_t)(word_count * sizeof(adc_dual_dma_buffer[0])));
+    }
 
     for (index = 0u; index < word_count; index++)
     {
@@ -208,9 +222,12 @@ void adc_dual_init(void)
         return;
     }
 
-    SCB_CleanInvalidateDCache_by_Addr(
-        adc_dual_dma_buffer,
-        (int32_t)sizeof(adc_dual_dma_buffer));
+    if (adc_dual_dcache_is_enabled() != 0u)
+    {
+        SCB_CleanInvalidateDCache_by_Addr(
+            adc_dual_dma_buffer,
+            (int32_t)sizeof(adc_dual_dma_buffer));
+    }
     adc_dual_stats.last_hal_status = (int32_t)HAL_ADCEx_MultiModeStart_DMA(
         &hadc1,
         adc_dual_dma_buffer,
