@@ -316,6 +316,13 @@ void adc_dual_process(void)
     if ((half_flag != 0u) && (full_flag != 0u))
     {
         adc_dual_stats.backlog_count++;
+        adc_dual_stats.dropped_pair_count += ADC_DUAL_DMA_WORD_COUNT;
+        if (measurement_fft_sampling_required() != 0u)
+        {
+            measurement_fft_resynchronize();
+        }
+        adc_dual_update_trigger_state();
+        return;
     }
     if (half_flag != 0u)
     {

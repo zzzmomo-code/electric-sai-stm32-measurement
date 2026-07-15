@@ -963,10 +963,18 @@ void measurement_fft_init(void)
     measurement_fft_diagnostics.publish_count = 0u;
     measurement_fft_diagnostics.last_fft_cycles = 0u;
     measurement_fft_update_timing_diagnostics();
+    measurement_fft_diagnostics.capture_resync_count = 0u;
+    measurement_fft_diagnostics.ch1_frame_min_code = 0u;
+    measurement_fft_diagnostics.ch1_frame_max_code = 0u;
+    measurement_fft_diagnostics.ch1_frame_mean_code = 0u;
+    measurement_fft_diagnostics.ch2_frame_min_code = 0u;
+    measurement_fft_diagnostics.ch2_frame_max_code = 0u;
+    measurement_fft_diagnostics.ch2_frame_mean_code = 0u;
     measurement_fft_diagnostics.peak_bin = 0u;
     measurement_fft_diagnostics.secondary_peak_bin = 0u;
     measurement_fft_diagnostics.peak_offset_bins = 0.0f;
     measurement_fft_diagnostics.peak_frequency_hz = 0.0f;
+    measurement_fft_diagnostics.secondary_peak_frequency_hz = 0.0f;
     measurement_fft_diagnostics.amplitude_vpp = 0.0f;
     measurement_fft_diagnostics.secondary_amplitude_vpp = 0.0f;
     measurement_fft_diagnostics.dc_voltage = 0.0f;
@@ -1123,6 +1131,21 @@ uint8_t measurement_fft_sampling_required(void)
                : 0u;
 }
 
+void measurement_fft_resynchronize(void)
+{
+    if (measurement_fft_diagnostics.init_status != (int32_t)ARM_MATH_SUCCESS)
+    {
+        return;
+    }
+
+    measurement_fft_sample_count[0] = 0u;
+    measurement_fft_sample_count[1] = 0u;
+    measurement_fft_settle_count[0] = 0u;
+    measurement_fft_settle_count[1] = 0u;
+    measurement_fft_state = MEASUREMENT_FFT_STATE_SETTLING;
+    measurement_fft_diagnostics.capture_resync_count++;
+}
+
 /**
  * @brief 处理已收齐窗口，计算并发布幅度、频率、相位差和波形类型。
  * @param 无。
@@ -1158,6 +1181,18 @@ void measurement_fft_process(void)
         }
 
         measurement_fft_diagnostics.clipping_mask = 0u;
+        measurement_fft_diagnostics.ch1_frame_min_code =
+            time_metrics[0].span.minimum_code;
+        measurement_fft_diagnostics.ch1_frame_max_code =
+            time_metrics[0].span.maximum_code;
+        measurement_fft_diagnostics.ch1_frame_mean_code =
+            (uint16_t)(time_metrics[0].mean_raw_code + 0.5f);
+        measurement_fft_diagnostics.ch2_frame_min_code =
+            time_metrics[1].span.minimum_code;
+        measurement_fft_diagnostics.ch2_frame_max_code =
+            time_metrics[1].span.maximum_code;
+        measurement_fft_diagnostics.ch2_frame_mean_code =
+            (uint16_t)(time_metrics[1].mean_raw_code + 0.5f);
         if (measurement_fft_span_is_clipped(time_metrics[0].span) != 0u)
         {
             measurement_fft_diagnostics.clipping_mask |= 0x01u;
@@ -1219,6 +1254,8 @@ void measurement_fft_process(void)
         measurement_fft_diagnostics.peak_offset_bins = peak_offset[0];
         measurement_fft_diagnostics.peak_frequency_hz =
             peak_position[0] * measurement_fft_diagnostics.bin_width_hz;
+        measurement_fft_diagnostics.secondary_peak_frequency_hz =
+            peak_position[1] * measurement_fft_diagnostics.bin_width_hz;
         measurement_fft_diagnostics.harmonic_ratio_3 =
             measurement_fft_harmonic_ratio(measurement_fft_output[0],
                                            peak_position[0],

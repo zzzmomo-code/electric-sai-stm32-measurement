@@ -71,7 +71,15 @@ class MeasurementFftContractTest(unittest.TestCase):
             "effective_sample_rate_hz",
             "bin_width_hz",
             "decimation_factor",
+            "capture_resync_count",
+            "ch1_frame_min_code",
+            "ch1_frame_max_code",
+            "ch1_frame_mean_code",
+            "ch2_frame_min_code",
+            "ch2_frame_max_code",
+            "ch2_frame_mean_code",
             "peak_frequency_hz",
+            "secondary_peak_frequency_hz",
             "amplitude_vpp",
             "secondary_amplitude_vpp",
             "dc_voltage",
@@ -90,6 +98,15 @@ class MeasurementFftContractTest(unittest.TestCase):
         for name in required_names:
             with self.subTest(name=name):
                 self.assertIn(name, header)
+
+    def test_fft_exposes_capture_resynchronization_entrypoint(self):
+        """DMA 顺序失去可信度时应能放弃当前窗口并重新同步。"""
+        header = (user_dir / "measurement_fft.h").read_text(encoding="utf-8")
+        source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
+
+        self.assertIn("void measurement_fft_resynchronize(void);", header)
+        self.assertIn("void measurement_fft_resynchronize(void)", source)
+        self.assertIn("measurement_fft_diagnostics.capture_resync_count++", source)
 
     def test_fixed_80ksps_and_spectrum_contract_is_declared(self):
         """固定80 kSPS应达到10 Hz内频点间隔，并保留64点频谱接口。"""

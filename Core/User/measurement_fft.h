@@ -79,10 +79,18 @@ typedef struct
     float effective_sample_rate_hz;     /**< 当前抽取后的 FFT 有效采样率，单位为 Hz。 */
     float bin_width_hz;                 /**< 当前 FFT 本征频点间隔，单位为 Hz。 */
     uint8_t decimation_factor;          /**< 固定为 1，表示全部 80 kSPS 同步样本均进入 FFT。 */
+    uint32_t capture_resync_count;      /**< DMA 半区顺序不可信时主动放弃窗口并重新同步的次数。 */
+    uint16_t ch1_frame_min_code;        /**< 最近完整 FFT 帧内 CH1 的最小原始码。 */
+    uint16_t ch1_frame_max_code;        /**< 最近完整 FFT 帧内 CH1 的最大原始码。 */
+    uint16_t ch1_frame_mean_code;       /**< 最近完整 FFT 帧内 CH1 的算术平均原始码。 */
+    uint16_t ch2_frame_min_code;        /**< 最近完整 FFT 帧内 CH2 的最小原始码。 */
+    uint16_t ch2_frame_max_code;        /**< 最近完整 FFT 帧内 CH2 的最大原始码。 */
+    uint16_t ch2_frame_mean_code;       /**< 最近完整 FFT 帧内 CH2 的算术平均原始码。 */
     uint16_t peak_bin;                  /**< AIN0 主峰整数频点。 */
     uint16_t secondary_peak_bin;        /**< AIN1 主峰整数频点。 */
     float peak_offset_bins;             /**< AIN0 三点抛物线插值得到的亚频点偏移。 */
     float peak_frequency_hz;            /**< AIN0 插值主频率，单位为 Hz。 */
+    float secondary_peak_frequency_hz;  /**< AIN1 插值主频率，单位为 Hz。 */
     float amplitude_vpp;                /**< AIN0 时域峰峰值，单位为 V。 */
     float secondary_amplitude_vpp;      /**< AIN1 时域峰峰值，单位为 V。 */
     float dc_voltage;                   /**< AIN0 窗口平均直流电压，单位为 V。 */
@@ -137,6 +145,14 @@ void measurement_fft_ingest_sample(uint8_t channel, uint16_t raw_code);
  * @note adc_dual 模块据此启停 TIM2，避免 9600 波特率发送期间覆盖窗口。
  */
 uint8_t measurement_fft_sampling_required(void);
+
+/**
+ * @brief 放弃当前未完成窗口并重新建立连续同步采样边界。
+ * @param 无。
+ * @return 无。
+ * @note 仅供主循环在发现 DMA 前后半区同时积压时调用，不在中断中执行。
+ */
+void measurement_fft_resynchronize(void);
 
 /**
  * @brief 处理已收齐窗口，计算并发布幅度、频率、相位差和波形类型。

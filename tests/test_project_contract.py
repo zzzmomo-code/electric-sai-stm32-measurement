@@ -256,6 +256,12 @@ class ProjectContractTest(unittest.TestCase):
             r"half_flag\s*!=\s*0u[\s\S]*?full_flag\s*!=\s*0u"
             r"[\s\S]*?backlog_count\+\+",
         )
+        self.assertRegex(
+            source,
+            r"half_flag\s*!=\s*0u[\s\S]*?full_flag\s*!=\s*0u"
+            r"[\s\S]*?measurement_fft_resynchronize\(\)"
+            r"[\s\S]*?return;",
+        )
 
     def test_onchip_adc_callbacks_only_set_their_flags(self):
         """ADC DMA 三个 HAL 回调只能置位各自的单一标志。"""
