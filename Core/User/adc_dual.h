@@ -7,7 +7,7 @@
  * GPIO 引脚映射：计划使用 PC4/ADC1_INP4 作为 CH1，PB1/ADC2_INP5 作为 CH2；
  * 在 CubeMX 尚未生成 ADC 配置前，本模块保持“未配置”状态且不访问硬件。
  * 依赖的外设和 CubeIDE 配置：ADC1/ADC2 Dual Regular Simultaneous、TIM2 TRGO
- * 500 kHz、ADC1 DMA1 Stream0 Circular Word/Word，以及 DMA1 Stream0 中断。
+ * 80 kHz、ADC1 DMA1 Stream0 Circular Word/Word，以及 DMA1 Stream0 中断。
  * 初始化方法：由 system_init() 调用 adc_dual_init()。
  * 调用方法：主循环只调用 system_process()，由其间接调用 adc_dual_process()。
  */

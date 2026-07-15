@@ -22,6 +22,7 @@
 - DMA 半满、满帧、错误回调只置位各自标志，拆包和统计均在主循环执行。
 - FFT 改为 `measurement_fft_ingest_pair(ch1, ch2)` 同步样本对接口，不再做 ADS8688 通道轮询延迟补偿。
 - 保留 8192 点 CMSIS-DSP Q15 RFFT、Hann 窗、频率插值、相位、THD、波形识别和 64 点频谱接口。
+- 双通道固定按每通道 80 kSPS 进入 FFT，不再执行简单跳点抽取；8192 点本征频点间隔为 9.765625 Hz。
 - 前级尚未确定时，频率、相位和波形仍可分析；Vpp、DC、RMS 只有校准参数有效后才发布。
 - 算法仍只通过 `measurement_result_publish()` 发布快照，HMI 不读取 ADC DMA 缓冲区。
 - 保留 TJC4827T143_011R_I_P20 串口屏：USART1、PA9/PA10、9600 8N1、阻塞轮询发送，不使用 USART DMA 或 USART1 中断。
@@ -51,7 +52,7 @@
 - PC4 配置为 ADC1_INP4，PB1 配置为 ADC2_INP5。
 - ADC1/ADC2：16 bit、Single-ended、每个 ADC 一个 Rank、8.5 Cycles、关闭连续/扫描/过采样。
 - ADC1 为 Master、ADC2 为 Slave，Dual Regular Simultaneous，DMA 数据格式 32 bits，`OVRMOD=1`。
-- TIM2：APB1 定时器时钟 240 MHz，PSC=0、ARR=479、TRGO=Update，触发率 500 kHz。
+- TIM2：APB1 定时器时钟 240 MHz，PSC=0、ARR=2999、TRGO=Update，触发率 80 kHz。
 - ADC1 外部触发为 TIM2 TRGO Rising Edge；ADC2 不配置独立触发。
 - ADC1 DMA：DMA1 Stream0、Peripheral to Memory、Circular、Word/Word、Memory Increment、Very High、IRQ 优先级 5。
 - ADC 异步时钟目标约 32.25 MHz，分频 `/4`。
@@ -85,6 +86,8 @@ system_process();
 ```
 
 `system_process()` 内部依次处理 ADC DMA、FFT 状态和允许时的 HMI 刷新。FFT 收齐一帧后暂停 TIM2，完成分析和 9600 波特率屏幕发送后再开始下一帧。
+
+80 kSPS 的奈奎斯特频率为 40 kHz，可分析最高 20 kHz 基波，但20 kHz输入的二次及更高谐波不在可靠可测范围内。因此该配置优先满足基波频率、幅度和相位测量；高频 THD 若作为最终验收项，需要另设更高采样率测量模式。
 
 ## 电压校准
 

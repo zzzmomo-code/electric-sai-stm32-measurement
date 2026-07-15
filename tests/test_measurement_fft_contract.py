@@ -82,21 +82,21 @@ class MeasurementFftContractTest(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertIn(name, header)
 
-    def test_adaptive_low_frequency_and_spectrum_contract_is_declared(self):
-        """低频抽取和 64 点频谱必须保留，避免回退到约 24 Hz 本征频点间隔。"""
+    def test_fixed_80ksps_and_spectrum_contract_is_declared(self):
+        """固定80 kSPS应达到10 Hz内频点间隔，并保留64点频谱接口。"""
         header = (user_dir / "measurement_fft.h").read_text(encoding="utf-8")
         source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
 
         for token in (
-            "MEASUREMENT_FFT_INITIAL_DECIMATION 4u",
-            "MEASUREMENT_FFT_LOW_BAND_DECIMATION 8u",
-            "MEASUREMENT_FFT_MID_BAND_DECIMATION 2u",
-            "MEASUREMENT_FFT_HIGH_BAND_DECIMATION 1u",
-            "measurement_fft_select_decimation",
+            "MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ 80000.0f",
+            "MEASUREMENT_FFT_DECIMATION_FACTOR 1u",
             "measurement_fft_update_timing_diagnostics",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, source)
+
+        self.assertNotIn("measurement_fft_select_decimation", source)
+        self.assertNotIn("measurement_fft_decimation_count", source)
 
         self.assertRegex(
             header,
@@ -182,12 +182,12 @@ class MeasurementFftContractTest(unittest.TestCase):
         self.assertIn("voltage_status[0] != 0u", source)
 
     def test_synchronized_pair_sample_rate_contract(self):
-        """片上双 ADC 必须以 500 kSPS 同步样本对进入 FFT。"""
+        """片上双 ADC 必须以80 kSPS同步样本对进入FFT。"""
         header = (user_dir / "measurement_fft.h").read_text(encoding="utf-8")
         source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
 
         self.assertIn("measurement_fft_ingest_pair(uint16_t ch1_raw_code", header)
-        self.assertIn("MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ 500000.0f", source)
+        self.assertIn("MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ 80000.0f", source)
         self.assertIn("measurement_fft_sampling_required", header + source)
 
     def test_hmi_detail_and_spectrum_builders_are_available_but_not_automatic(self):

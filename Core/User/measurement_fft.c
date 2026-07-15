@@ -7,7 +7,7 @@
  * THD、压缩频谱、双通道相位差和谐波分类。
  * GPIO 引脚映射：无直接 GPIO 引脚。
  * 依赖的外设和 CubeIDE 配置：依赖 adc_dual 在主循环提交同步样本对和 CMSIS-DSP Q15 RFFT；
- * 当前软件目标采样率为每通道 500 kSPS。
+ * 当前软件目标采样率为每通道 80 kSPS，8192 点频点间隔为 9.765625 Hz。
  * 初始化方法：system_init() 调用 measurement_fft_init()。
  * 调用方法：adc_dual_process() 调用 measurement_fft_ingest_pair()，主循环随后调用
  * measurement_fft_process()；测量结果只通过 measurement_result_publish() 对外发布。
@@ -25,25 +25,10 @@
 #define MEASUREMENT_FFT_SQRT_3 1.73205080756887729353f
 
 /** TIM2 TRGO 驱动 ADC1/ADC2 同步转换的目标每通道采样率。 */
-#define MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ 500000.0f
+#define MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ 80000.0f
 
-/** 首帧采用的全频带抽取因子，奈奎斯特频率仍高于题目要求的 20 kHz。 */
-#define MEASUREMENT_FFT_INITIAL_DECIMATION 4u
-
-/** 低频段抽取因子，约 3 Hz 本征频点间隔且保留 2 kHz 的五次谐波。 */
-#define MEASUREMENT_FFT_LOW_BAND_DECIMATION 8u
-
-/** 中频段抽取因子，用于扩大 THD 可观测谐波带宽。 */
-#define MEASUREMENT_FFT_MID_BAND_DECIMATION 2u
-
-/** 高频段不抽取，尽量保留 20 kHz 输入的二至四次谐波。 */
-#define MEASUREMENT_FFT_HIGH_BAND_DECIMATION 1u
-
-/** 低频配置上限，波形判别题目只要求到 2 kHz。 */
-#define MEASUREMENT_FFT_LOW_BAND_MAX_HZ 2200.0f
-
-/** 中频配置上限；更高频率切换到原始每通道采样率。 */
-#define MEASUREMENT_FFT_MID_BAND_MAX_HZ 9500.0f
+/** 固定使用全部同步样本，不执行未经低通滤波的跳点抽取。 */
+#define MEASUREMENT_FFT_DECIMATION_FACTOR 1u
 
 /** THD 最多统计到十次谐波，超出当前奈奎斯特频率的谐波自动忽略。 */
 #define MEASUREMENT_FFT_MAX_HARMONIC_ORDER 10u
@@ -131,12 +116,8 @@ static uint16_t measurement_fft_sample_count[MEASUREMENT_FFT_CHANNEL_COUNT];
 /** 显示结束后两个通道已经丢弃的过渡样本数量。 */
 static uint16_t measurement_fft_settle_count[MEASUREMENT_FFT_CHANNEL_COUNT];
 
-/** 各通道距离下一次保留样本还需跳过的原始样本数。 */
-static uint8_t measurement_fft_decimation_count[MEASUREMENT_FFT_CHANNEL_COUNT];
-
-/** 当前窗口和下一窗口使用的抽取因子。 */
+/** 固定抽取因子；保留在诊断接口中用于确认当前采样策略。 */
 static uint8_t measurement_fft_decimation_factor;
-static uint8_t measurement_fft_next_decimation_factor;
 
 /** 当前采集、处理、显示或过渡状态。 */
 static measurement_fft_state_t measurement_fft_state;
@@ -611,26 +592,7 @@ static float measurement_fft_rms_to_vpp(float rms_voltage,
 }
 
 /**
- * @brief 选择下一窗口的抽取因子。
- * @param frequency_hz 当前 AIN0 主频率。
- * @return 低频 8 倍、中频 2 倍或高频 1 倍抽取因子。
- * @note 首帧固定 4 倍抽取，后续按频率自适应以平衡频点间隔和谐波带宽。
- */
-static uint8_t measurement_fft_select_decimation(float frequency_hz)
-{
-    if (frequency_hz <= MEASUREMENT_FFT_LOW_BAND_MAX_HZ)
-    {
-        return MEASUREMENT_FFT_LOW_BAND_DECIMATION;
-    }
-    if (frequency_hz <= MEASUREMENT_FFT_MID_BAND_MAX_HZ)
-    {
-        return MEASUREMENT_FFT_MID_BAND_DECIMATION;
-    }
-    return MEASUREMENT_FFT_HIGH_BAND_DECIMATION;
-}
-
-/**
- * @brief 按当前抽取因子更新采样率和频点间隔诊断。
+ * @brief 更新固定采样率和频点间隔诊断。
  * @param 无。
  * @return 无。
  */
@@ -867,10 +829,7 @@ void measurement_fft_init(void)
     measurement_fft_sample_count[1] = 0u;
     measurement_fft_settle_count[0] = 0u;
     measurement_fft_settle_count[1] = 0u;
-    measurement_fft_decimation_count[0] = 0u;
-    measurement_fft_decimation_count[1] = 0u;
-    measurement_fft_decimation_factor = MEASUREMENT_FFT_INITIAL_DECIMATION;
-    measurement_fft_next_decimation_factor = MEASUREMENT_FFT_INITIAL_DECIMATION;
+    measurement_fft_decimation_factor = MEASUREMENT_FFT_DECIMATION_FACTOR;
     measurement_fft_state = MEASUREMENT_FFT_STATE_CAPTURE;
     measurement_fft_display_start_ms = 0u;
     measurement_fft_result_sequence = 0u;
@@ -979,10 +938,6 @@ void measurement_fft_ingest_pair(uint16_t ch1_raw_code,
         {
             measurement_fft_sample_count[0] = 0u;
             measurement_fft_sample_count[1] = 0u;
-            measurement_fft_decimation_count[0] = 0u;
-            measurement_fft_decimation_count[1] = 0u;
-            measurement_fft_decimation_factor =
-                measurement_fft_next_decimation_factor;
             measurement_fft_update_timing_diagnostics();
             measurement_fft_state = MEASUREMENT_FFT_STATE_CAPTURE;
         }
@@ -994,18 +949,6 @@ void measurement_fft_ingest_pair(uint16_t ch1_raw_code,
         measurement_fft_diagnostics.discarded_sample_count += 2u;
         return;
     }
-
-    if (measurement_fft_decimation_count[0] != 0u)
-    {
-        measurement_fft_decimation_count[0]--;
-        measurement_fft_decimation_count[1]--;
-        measurement_fft_diagnostics.discarded_sample_count += 2u;
-        return;
-    }
-    measurement_fft_decimation_count[0] =
-        measurement_fft_decimation_factor - 1u;
-    measurement_fft_decimation_count[1] =
-        measurement_fft_decimation_factor - 1u;
 
     write_index = measurement_fft_sample_count[0];
     if ((write_index >= MEASUREMENT_FFT_LENGTH)
@@ -1214,9 +1157,6 @@ void measurement_fft_process(void)
         mode = MEASUREMENT_MODE_UNKNOWN;
         valid_mask = 0u;
         valid = 0u;
-        measurement_fft_next_decimation_factor =
-            MEASUREMENT_FFT_INITIAL_DECIMATION;
-
         if ((measurement_fft_diagnostics.clipping_mask & 0x01u) != 0u)
         {
             quality = MEASUREMENT_FFT_QUALITY_CLIPPED;
@@ -1239,8 +1179,6 @@ void measurement_fft_process(void)
                 measurement_fft_diagnostics.wave_type =
                     MEASUREMENT_WAVE_UNKNOWN;
                 measurement_fft_spectrum.valid = 0u;
-                measurement_fft_next_decimation_factor =
-                    MEASUREMENT_FFT_LOW_BAND_DECIMATION;
             }
             else if ((peak_power[0] <= 0)
                      || (!isfinite(
@@ -1273,10 +1211,6 @@ void measurement_fft_process(void)
                 {
                     valid_mask |= MEASUREMENT_VALID_SPECTRUM;
                 }
-
-                measurement_fft_next_decimation_factor =
-                    measurement_fft_select_decimation(
-                        measurement_fft_diagnostics.peak_frequency_hz);
 
                 if (((measurement_fft_diagnostics.clipping_mask & 0x02u)
                         != 0u)

@@ -251,7 +251,7 @@ class ProjectContractTest(unittest.TestCase):
             "PC4",
             "PB1",
             "Dual Regular Simultaneous",
-            "500 kHz",
+            "80 kHz",
             "OVRMOD=1",
             "8192",
             "编译",

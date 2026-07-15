@@ -77,7 +77,7 @@ typedef struct
     float raw_sample_rate_hz;           /**< ADC1/ADC2 每通道同步原始采样率，单位为 Hz。 */
     float effective_sample_rate_hz;     /**< 当前抽取后的 FFT 有效采样率，单位为 Hz。 */
     float bin_width_hz;                 /**< 当前 FFT 本征频点间隔，单位为 Hz。 */
-    uint8_t decimation_factor;          /**< 当前每通道输入样本抽取因子。 */
+    uint8_t decimation_factor;          /**< 固定为 1，表示全部 80 kSPS 同步样本均进入 FFT。 */
     uint16_t peak_bin;                  /**< AIN0 主峰整数频点。 */
     uint16_t secondary_peak_bin;        /**< AIN1 主峰整数频点。 */
     float peak_offset_bins;             /**< AIN0 三点抛物线插值得到的亚频点偏移。 */

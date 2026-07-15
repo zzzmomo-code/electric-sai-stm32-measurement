@@ -53,19 +53,21 @@ ADC1 Rank 1 选择 Channel 4；ADC2 Rank 1 选择 Channel 5。
 
 H750 勘误要求单 DMA 读取 Dual Regular Simultaneous 时启用覆盖模式，避免 ADC2 数据错位。
 
-## 6. 配置 TIM2 为 500 kHz 触发源
+## 6. 配置 TIM2 为 80 kHz 触发源
 
 1. `Timers > TIM2`，Clock Source 选择 `Internal Clock`。
 2. Prescaler 设置 `0`。
-3. Counter Period 设置 `479`。
+3. Counter Period 设置 `2999`。
 4. `Master/Slave Mode` 中 Trigger Output (TRGO) 选择 `Update Event`。
 5. 当前时钟树 APB1=120 MHz，定时器时钟为 240 MHz，因此触发率为：
 
 ```text
-240 MHz / (0 + 1) / (479 + 1) = 500 kHz
+240 MHz / (0 + 1) / (2999 + 1) = 80 kHz
 ```
 
-若 Clock Configuration 页面中的 TIM2 clock 不是 240 MHz，先停止生成并把实际数值告诉我，不要照抄 479。
+若 Clock Configuration 页面中的 TIM2 clock 不是 240 MHz，先停止生成并按 `ARR = TIM2时钟 / 80000 - 1` 重新计算，不要照抄2999。
+
+80 kSPS 配合8192点FFT时，本征频点间隔为 `80000 / 8192 = 9.765625 Hz`，奈奎斯特频率为40 kHz。该模式满足最高20 kHz基波和10 Hz内频点间隔，但不保证20 kHz输入的高次谐波与THD测量。
 
 ## 7. 配置触发与 ADC 时钟
 

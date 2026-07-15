@@ -10,9 +10,9 @@ except ImportError:  # pragma: no cover - 无 NumPy 环境仍可运行其他契�
 
 
 FFT_LENGTH = 8192
-RAW_SAMPLE_RATE_HZ = 500_000.0
-INITIAL_DECIMATION = 4
-LOW_BAND_DECIMATION = 8
+RAW_SAMPLE_RATE_HZ = 80_000.0
+INITIAL_DECIMATION = 1
+LOW_BAND_DECIMATION = 1
 SPECTRUM_POINT_COUNT = 64
 SPECTRUM_MAX_HZ = 20_000.0
 
@@ -168,8 +168,8 @@ class MeasurementFftModelTest(unittest.TestCase):
                 ratio_5 = _harmonic_ratio(power, peak_bin, peak_offset, 5)
                 self.assertEqual(_classify(ratio_3, ratio_5), expected_wave)
 
-    def test_low_band_decimation_meets_20_hz_frequency_requirement(self):
-        """低频抽取后 20 Hz 合成信号的插值误差应明显小于题目 10 Hz。"""
+    def test_fixed_sample_rate_meets_20_hz_frequency_requirement(self):
+        """固定80 kSPS下20 Hz合成信号的频点间隔和插值误差应满足要求。"""
         frequency_hz = 20.0
         sample_rate_hz = RAW_SAMPLE_RATE_HZ / LOW_BAND_DECIMATION
         time_s = np.arange(FFT_LENGTH) / sample_rate_hz
@@ -200,7 +200,7 @@ class MeasurementFftModelTest(unittest.TestCase):
 
     def test_time_domain_dc_rms_and_sine_vpp_conversion(self):
         """已知 1 V 偏置、0.5 V 峰值正弦应恢复 DC、RMS 和 Vpp。"""
-        frequency_hz = 1_000.0
+        frequency_hz = 100.0 * RAW_SAMPLE_RATE_HZ / FFT_LENGTH
         sample_rate_hz = RAW_SAMPLE_RATE_HZ / LOW_BAND_DECIMATION
         time_s = np.arange(FFT_LENGTH) / sample_rate_hz
         voltage = 1.0 + 0.5 * np.sin(2.0 * np.pi * frequency_hz * time_s)
