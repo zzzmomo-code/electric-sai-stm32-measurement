@@ -191,6 +191,7 @@ void adc_dual_init(void)
     adc_dual_stats.dma_full_count = 0u;
     adc_dual_stats.error_count = 0u;
     adc_dual_stats.overflow_count = 0u;
+    adc_dual_stats.backlog_count = 0u;
     adc_dual_stats.sample_pair_count = 0u;
     adc_dual_stats.dropped_pair_count = 0u;
     adc_dual_stats.ch1_min_code = 65535u;
@@ -269,7 +270,7 @@ void adc_dual_process(void)
 
     if ((half_flag != 0u) && (full_flag != 0u))
     {
-        adc_dual_stats.overflow_count++;
+        adc_dual_stats.backlog_count++;
     }
     if (half_flag != 0u)
     {

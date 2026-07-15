@@ -235,6 +235,23 @@ class ProjectContractTest(unittest.TestCase):
             r"valid_mask\s*\|=\s*MEASUREMENT_VALID_AMPLITUDE",
         )
 
+    def test_adc_hardware_overflow_and_main_loop_backlog_are_separate(self):
+        """硬件上溢和主循环积压必须使用不同的诊断计数。"""
+        header = (user_dir / "adc_dual.h").read_text(encoding="utf-8")
+        source = (user_dir / "adc_dual.c").read_text(encoding="utf-8")
+
+        self.assertIn("uint32_t overflow_count;", header)
+        self.assertIn("uint32_t backlog_count;", header)
+        self.assertRegex(
+            source,
+            r"HAL_ADC_ERROR_OVR[\s\S]*?overflow_count\+\+",
+        )
+        self.assertRegex(
+            source,
+            r"half_flag\s*!=\s*0u[\s\S]*?full_flag\s*!=\s*0u"
+            r"[\s\S]*?backlog_count\+\+",
+        )
+
     def test_onchip_adc_callbacks_only_set_their_flags(self):
         """ADC DMA 三个 HAL 回调只能置位各自的单一标志。"""
         source = (user_dir / "adc_dual.c").read_text(encoding="utf-8")

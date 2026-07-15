@@ -38,7 +38,8 @@ typedef struct
     uint32_t dma_half_count;       /**< 已处理的 DMA 前半区次数。 */
     uint32_t dma_full_count;       /**< 已处理的 DMA 后半区次数。 */
     uint32_t error_count;          /**< ADC/DMA 错误事件数量。 */
-    uint32_t overflow_count;       /**< 主循环同时积压前后半区时的计数。 */
+    uint32_t overflow_count;       /**< ADC 硬件上溢错误数量。 */
+    uint32_t backlog_count;        /**< 主循环一次领到前后半区标志的积压次数。 */
     uint32_t sample_pair_count;    /**< 已送入 FFT 边界的同步样本对数量。 */
     uint32_t dropped_pair_count;   /**< FFT 暂停采样时主动忽略的样本对数量。 */
     uint16_t ch1_min_code;         /**< CH1 启动以来的最小原始码。 */
