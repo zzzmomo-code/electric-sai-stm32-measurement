@@ -46,6 +46,12 @@ typedef struct
     uint16_t ch1_max_code;         /**< CH1 启动以来的最大原始码。 */
     uint16_t ch2_min_code;         /**< CH2 启动以来的最小原始码。 */
     uint16_t ch2_max_code;         /**< CH2 启动以来的最大原始码。 */
+    uint16_t ch1_recent_min_code;  /**< CH1 最近一个已处理 DMA 半块的最小原始码。 */
+    uint16_t ch1_recent_max_code;  /**< CH1 最近一个已处理 DMA 半块的最大原始码。 */
+    uint16_t ch1_recent_mean_code; /**< CH1 最近一个已处理 DMA 半块的平均原始码。 */
+    uint16_t ch2_recent_min_code;  /**< CH2 最近一个已处理 DMA 半块的最小原始码。 */
+    uint16_t ch2_recent_max_code;  /**< CH2 最近一个已处理 DMA 半块的最大原始码。 */
+    uint16_t ch2_recent_mean_code; /**< CH2 最近一个已处理 DMA 半块的平均原始码。 */
     int32_t last_hal_status;       /**< 最近一次 HAL 初始化或启停操作返回值。 */
     adc_dual_state_t state;        /**< 当前配置、运行或错误状态。 */
     uint8_t cubemx_ready;          /**< 非零表示 adc.h 与 tim.h 已由 CubeMX 生成。 */

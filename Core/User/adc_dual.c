@@ -122,6 +122,13 @@ static void adc_dual_process_block(uint32_t start_index,
                                    uint32_t word_count)
 {
     uint32_t index;
+    uint32_t processed_count = 0u;
+    uint32_t ch1_sum = 0u;
+    uint32_t ch2_sum = 0u;
+    uint16_t ch1_recent_min = 65535u;
+    uint16_t ch1_recent_max = 0u;
+    uint16_t ch2_recent_min = 65535u;
+    uint16_t ch2_recent_max = 0u;
 
     if (adc_dual_dcache_is_enabled() != 0u)
     {
@@ -161,8 +168,40 @@ static void adc_dual_process_block(uint32_t start_index,
             adc_dual_stats.ch2_max_code = ch2_code;
         }
 
+        if (ch1_code < ch1_recent_min)
+        {
+            ch1_recent_min = ch1_code;
+        }
+        if (ch1_code > ch1_recent_max)
+        {
+            ch1_recent_max = ch1_code;
+        }
+        if (ch2_code < ch2_recent_min)
+        {
+            ch2_recent_min = ch2_code;
+        }
+        if (ch2_code > ch2_recent_max)
+        {
+            ch2_recent_max = ch2_code;
+        }
+        ch1_sum += ch1_code;
+        ch2_sum += ch2_code;
+        processed_count++;
+
         measurement_fft_ingest_pair(ch1_code, ch2_code);
         adc_dual_stats.sample_pair_count++;
+    }
+
+    if (processed_count != 0u)
+    {
+        adc_dual_stats.ch1_recent_min_code = ch1_recent_min;
+        adc_dual_stats.ch1_recent_max_code = ch1_recent_max;
+        adc_dual_stats.ch1_recent_mean_code =
+            (uint16_t)(ch1_sum / processed_count);
+        adc_dual_stats.ch2_recent_min_code = ch2_recent_min;
+        adc_dual_stats.ch2_recent_max_code = ch2_recent_max;
+        adc_dual_stats.ch2_recent_mean_code =
+            (uint16_t)(ch2_sum / processed_count);
     }
 }
 
@@ -198,6 +237,12 @@ void adc_dual_init(void)
     adc_dual_stats.ch1_max_code = 0u;
     adc_dual_stats.ch2_min_code = 65535u;
     adc_dual_stats.ch2_max_code = 0u;
+    adc_dual_stats.ch1_recent_min_code = 65535u;
+    adc_dual_stats.ch1_recent_max_code = 0u;
+    adc_dual_stats.ch1_recent_mean_code = 0u;
+    adc_dual_stats.ch2_recent_min_code = 65535u;
+    adc_dual_stats.ch2_recent_max_code = 0u;
+    adc_dual_stats.ch2_recent_mean_code = 0u;
     adc_dual_stats.last_hal_status = 0;
     adc_dual_stats.timer_running = 0u;
 
