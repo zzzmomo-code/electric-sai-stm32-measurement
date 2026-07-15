@@ -195,6 +195,32 @@ class ProjectContractTest(unittest.TestCase):
         self.assertEqual(packed_word & 0xFFFF, 0x1234)
         self.assertEqual(packed_word >> 16, 0xABCD)
 
+    def test_cubemx_master_adc_uses_circular_dma_data_management(self):
+        """CubeMX must keep circular DMA on the master ADC only."""
+        adc_source = (project_root / "Core" / "Src" / "adc.c").read_text(
+            encoding="utf-8"
+        )
+        master_body = get_function_body(adc_source, "MX_ADC1_Init")
+        slave_body = get_function_body(adc_source, "MX_ADC2_Init")
+
+        self.assertIsNotNone(master_body)
+        self.assertIsNotNone(slave_body)
+        self.assertIn(
+            "hadc1.Init.ConversionDataManagement = "
+            "ADC_CONVERSIONDATA_DMA_CIRCULAR;",
+            master_body,
+        )
+        self.assertIn(
+            "hadc2.Init.ConversionDataManagement = ADC_CONVERSIONDATA_DR;",
+            slave_body,
+        )
+        self.assertIn("multimode.Mode = ADC_DUALMODE_REGSIMULT;", master_body)
+        self.assertIn(
+            "multimode.DualModeData = ADC_DUALMODEDATAFORMAT_32_10_BITS;",
+            master_body,
+        )
+        self.assertIn("hdma_adc1.Init.Mode = DMA_CIRCULAR;", adc_source)
+
     def test_onchip_adc_error_and_uncalibrated_voltage_states_are_visible(self):
         """溢出错误和未校准电压都必须可诊断，不能静默发布假幅度。"""
         adc_source = (user_dir / "adc_dual.c").read_text(encoding="utf-8")

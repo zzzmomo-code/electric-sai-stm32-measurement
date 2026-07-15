@@ -1,9 +1,10 @@
 #MicroXplorer Configuration settings - do not modify
 ADC1.Channel-0\#ChannelRegularConversion=ADC_CHANNEL_4
 ADC1.ClockPrescaler=ADC_CLOCK_ASYNC_DIV4
+ADC1.ConversionDataManagement=ADC_CONVERSIONDATA_DMA_CIRCULAR
 ADC1.DMAAccessModeView=ENABLE
 ADC1.ExternalTrigConv=ADC_EXTERNALTRIG_T2_TRGO
-ADC1.IPParameters=Rank-0\#ChannelRegularConversion,master,Channel-0\#ChannelRegularConversion,SamplingTime-0\#ChannelRegularConversion,OffsetNumber-0\#ChannelRegularConversion,OffsetSignedSaturation-0\#ChannelRegularConversion,NbrOfConversionFlag,Overrun,Mode,DMAAccessModeView,ExternalTrigConv,ClockPrescaler
+ADC1.IPParameters=Rank-0\#ChannelRegularConversion,master,Channel-0\#ChannelRegularConversion,SamplingTime-0\#ChannelRegularConversion,OffsetNumber-0\#ChannelRegularConversion,OffsetSignedSaturation-0\#ChannelRegularConversion,NbrOfConversionFlag,Overrun,Mode,DMAAccessModeView,ExternalTrigConv,ClockPrescaler,ConversionDataManagement
 ADC1.Mode=ADC_DUALMODE_REGSIMULT
 ADC1.NbrOfConversionFlag=1
 ADC1.OffsetNumber-0\#ChannelRegularConversion=ADC_OFFSET_NONE
