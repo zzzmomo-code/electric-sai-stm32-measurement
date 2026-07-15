@@ -12,8 +12,8 @@ user_dir = project_root / "Core" / "User"
 class MeasurementFftContractTest(unittest.TestCase):
     """防止 CubeMX 重新生成或后续重构破坏已经确认的数据边界。"""
 
-    def test_q15_rfft_output_buffer_has_required_double_length(self):
-        """CMSIS-DSP Q15 RFFT 的输出数组必须保持为输入长度的两倍。"""
+    def test_q15_fft_output_buffer_has_required_double_length(self):
+        """Q15 复数 FFT 的交错实虚部输出必须为输入长度的两倍。"""
         header = (user_dir / "measurement_fft.h").read_text(encoding="utf-8")
         source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
 
@@ -36,6 +36,15 @@ class MeasurementFftContractTest(unittest.TestCase):
                 r"\[\s*MEASUREMENT_FFT_OUTPUT_LENGTH\s*\]"
             ),
         )
+
+    def test_q15_fft_uses_runtime_tables_for_128k_flash(self):
+        """8192 点 FFT 必须在 RAM 生成旋转因子，不得依赖超容量静态表。"""
+        source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
+
+        self.assertIn("measurement_fft_initialize_twiddle();", source)
+        self.assertIn("measurement_fft_execute_q15", source)
+        self.assertNotIn("arm_rfft_init_q15", source)
+        self.assertNotIn("arm_rfft_q15(&measurement_fft_instance", source)
 
     def test_fft_publishes_only_through_measurement_result(self):
         """FFT 模块只接收同步样本对并通过结果快照发布。"""

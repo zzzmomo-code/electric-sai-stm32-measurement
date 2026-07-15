@@ -1,11 +1,12 @@
 /**
  * @file measurement_fft.h
- * @brief 双通道同步信号分析与 8192 点 Q15 RFFT 公共接口。
+ * @brief 双通道同步信号分析与 8192 点 Q15 FFT 公共接口。
  *
  * 模块用途：接收 CH1 与 CH2 的同步样本对，计算直流、峰峰值、有效值、主频率、
  * 失真度、频谱和波形类型，并计算 CH2 相对 CH1 的相位差。
  * GPIO 引脚映射：无直接 GPIO 引脚；输入数据由 adc_dual 模块提交。
- * 依赖的外设和 CubeIDE 配置：依赖片上 ADC1/ADC2 同步采样和 CMSIS-DSP Q15 RFFT；
+ * 依赖的外设和 CubeIDE 配置：依赖片上 ADC1/ADC2 同步采样；
+ * Q15 旋转因子在 RAM 中生成，以适配 STM32H750VBT6 的 128 KiB Flash；
  * 不直接访问 ADC 或 DMA 缓冲区。
  * 初始化方法：系统启动时调用 measurement_fft_init()。
  * 调用方法：采集模块调用 measurement_fft_ingest_pair()；主循环调用
@@ -19,10 +20,10 @@
 
 #include "measurement_result.h"
 
-/** 每通道一帧 RFFT 的采样点数。 */
+/** 每通道一帧 FFT 的采样点数。 */
 #define MEASUREMENT_FFT_LENGTH 8192u
 
-/** CMSIS-DSP Q15 RFFT 要求的单通道输出元素数量。 */
+/** Q15 复数 FFT 的单通道交错实部/虚部输出元素数量。 */
 #define MEASUREMENT_FFT_OUTPUT_LENGTH (2u * MEASUREMENT_FFT_LENGTH)
 
 /** 面向串口屏显示压缩后的频谱点数。 */
@@ -68,12 +69,12 @@ typedef struct
 /** FFT 运行状态及最近一次完整测量诊断数据。 */
 typedef struct
 {
-    int32_t init_status;                /**< CMSIS-DSP RFFT 初始化结果，零表示成功。 */
+    int32_t init_status;                /**< Q15 FFT 初始化结果，零表示成功。 */
     uint32_t window_count;              /**< 已收齐的双通道 8192 点窗口数量。 */
     uint32_t discarded_sample_count;    /**< 处理和显示期间主动忽略的已取出样本数量。 */
-    uint32_t fft_count;                 /**< 已完成双通道 RFFT 的次数。 */
+    uint32_t fft_count;                 /**< 已完成双通道 FFT 的次数。 */
     uint32_t publish_count;             /**< 已发布到 measurement_result 的结果数量。 */
-    uint32_t last_fft_cycles;           /**< 最近一次双通道 RFFT 的 Cortex-M7 周期数。 */
+    uint32_t last_fft_cycles;           /**< 最近一次双通道 FFT 的 Cortex-M7 周期数。 */
     float raw_sample_rate_hz;           /**< ADC1/ADC2 每通道同步原始采样率，单位为 Hz。 */
     float effective_sample_rate_hz;     /**< 当前抽取后的 FFT 有效采样率，单位为 Hz。 */
     float bin_width_hz;                 /**< 当前 FFT 本征频点间隔，单位为 Hz。 */
@@ -98,12 +99,12 @@ typedef struct
     measurement_fft_quality_t quality;  /**< 最近一次结果质量状态。 */
     uint8_t clipping_mask;              /**< 位 0/1 分别表示 AIN0/AIN1 接近满量程削顶。 */
     uint8_t result_valid;               /**< 非零表示最近一次结果已经作为 LIVE 数据发布。 */
-    uint8_t fft_ready;                  /**< 非零表示至少完成过一次双通道 RFFT。 */
+    uint8_t fft_ready;                  /**< 非零表示至少完成过一次双通道 FFT。 */
     uint8_t voltage_calibrated_mask;    /**< 位 0/1 表示 CH1/CH2 已具备有效电压校准。 */
 } measurement_fft_diagnostics_t;
 
 /**
- * @brief 初始化 8192 点 RFFT、Hann 窗和测量状态。
+ * @brief 初始化 8192 点 Q15 FFT 旋转因子、Hann 窗和测量状态。
  * @param 无。
  * @return 无。
  * @note 初始化失败时停止接收样本，并在诊断结构中记录 INIT_ERROR。

@@ -3,10 +3,11 @@
  * @brief 片上双 ADC 同步采样的直流、幅频、失真、频谱、相位差和波形类型测量实现。
  *
  * 模块用途：以 ADC1/CH1、ADC2/CH2 的同步 16 位采样构成双缓冲 8192 点窗口，计算平均直流、
- * 峰峰值和交流有效值，去直流并加 Hann 窗后执行 Q15 RFFT，再完成亚频点插值、
+ * 峰峰值和交流有效值，去直流并加 Hann 窗后执行 8192 点 Q15 FFT，再完成亚频点插值、
  * THD、压缩频谱、双通道相位差和谐波分类。
  * GPIO 引脚映射：无直接 GPIO 引脚。
- * 依赖的外设和 CubeIDE 配置：依赖 adc_dual 在主循环提交同步样本对和 CMSIS-DSP Q15 RFFT；
+ * 依赖的外设和 CubeIDE 配置：依赖 adc_dual 在主循环提交同步样本对；
+ * 使用 CMSIS Q15 数据类型，旋转因子在初始化时生成到 RAM，避免静态表超出 128 KiB Flash；
  * 当前软件目标采样率为每通道 80 kSPS，8192 点频点间隔为 9.765625 Hz。
  * 初始化方法：system_init() 调用 measurement_fft_init()。
  * 调用方法：adc_dual_process() 调用 measurement_fft_ingest_pair()，主循环随后调用
@@ -83,9 +84,6 @@ typedef struct
     float rms_ac_code;
 } measurement_fft_time_metrics_t;
 
-/** CMSIS-DSP 的 8192 点实数 Q15 FFT 实例。 */
-static arm_rfft_instance_q15 measurement_fft_instance;
-
 /** 双缓冲原始采样窗口：第一维为缓冲区，第二维为 AIN0/AIN1。 */
 static q15_t measurement_fft_input[MEASUREMENT_FFT_BUFFER_COUNT]
                                     [MEASUREMENT_FFT_CHANNEL_COUNT]
@@ -93,8 +91,8 @@ static q15_t measurement_fft_input[MEASUREMENT_FFT_BUFFER_COUNT]
     __attribute__((aligned(32)));
 
 /**
- * AIN0 与 AIN1 的 RFFT 输出缓冲区。
- * CMSIS-DSP Q15 RFFT 明确要求输出长度为输入长度的两倍。
+ * AIN0 与 AIN1 的复数 FFT 输出缓冲区。
+ * 每个频点按实部、虚部交错保存，因此元素数量为输入长度的两倍。
  */
 static q15_t measurement_fft_output[MEASUREMENT_FFT_CHANNEL_COUNT]
                                      [MEASUREMENT_FFT_OUTPUT_LENGTH]
@@ -104,10 +102,14 @@ static q15_t measurement_fft_output[MEASUREMENT_FFT_CHANNEL_COUNT]
 static q15_t measurement_fft_hann_window[MEASUREMENT_FFT_LENGTH]
     __attribute__((aligned(32)));
 
+/** 8192 点基 2 FFT 的 Q15 复数旋转因子，在启动时生成到 RAM。 */
+static q15_t measurement_fft_twiddle[MEASUREMENT_FFT_LENGTH]
+    __attribute__((aligned(32)));
+
 /** 当前正在填充的双缓冲区编号。 */
 static uint8_t measurement_fft_active_buffer;
 
-/** 已收齐、等待 RFFT 处理的双缓冲区编号。 */
+/** 已收齐、等待 FFT 处理的双缓冲区编号。 */
 static uint8_t measurement_fft_ready_buffer;
 
 /** AIN0 与 AIN1 在当前窗口内已经写入的样本数量。 */
@@ -172,6 +174,122 @@ static q15_t measurement_fft_clamp_q15(int32_t value)
         return -32768;
     }
     return (q15_t)value;
+}
+
+/**
+ * @brief 生成 8192 点基 2 FFT 所需的前向 Q15 旋转因子。
+ * @param 无。
+ * @return 无。
+ * @note 启动时占用短暂计算时间；表存放在 RAM，不占用额外 Flash 常量表。
+ */
+static void measurement_fft_initialize_twiddle(void)
+{
+    uint32_t index;
+
+    for (index = 0u; index < (MEASUREMENT_FFT_LENGTH / 2u); index++)
+    {
+        float angle = -2.0f * MEASUREMENT_FFT_PI * (float)index
+                      / (float)MEASUREMENT_FFT_LENGTH;
+        float real_value = cosf(angle) * MEASUREMENT_FFT_HANN_Q15_MAX;
+        float imaginary_value = sinf(angle) * MEASUREMENT_FFT_HANN_Q15_MAX;
+        int32_t real_q15 = (int32_t)(real_value >= 0.0f
+                                         ? real_value + 0.5f
+                                         : real_value - 0.5f);
+        int32_t imaginary_q15 = (int32_t)(imaginary_value >= 0.0f
+                                              ? imaginary_value + 0.5f
+                                              : imaginary_value - 0.5f);
+
+        measurement_fft_twiddle[index * 2u] =
+            measurement_fft_clamp_q15(real_q15);
+        measurement_fft_twiddle[index * 2u + 1u] =
+            measurement_fft_clamp_q15(imaginary_q15);
+    }
+}
+
+/**
+ * @brief 反转固定 8192 点复数序列的索引位顺序。
+ * @param value 原始索引。
+ * @return 13 位反转后的索引。
+ * @note 无副作用。
+ */
+static uint16_t measurement_fft_reverse_index(uint16_t value)
+{
+    uint16_t reversed = 0u;
+    uint8_t bit;
+
+    for (bit = 0u; bit < 13u; bit++)
+    {
+        reversed = (uint16_t)((reversed << 1u) | (value & 1u));
+        value >>= 1u;
+    }
+
+    return reversed;
+}
+
+/**
+ * @brief 对一通道实数 Q15 窗口执行缩放基 2 前向 FFT。
+ * @param input 已去直流并加 Hann 窗的 8192 点实数输入。
+ * @param output 接收 8192 个复数频点的交错 Q15 数组。
+ * @return 无。
+ * @note 每级蝶形缩小 1 位防止溢出，总缩放与 8192 点 Q15 FFT 一致。
+ */
+static void measurement_fft_execute_q15(const q15_t *input, q15_t *output)
+{
+    uint32_t index;
+    uint32_t stage_size;
+
+    for (index = 0u; index < MEASUREMENT_FFT_LENGTH; index++)
+    {
+        uint32_t reversed = measurement_fft_reverse_index((uint16_t)index);
+
+        output[reversed * 2u] = input[index];
+        output[reversed * 2u + 1u] = 0;
+    }
+
+    for (stage_size = 2u;
+         stage_size <= MEASUREMENT_FFT_LENGTH;
+         stage_size <<= 1u)
+    {
+        uint32_t half_size = stage_size / 2u;
+        uint32_t twiddle_step = MEASUREMENT_FFT_LENGTH / stage_size;
+        uint32_t block;
+
+        for (block = 0u; block < MEASUREMENT_FFT_LENGTH; block += stage_size)
+        {
+            uint32_t offset;
+
+            for (offset = 0u; offset < half_size; offset++)
+            {
+                uint32_t even_index = (block + offset) * 2u;
+                uint32_t odd_index = (block + offset + half_size) * 2u;
+                uint32_t twiddle_index = offset * twiddle_step * 2u;
+                int32_t even_real = output[even_index];
+                int32_t even_imaginary = output[even_index + 1u];
+                int32_t odd_real = output[odd_index];
+                int32_t odd_imaginary = output[odd_index + 1u];
+                int32_t twiddle_real = measurement_fft_twiddle[twiddle_index];
+                int32_t twiddle_imaginary =
+                    measurement_fft_twiddle[twiddle_index + 1u];
+                int32_t product_real = (int32_t)(
+                    ((int64_t)twiddle_real * odd_real
+                     - (int64_t)twiddle_imaginary * odd_imaginary)
+                    >> 15);
+                int32_t product_imaginary = (int32_t)(
+                    ((int64_t)twiddle_real * odd_imaginary
+                     + (int64_t)twiddle_imaginary * odd_real)
+                    >> 15);
+
+                output[even_index] = measurement_fft_clamp_q15(
+                    (even_real + product_real) / 2);
+                output[even_index + 1u] = measurement_fft_clamp_q15(
+                    (even_imaginary + product_imaginary) / 2);
+                output[odd_index] = measurement_fft_clamp_q15(
+                    (even_real - product_real) / 2);
+                output[odd_index + 1u] = measurement_fft_clamp_q15(
+                    (even_imaginary - product_imaginary) / 2);
+            }
+        }
+    }
 }
 
 /**
@@ -295,7 +413,7 @@ static uint8_t measurement_fft_span_is_clipped(
  * @brief 对单通道窗口去直流并施加 Hann 窗。
  * @param samples 待处理的 Q15 样本数组。
  * @return 无。
- * @note 原地修改输入窗口，处理后数组仅供 RFFT 使用。
+ * @note 原地修改输入窗口，处理后数组仅供 FFT 使用。
  */
 static void measurement_fft_prepare_window(q15_t *samples)
 {
@@ -320,7 +438,7 @@ static void measurement_fft_prepare_window(q15_t *samples)
 
 /**
  * @brief 计算一个复数频点的平方幅值。
- * @param spectrum CMSIS-DSP Q15 RFFT 输出数组。
+ * @param spectrum Q15 复数 FFT 的交错实部、虚部输出数组。
  * @param bin 待计算的正频率频点。
  * @return 实部平方与虚部平方之和。
  * @note 使用 64 位整数避免两个 Q15 平方相加时溢出。
@@ -336,7 +454,7 @@ static int64_t measurement_fft_bin_power(const q15_t *spectrum,
 
 /**
  * @brief 查找最大非直流正频率峰值。
- * @param spectrum CMSIS-DSP Q15 RFFT 输出数组。
+ * @param spectrum Q15 复数 FFT 的交错实部、虚部输出数组。
  * @param peak_power 用于接收主峰平方幅值的指针。
  * @return 最大峰值对应的整数频点；没有能量时返回 0。
  * @note 跳过直流和奈奎斯特端点，为三点插值保留左右相邻频点。
@@ -368,7 +486,7 @@ static uint16_t measurement_fft_find_peak_bin(const q15_t *spectrum,
 
 /**
  * @brief 用主峰左右三个对数平方幅值进行抛物线亚频点插值。
- * @param spectrum CMSIS-DSP Q15 RFFT 输出数组。
+ * @param spectrum Q15 复数 FFT 的交错实部、虚部输出数组。
  * @param peak_bin 主峰整数频点。
  * @return 限制在 -0.5 至 0.5 之间的亚频点偏移。
  * @note 该插值提高非整频点信号的频率读数精度，但不改变 8192 点本征频点间隔。
@@ -419,7 +537,7 @@ static float measurement_fft_interpolate_peak(const q15_t *spectrum,
 
 /**
  * @brief 计算目标谐波附近的最大幅值与基波幅值之比。
- * @param spectrum CMSIS-DSP Q15 RFFT 输出数组。
+ * @param spectrum Q15 复数 FFT 的交错实部、虚部输出数组。
  * @param fundamental_bin 插值后的基波频点位置。
  * @param harmonic_order 谐波次数。
  * @param fundamental_power 基波主峰平方幅值。
@@ -459,7 +577,7 @@ static float measurement_fft_harmonic_ratio(const q15_t *spectrum,
 
 /**
  * @brief 汇总目标频点附近 Hann 主瓣的平方幅值。
- * @param spectrum CMSIS-DSP Q15 RFFT 输出数组。
+ * @param spectrum Q15 复数 FFT 的交错实部、虚部输出数组。
  * @param center_bin 目标中心频点。
  * @param radius 左右覆盖频点数量。
  * @return 指定频带内平方幅值之和；越界时返回零。
@@ -491,7 +609,7 @@ static int64_t measurement_fft_band_power(const q15_t *spectrum,
 
 /**
  * @brief 计算当前可观测谐波范围内的总谐波失真。
- * @param spectrum AIN0 的 Q15 RFFT 输出。
+ * @param spectrum AIN0 的 Q15 复数 FFT 输出。
  * @param fundamental_bin 插值后的基波频点位置。
  * @param harmonic_count 用于接收实际纳入计算的谐波数量。
  * @return THD 百分比；无足够频带或基波能量时返回零。
@@ -612,7 +730,7 @@ static void measurement_fft_update_timing_diagnostics(void)
 
 /**
  * @brief 将 AIN0 FFT 压缩为固定 64 点相对幅度频谱。
- * @param spectrum AIN0 的 Q15 RFFT 输出。
+ * @param spectrum AIN0 的 Q15 复数 FFT 输出。
  * @param reference_power 本帧主峰平方幅值。
  * @return 无。
  * @note 输出固定覆盖 0 至 20 kHz，超过当前奈奎斯特频率的点写入 -80 dB。
@@ -752,8 +870,8 @@ static float measurement_fft_wrap_phase(float phase_deg)
 
 /**
  * @brief 计算指定频点处 AIN1 相对 AIN0 的相位差。
- * @param first_spectrum AIN0 RFFT 输出。
- * @param second_spectrum AIN1 RFFT 输出。
+ * @param first_spectrum AIN0 复数 FFT 输出。
+ * @param second_spectrum AIN1 复数 FFT 输出。
  * @param bin 用于相位计算的基波整数频点。
  * @return AIN1-AIN0 相位，单位为度，范围为 -180 至 180 度。
  * @note 使用 X1 乘以 X0 共轭的交叉频谱，不受两个通道公共窗相位影响。
@@ -814,7 +932,7 @@ static void measurement_fft_publish(uint8_t valid,
 }
 
 /**
- * @brief 初始化 8192 点 RFFT、Hann 窗和测量状态。
+ * @brief 初始化 8192 点 Q15 FFT、Hann 窗和测量状态。
  * @param 无。
  * @return 无。
  * @note 不启动 ADC；采样从 adc_dual 主循环按同步样本对输入开始。
@@ -837,11 +955,8 @@ void measurement_fft_init(void)
     measurement_fft_legacy_pair[1] = 0u;
     measurement_fft_legacy_pair_mask = 0u;
 
-    measurement_fft_diagnostics.init_status =
-        (int32_t)arm_rfft_init_q15(&measurement_fft_instance,
-                                   MEASUREMENT_FFT_LENGTH,
-                                   0u,
-                                   1u);
+    measurement_fft_initialize_twiddle();
+    measurement_fft_diagnostics.init_status = (int32_t)ARM_MATH_SUCCESS;
     measurement_fft_diagnostics.window_count = 0u;
     measurement_fft_diagnostics.discarded_sample_count = 0u;
     measurement_fft_diagnostics.fft_count = 0u;
@@ -1079,9 +1194,9 @@ void measurement_fft_process(void)
         cycle_start = DWT->CYCCNT;
         for (channel = 0u; channel < MEASUREMENT_FFT_CHANNEL_COUNT; channel++)
         {
-            arm_rfft_q15(&measurement_fft_instance,
-                         measurement_fft_input[measurement_fft_ready_buffer][channel],
-                         measurement_fft_output[channel]);
+            measurement_fft_execute_q15(
+                measurement_fft_input[measurement_fft_ready_buffer][channel],
+                measurement_fft_output[channel]);
         }
         measurement_fft_diagnostics.last_fft_cycles = DWT->CYCCNT - cycle_start;
 
