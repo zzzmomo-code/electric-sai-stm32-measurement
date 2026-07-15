@@ -47,7 +47,7 @@ typedef struct
     uint32_t transmit_attempts;  /**< 已实际调用 HAL_UART_Transmit() 的次数。 */
     uint32_t transmit_successes; /**< UART 轮询发送成功次数。 */
     uint32_t transmit_failures;  /**< UART 轮询发送失败次数。 */
-    uint32_t build_failures;     /**< 双通道十一控件命令帧构建失败次数。 */
+    uint32_t build_failures;     /**< 双通道十三控件命令帧构建失败次数。 */
     uint16_t last_frame_size;    /**< 最近一次尝试发送的帧长度。 */
     hmi_tjc_status_t last_status; /**< 最近一次帧构建或发送状态。 */
 } hmi_tjc_diagnostics_t;
@@ -61,7 +61,7 @@ typedef struct
 void hmi_tjc_init(void);
 
 /**
- * @brief 构建一帧包含双通道十一条淘晶驰文本指令的 UART 数据。
+ * @brief 构建一帧包含双通道十三条淘晶驰文本指令的 UART 数据。
  * @param result 待显示的测量结果快照。
  * @param frame 用于接收二进制 UART 数据的缓冲区。
  * @param frame_capacity 缓冲区容量，单位为字节。

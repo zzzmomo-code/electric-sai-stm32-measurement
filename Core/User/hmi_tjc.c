@@ -24,6 +24,7 @@
 typedef enum
 {
     HMI_TJC_VALUE_FORMAT_DC,
+    HMI_TJC_VALUE_FORMAT_VOLTAGE,
     HMI_TJC_VALUE_FORMAT_AMPLITUDE,
     HMI_TJC_VALUE_FORMAT_RMS,
     HMI_TJC_VALUE_FORMAT_THD,
@@ -32,9 +33,10 @@ typedef enum
     HMI_TJC_VALUE_FORMAT_PHASE
 } hmi_tjc_value_format_t;
 
-/** 单个测量通道送往串口屏的五项 ASCII 文本。 */
+/** 单个测量通道送往串口屏的六项 ASCII 文本。 */
 typedef struct
 {
+    char voltage[HMI_TJC_TEXT_VALUE_SIZE];  /**< 完整分析帧平均电压文本。 */
     char amplitude[HMI_TJC_TEXT_VALUE_SIZE]; /**< 峰峰值文本。 */
     char frequency[HMI_TJC_TEXT_VALUE_SIZE]; /**< 频率文本。 */
     char thd[HMI_TJC_TEXT_VALUE_SIZE];       /**< THD 文本。 */
@@ -149,6 +151,10 @@ static uint8_t hmi_tjc_format_value(char *text,
             text_length = snprintf(text, text_capacity, "%.3f Vdc", value);
             break;
 
+        case HMI_TJC_VALUE_FORMAT_VOLTAGE:
+            text_length = snprintf(text, text_capacity, "%.3f V", value);
+            break;
+
         case HMI_TJC_VALUE_FORMAT_AMPLITUDE:
             text_length = snprintf(text, text_capacity, "%.3f Vpp", value);
             break;
@@ -186,16 +192,17 @@ static uint8_t hmi_tjc_format_value(char *text,
 }
 
 /**
- * @brief 将一个通道的测量字段转换为五项屏幕文本。
+ * @brief 将一个通道的测量字段转换为六项屏幕文本。
  * @param mode 当前通道测量模式。
  * @param valid_mask 当前通道字段有效位。
  * @param estimated_mask 当前通道使用标称参数估算的字段有效位。
  * @param fault 非零表示当前通道本帧异常。
+ * @param dc_voltage 完整分析帧的平均电压，单位为伏。
  * @param amplitude_vpp 峰峰值，单位为伏。
  * @param frequency_hz 频率，单位为赫兹。
  * @param thd_percent 总谐波失真，单位为百分比。
  * @param wave_type 波形分类结果。
- * @param text 用于接收五项文本的结构体。
+ * @param text 用于接收六项文本的结构体。
  * @return 文本生成成功返回 1，否则返回 0。
  * @note 当前页面的幅度栏明确标为 VPP，直流模式不借用该栏显示 Vdc。
  */
@@ -204,6 +211,7 @@ static uint8_t hmi_tjc_prepare_channel_text(
     uint16_t valid_mask,
     uint16_t estimated_mask,
     uint8_t fault,
+    float dc_voltage,
     float amplitude_vpp,
     float frequency_hz,
     float thd_percent,
@@ -218,6 +226,7 @@ static uint8_t hmi_tjc_prepare_channel_text(
         return 0u;
     }
 
+    (void)snprintf(text->voltage, sizeof(text->voltage), "--");
     (void)snprintf(text->amplitude, sizeof(text->amplitude), "--");
     (void)snprintf(text->frequency, sizeof(text->frequency), "--");
     (void)snprintf(text->thd, sizeof(text->thd), "--");
@@ -232,6 +241,31 @@ static uint8_t hmi_tjc_prepare_channel_text(
     if (valid_mask == 0u)
     {
         return 1u;
+    }
+
+    if ((valid_mask & MEASUREMENT_VALID_DC_VOLTAGE) != 0u)
+    {
+        if (!isfinite(dc_voltage))
+        {
+            formatted = 0u;
+        }
+        else if ((estimated_mask & MEASUREMENT_VALID_DC_VOLTAGE) != 0u)
+        {
+            format_length = snprintf(text->voltage,
+                                     sizeof(text->voltage),
+                                     "~%.3f V",
+                                     (double)dc_voltage);
+            formatted &= (uint8_t)((format_length > 0)
+                && ((size_t)format_length < sizeof(text->voltage)));
+        }
+        else
+        {
+            formatted &= hmi_tjc_format_value(
+                text->voltage,
+                sizeof(text->voltage),
+                HMI_TJC_VALUE_FORMAT_VOLTAGE,
+                (double)dc_voltage);
+        }
     }
     if (mode == MEASUREMENT_MODE_DC)
     {
@@ -313,6 +347,7 @@ static uint8_t hmi_tjc_prepare_channel_text(
 
     if (formatted == 0u)
     {
+        (void)snprintf(text->voltage, sizeof(text->voltage), "--");
         (void)snprintf(text->amplitude, sizeof(text->amplitude), "--");
         (void)snprintf(text->frequency, sizeof(text->frequency), "--");
         (void)snprintf(text->thd, sizeof(text->thd), "--");
@@ -375,7 +410,7 @@ static hmi_tjc_status_t hmi_tjc_append_text_command(
 }
 
 /**
- * @brief 构建一帧包含双通道十一条淘晶驰文本指令的 UART 数据。
+ * @brief 构建一帧包含双通道十三条淘晶驰文本指令的 UART 数据。
  * @param result 待显示的测量结果快照。
  * @param frame 用于接收二进制 UART 数据的缓冲区。
  * @param frame_capacity 缓冲区容量，单位为字节。
@@ -390,12 +425,12 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
 {
     hmi_tjc_channel_text_t channel_text[2];
     char phase_text[HMI_TJC_TEXT_VALUE_SIZE];
-    const char *control_names[11] = {
-        "t_amp", "t_freq", "t_wave", "t_thd", "t_status",
-        "t_amp2", "t_freq2", "t_wave2", "t_thd2", "t_status2",
+    const char *control_names[13] = {
+        "t_amp", "t_voltage", "t_freq", "t_wave", "t_thd", "t_status",
+        "t_amp2", "t_voltage2", "t_freq2", "t_wave2", "t_thd2", "t_status2",
         "t_phase"
     };
-    const char *control_text[11];
+    const char *control_text[13];
     hmi_tjc_status_t status;
     uint8_t index;
 
@@ -409,6 +444,7 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
         result->valid_mask,
         result->estimated_mask,
         (uint8_t)(result->fault_mask & 0x01u),
+        result->dc_voltage,
         result->amplitude_vpp,
         result->frequency_hz,
         result->thd_percent,
@@ -419,6 +455,7 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
         result->secondary_valid_mask,
         result->secondary_estimated_mask,
         (uint8_t)(result->fault_mask & 0x02u),
+        result->secondary_dc_voltage,
         result->secondary_amplitude_vpp,
         result->secondary_frequency_hz,
         result->secondary_thd_percent,
@@ -436,19 +473,21 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
     }
 
     control_text[0] = channel_text[0].amplitude;
-    control_text[1] = channel_text[0].frequency;
-    control_text[2] = channel_text[0].wave;
-    control_text[3] = channel_text[0].thd;
-    control_text[4] = channel_text[0].status;
-    control_text[5] = channel_text[1].amplitude;
-    control_text[6] = channel_text[1].frequency;
-    control_text[7] = channel_text[1].wave;
-    control_text[8] = channel_text[1].thd;
-    control_text[9] = channel_text[1].status;
-    control_text[10] = phase_text;
+    control_text[1] = channel_text[0].voltage;
+    control_text[2] = channel_text[0].frequency;
+    control_text[3] = channel_text[0].wave;
+    control_text[4] = channel_text[0].thd;
+    control_text[5] = channel_text[0].status;
+    control_text[6] = channel_text[1].amplitude;
+    control_text[7] = channel_text[1].voltage;
+    control_text[8] = channel_text[1].frequency;
+    control_text[9] = channel_text[1].wave;
+    control_text[10] = channel_text[1].thd;
+    control_text[11] = channel_text[1].status;
+    control_text[12] = phase_text;
 
     *frame_size = 0u;
-    for (index = 0u; index < 11u; index++)
+    for (index = 0u; index < 13u; index++)
     {
         status = hmi_tjc_append_text_command(frame,
                                              frame_capacity,

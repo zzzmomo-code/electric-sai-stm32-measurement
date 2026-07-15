@@ -244,6 +244,11 @@ class MeasurementFftContractTest(unittest.TestCase):
         self.assertIn("uint16_t estimated_mask", result_header)
         self.assertIn("uint16_t secondary_estimated_mask", result_header)
         self.assertIn('"~%.3f Vpp"', hmi_source)
+        self.assertIn('"~%.3f V"', hmi_source)
+        self.assertIn('"t_voltage"', hmi_source)
+        self.assertIn('"t_voltage2"', hmi_source)
+        self.assertIn("result->dc_voltage", hmi_source)
+        self.assertIn("result->secondary_dc_voltage", hmi_source)
         self.assertIn('(estimated_mask != 0u) ? "EST" : "LIVE"', hmi_source)
 
     def test_synchronized_pair_sample_rate_contract(self):

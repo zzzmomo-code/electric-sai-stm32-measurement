@@ -382,7 +382,7 @@ class ProjectContractTest(unittest.TestCase):
                 self.assertTrue(has_exact_declaration(header, declaration))
 
     def test_hmi_tjc_frame_contract_is_preserved(self):
-        """串口屏帧必须固定更新五个文本控件并使用原始三字节结束符。"""
+        """串口屏帧必须固定更新双通道十三个文本控件并使用原始三字节结束符。"""
         header = strip_c_comments(
             (user_dir / "hmi_tjc.h").read_text(encoding="utf-8")
         )
@@ -404,11 +404,13 @@ class ProjectContractTest(unittest.TestCase):
         )
         for control_name in (
             "t_amp",
+            "t_voltage",
             "t_freq",
             "t_wave",
             "t_thd",
             "t_status",
             "t_amp2",
+            "t_voltage2",
             "t_freq2",
             "t_wave2",
             "t_thd2",
@@ -458,12 +460,14 @@ class ProjectContractTest(unittest.TestCase):
             "vscope",
             "txt_maxl",
             "t_amp",
+            "t_voltage",
             "t_freq",
             "t_phase",
             "t_wave",
             "t_thd",
             "t_status",
             "t_amp2",
+            "t_voltage2",
             "t_freq2",
             "t_wave2",
             "t_thd2",
