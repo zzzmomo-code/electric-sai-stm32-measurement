@@ -74,7 +74,8 @@ H750 勘误要求单 DMA 读取 Dual Regular Simultaneous 时启用覆盖模式�
 1. ADC1 External Trigger Conversion Source 选择 `TIM2 TRGO`。
 2. ADC1 External Trigger Edge 选择 `Rising Edge`。
 3. ADC2 不配置独立外部触发，由 Dual Regular Simultaneous 模式跟随 ADC1。
-4. ADC Kernel Clock 选择异步时钟，Prescaler 设为 `/4`，目标 ADC 时钟约 32.25 MHz。
+4. 在 `Clock Configuration` 中确认 ADC Kernel Clock 来源为 `PER_CK`，当前 `PER_CK` 为 64 MHz。
+5. ADC1 和 ADC2 的 Clock Prescaler 均选择 `Asynchronous clock mode divided by 4`，实际 ADC 内核时钟为 16 MHz。
 
 ## 8. 配置 ADC1 DMA
 
@@ -91,7 +92,12 @@ ADC1 的 `DMA Settings` 添加请求：
 
 ADC2 不添加独立 DMA。
 
-在 `NVIC Settings` 启用 DMA1 Stream0 global interrupt，Preemption Priority 设为 `5`。ADC 中断仅在 CubeMX/HAL 为错误处理所需时启用，先截图确认再增加。
+在 `NVIC Settings` 中同时启用：
+
+- `DMA1 Stream0 global interrupt`，Preemption Priority 设为 `5`。
+- `ADC1 and ADC2 global interrupt`，Preemption Priority 设为 `5`，Sub Priority 设为 `0`。
+
+双 ADC DMA 启动时 HAL 会启用 ADC overrun 错误中断，因此必须保留 ADC1/ADC2 全局中断用于错误处理。
 
 ## 9. 保持 USART1 不变
 

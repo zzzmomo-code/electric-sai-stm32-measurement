@@ -55,7 +55,8 @@
 - TIM2：APB1 定时器时钟 240 MHz，PSC=0、ARR=2999、TRGO=Update，触发率 80 kHz。
 - ADC1 外部触发为 TIM2 TRGO Rising Edge；ADC2 不配置独立触发。
 - ADC1 DMA：DMA1 Stream0、Peripheral to Memory、Circular、Word/Word、Memory Increment、Very High、IRQ 优先级 5。
-- ADC 异步时钟目标约 32.25 MHz，分频 `/4`。
+- 启用 ADC1/ADC2 global interrupt，抢占优先级 5，用于处理 ADC Overrun 错误。
+- ADC Kernel Clock 选择 `PER_CK` 64 MHz，异步分频 `/4`，实际 ADC 时钟 16 MHz。
 - USART1 保持 9600 8N1、无 DMA、无 USART1 global interrupt。
 
 详细点击路径见 `docs/片上双ADC-CubeMX配置步骤.md`。不要手改 CubeMX 生成的 `MX_*_Init()`。

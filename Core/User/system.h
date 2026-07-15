@@ -4,8 +4,8 @@
  *
  * 模块用途：集中包含 HAL 生成头文件与全部用户模块头文件。
  * GPIO 引脚映射：无直接 GPIO 引脚，各模块映射见对应模块说明。
- * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h；迁移完成后依赖 adc.h、tim.h，
- * 启用串口屏时还依赖 usart.h。SPI2 与 ADS8688 头文件仅在迁移期保留旧模块可编译性。
+ * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h、adc.h、tim.h，
+ * 启用串口屏时还依赖 usart.h。旧 ADS8688 模块已从片上 ADC 工程的活动构建中排除。
  * 初始化方法：HAL 与 MX_* 初始化完成后调用 system_init()。
  * 调用方法：main.c 及其他用户 .c 文件仅包含本头文件。
  */
@@ -14,10 +14,7 @@
 #define SYSTEM_H
 
 #include "main.h"
-#include "spi.h"
 #include "math.h"
-#include "ads8688.h"
-#include "ads8688_storage.h"
 #include "measurement_result.h"
 #include "hmi_tjc.h"
 #include "measurement_fft.h"
@@ -39,15 +36,6 @@
 #define SYSTEM_USART1_AVAILABLE 1
 #endif
 #endif
-
-/** DMA 前半区完成标志，由 SPI2 DMA 中断与主循环共享。 */
-extern volatile uint8_t ads8688_dma_half_flag;
-
-/** DMA 后半区完成标志，由 SPI2 DMA 中断与主循环共享。 */
-extern volatile uint8_t ads8688_dma_full_flag;
-
-/** SPI2/DMA 错误标志，由 SPI2 中断与主循环共享。 */
-extern volatile uint8_t ads8688_error_flag;
 
 /** 双 ADC DMA 前半区完成标志，由 ADC1 DMA 回调与主循环共享。 */
 extern volatile uint8_t adc_dual_dma_half_flag;

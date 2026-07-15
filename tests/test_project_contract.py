@@ -116,7 +116,7 @@ class ProjectContractTest(unittest.TestCase):
                 )
 
     def test_h7_adc_hal_driver_files_exist(self):
-        """精简的 ADS8688 基线必须补齐片上 ADC 所需官方 HAL/LL 文件。"""
+        """片上双 ADC 必须保留 CubeMX HAL 配置所需的官方驱动文件。"""
         driver_root = project_root / "Drivers" / "STM32H7xx_HAL_Driver"
         for relative_path in (
             "Inc/stm32h7xx_hal_adc.h",
@@ -124,7 +124,6 @@ class ProjectContractTest(unittest.TestCase):
             "Inc/stm32h7xx_ll_adc.h",
             "Src/stm32h7xx_hal_adc.c",
             "Src/stm32h7xx_hal_adc_ex.c",
-            "Src/stm32h7xx_ll_adc.c",
         ):
             with self.subTest(path=relative_path):
                 self.assertTrue((driver_root / relative_path).is_file())
@@ -411,33 +410,19 @@ class ProjectContractTest(unittest.TestCase):
                     f"ads8688.h 未声明 {api_name}()",
                 )
 
-    def test_ads8688_dma_contract_is_declared(self):
-        """DMA 缓冲长度、回调标志及统一头文件 extern 声明必须完整。"""
-        source = strip_c_comments(
-            (user_dir / "ads8688.c").read_text(encoding="utf-8")
-        )
+    def test_ads8688_is_archived_outside_active_build(self):
+        """旧 ADS8688 源码必须保留，但不得继续进入片上 ADC 活动构建。"""
         system_header = strip_c_comments(
             (user_dir / "system.h").read_text(encoding="utf-8")
         )
+        cproject = (project_root / ".cproject").read_text(encoding="utf-8")
 
-        self.assertRegex(
-            source,
-            r"(?m)^[ \t]*#define[ \t]+ADS8688_DMA_WORD_COUNT[ \t]+1024u[ \t]*$",
-        )
-        for flag_name in (
-            "ads8688_dma_half_flag",
-            "ads8688_dma_full_flag",
-            "ads8688_error_flag",
-        ):
-            with self.subTest(flag=flag_name):
-                self.assertRegex(
-                    source,
-                    rf"\bvolatile\s+uint8_t\s+{flag_name}\s*;",
-                )
-                self.assertRegex(
-                    system_header,
-                    rf"\bextern\s+volatile\s+uint8_t\s+{flag_name}\s*;",
-                )
+        self.assertTrue((user_dir / "ads8688.c").is_file())
+        self.assertTrue((user_dir / "ads8688_storage.c").is_file())
+        self.assertIn("User/ads8688.c|User/ads8688_storage.c", cproject)
+        self.assertNotIn('#include "spi.h"', system_header)
+        self.assertNotIn('#include "ads8688.h"', system_header)
+        self.assertNotRegex(system_header, r"\bextern\b[^;]*\bads8688_")
 
     def test_ads8688_get_diagnostics_has_full_prototype(self):
         """诊断接口的返回值和输出参数类型必须与设计一致。"""
