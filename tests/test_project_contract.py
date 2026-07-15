@@ -222,10 +222,14 @@ class ProjectContractTest(unittest.TestCase):
         self.assertIn("hdma_adc1.Init.Mode = DMA_CIRCULAR;", adc_source)
 
     def test_onchip_adc_error_and_uncalibrated_voltage_states_are_visible(self):
-        """溢出错误和未校准电压都必须可诊断，不能静默发布假幅度。"""
+        """溢出错误须可诊断，未校准电压须明确标记为估算。"""
         adc_header = (user_dir / "adc_dual.h").read_text(encoding="utf-8")
         adc_source = (user_dir / "adc_dual.c").read_text(encoding="utf-8")
         fft_source = (user_dir / "measurement_fft.c").read_text(encoding="utf-8")
+        result_header = (user_dir / "measurement_result.h").read_text(
+            encoding="utf-8"
+        )
+        hmi_source = (user_dir / "hmi_tjc.c").read_text(encoding="utf-8")
 
         self.assertIn("hadc1.ErrorCode & HAL_ADC_ERROR_OVR", adc_source)
         self.assertIn("adc_dual_stats.state = ADC_DUAL_STATE_ERROR", adc_source)
@@ -233,11 +237,15 @@ class ProjectContractTest(unittest.TestCase):
         self.assertIn("ch2_recent_mean_code", adc_header)
         self.assertIn("ch1_sum / processed_count", adc_source)
         self.assertIn("ch2_sum / processed_count", adc_source)
-        self.assertIn("measurement_fft_diagnostics.amplitude_vpp = NAN", fft_source)
+        self.assertIn("MEASUREMENT_FFT_VOLTAGE_ESTIMATED", fft_source)
+        self.assertIn("MEASUREMENT_FFT_ESTIMATED_VOLTS_PER_CODE", fft_source)
+        self.assertIn("uint16_t estimated_mask", result_header)
+        self.assertIn('"~%.3f Vpp"', hmi_source)
+        self.assertIn('? "EST"', hmi_source)
         self.assertRegex(
             fft_source,
-            r"if\s*\(\(voltage_status\[0\]\s*!=\s*0u\)[\s\S]*?"
-            r"valid_mask\s*\|=\s*MEASUREMENT_VALID_AMPLITUDE",
+            r"voltage_status\[0\]\s*==\s*MEASUREMENT_FFT_VOLTAGE_ESTIMATED"
+            r"[\s\S]*?estimated_mask\s*=\s*valid_mask",
         )
 
     def test_adc_hardware_overflow_and_main_loop_backlog_are_separate(self):

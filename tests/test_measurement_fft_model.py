@@ -109,6 +109,52 @@ def _compress_spectrum(power, sample_rate_hz):
     return compressed
 
 
+class MeasurementTimeDomainModelTest(unittest.TestCase):
+    """验证不依赖 NumPy 的均值、真 RMS 和常见波形幅度关系。"""
+
+    def test_frame_mean_is_removed_before_true_rms(self):
+        """改变直流偏置不应改变去偏后的交流真 RMS。"""
+        ac_samples = [-3.0, -1.0, 1.0, 3.0]
+        expected_rms = math.sqrt(5.0)
+
+        for offset in (0.0, 1.65, 2.10):
+            with self.subTest(offset=offset):
+                samples = [sample + offset for sample in ac_samples]
+                mean = sum(samples) / len(samples)
+                rms = math.sqrt(
+                    sum((sample - mean) ** 2 for sample in samples)
+                    / len(samples)
+                )
+                self.assertAlmostEqual(mean, offset, places=12)
+                self.assertAlmostEqual(rms, expected_rms, places=12)
+
+    def test_common_wave_vpp_is_derived_from_true_rms(self):
+        """正弦、方波和三角波应使用各自的 RMS 到 Vpp 关系。"""
+        expected_vpp = 2.0
+        rms_by_wave = {
+            "sine": expected_vpp / (2.0 * math.sqrt(2.0)),
+            "square": expected_vpp / 2.0,
+            "triangle": expected_vpp / (2.0 * math.sqrt(3.0)),
+        }
+        factor_by_wave = {
+            "sine": 2.0 * math.sqrt(2.0),
+            "square": 2.0,
+            "triangle": 2.0 * math.sqrt(3.0),
+        }
+
+        for wave, rms in rms_by_wave.items():
+            with self.subTest(wave=wave):
+                self.assertAlmostEqual(
+                    rms * factor_by_wave[wave], expected_vpp, places=12
+                )
+
+    def test_nominal_adc_voltage_estimate_is_linear(self):
+        """未标定估算应只表达 ADC 引脚侧 3.3 V 标称量程。"""
+        volts_per_code = 3.3 / 65535.0
+        self.assertAlmostEqual(32767.5 * volts_per_code, 1.65, places=6)
+        self.assertAlmostEqual(65535.0 * volts_per_code, 3.3, places=6)
+
+
 @unittest.skipIf(np is None, "需要 NumPy 执行离线合成信号模型测试")
 class MeasurementFftModelTest(unittest.TestCase):
     """验证离线算法基线，实板误差仍需信号源校准。"""

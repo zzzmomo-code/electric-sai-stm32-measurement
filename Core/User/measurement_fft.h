@@ -114,6 +114,7 @@ typedef struct
     uint8_t result_valid;               /**< 非零表示最近一次结果已经作为 LIVE 数据发布。 */
     uint8_t fft_ready;                  /**< 非零表示至少完成过一次双通道 FFT。 */
     uint8_t voltage_calibrated_mask;    /**< 位 0/1 表示 CH1/CH2 已具备有效电压校准。 */
+    uint8_t voltage_estimated_mask;     /**< 位 0/1 表示 CH1/CH2 当前使用标称电压估算。 */
 } measurement_fft_diagnostics_t;
 
 /**

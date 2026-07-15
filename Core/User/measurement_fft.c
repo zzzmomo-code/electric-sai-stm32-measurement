@@ -25,6 +25,13 @@
 #define MEASUREMENT_FFT_SQRT_2 1.41421356237309504880f
 #define MEASUREMENT_FFT_SQRT_3 1.73205080756887729353f
 
+/** 未完成实测校准时，仅用于给出 ADC 引脚侧电压估算的标称参数。 */
+#define MEASUREMENT_FFT_ESTIMATED_ADC_VREF_V 3.3f
+#define MEASUREMENT_FFT_ADC_FULL_SCALE_CODE 65535.0f
+#define MEASUREMENT_FFT_ESTIMATED_VOLTS_PER_CODE \
+    (MEASUREMENT_FFT_ESTIMATED_ADC_VREF_V \
+     / MEASUREMENT_FFT_ADC_FULL_SCALE_CODE)
+
 /** TIM2 TRGO 驱动 ADC1/ADC2 同步转换的目标每通道采样率。 */
 #define MEASUREMENT_FFT_RAW_SAMPLE_RATE_HZ 80000.0f
 
@@ -68,6 +75,14 @@ typedef enum
     MEASUREMENT_FFT_STATE_DISPLAY,
     MEASUREMENT_FFT_STATE_SETTLING
 } measurement_fft_state_t;
+
+/** 时域码值换算为电压后的可信度。 */
+typedef enum
+{
+    MEASUREMENT_FFT_VOLTAGE_INVALID = 0,
+    MEASUREMENT_FFT_VOLTAGE_CALIBRATED,
+    MEASUREMENT_FFT_VOLTAGE_ESTIMATED
+} measurement_fft_voltage_status_t;
 
 /** 单通道一帧原始码的最小值与最大值。 */
 typedef struct
@@ -347,10 +362,10 @@ static measurement_fft_time_metrics_t measurement_fft_analyze_time_domain(
  * @param amplitude_vpp 用于接收峰峰值电压的指针。
  * @param dc_voltage 用于接收平均直流电压的指针。
  * @param rms_voltage 用于接收去直流交流有效值的指针。
- * @return 校准有效且换算成功返回 1，否则返回 0。
- * @note 前级比例未确认时输出 NAN，FFT 频率和相位分析仍可继续。
+ * @return 返回电压换算可信度；参数错误时返回 INVALID。
+ * @note 无实测校准时按 3.3 V 标称参考估算 ADC 引脚侧电压，发布端必须标记为估算值。
  */
-static uint8_t measurement_fft_convert_time_metrics(
+static measurement_fft_voltage_status_t measurement_fft_convert_time_metrics(
     measurement_fft_time_metrics_t metrics,
     uint8_t channel,
     float *amplitude_vpp,
@@ -365,7 +380,7 @@ static uint8_t measurement_fft_convert_time_metrics(
         || (dc_voltage == 0)
         || (rms_voltage == 0))
     {
-        return 0u;
+        return MEASUREMENT_FFT_VOLTAGE_INVALID;
     }
 
     calibration = &measurement_fft_calibration[channel];
@@ -374,10 +389,13 @@ static uint8_t measurement_fft_convert_time_metrics(
         || (calibration->volts_per_code == 0.0f)
         || (!isfinite(calibration->offset_v)))
     {
-        *amplitude_vpp = NAN;
-        *dc_voltage = NAN;
-        *rms_voltage = NAN;
-        return 0u;
+        volts_per_code = MEASUREMENT_FFT_ESTIMATED_VOLTS_PER_CODE;
+        *amplitude_vpp =
+            (float)(metrics.span.maximum_code - metrics.span.minimum_code)
+            * volts_per_code;
+        *dc_voltage = metrics.mean_raw_code * volts_per_code;
+        *rms_voltage = metrics.rms_ac_code * volts_per_code;
+        return MEASUREMENT_FFT_VOLTAGE_ESTIMATED;
     }
 
     volts_per_code = calibration->volts_per_code;
@@ -387,7 +405,7 @@ static uint8_t measurement_fft_convert_time_metrics(
     *dc_voltage = metrics.mean_raw_code * volts_per_code
                   + calibration->offset_v;
     *rms_voltage = metrics.rms_ac_code * fabsf(volts_per_code);
-    return 1u;
+    return MEASUREMENT_FFT_VOLTAGE_CALIBRATED;
 }
 
 /**
@@ -902,8 +920,10 @@ static float measurement_fft_calculate_phase(const q15_t *first_spectrum,
  * @param quality 当前帧质量状态。
  * @param mode 当前输入的直流或交流模式。
  * @param valid_mask 本帧各测量字段有效位。
+ * @param estimated_mask CH1 中使用标称参数估算的字段有效位。
  * @param secondary_mode CH2 当前输入的直流或交流模式。
  * @param secondary_valid_mask CH2 本帧各测量字段有效位。
+ * @param secondary_estimated_mask CH2 中使用标称参数估算的字段有效位。
  * @param fault_mask 位 0/1 分别表示 CH1/CH2 本帧异常。
  * @return 无。
  * @note 无效结果也会发布并递增序号，使 HMI 回到 WAIT 而不是保留过期有效值。
@@ -912,8 +932,10 @@ static void measurement_fft_publish(uint8_t valid,
                                     measurement_fft_quality_t quality,
                                     measurement_mode_t mode,
                                     uint16_t valid_mask,
+                                    uint16_t estimated_mask,
                                     measurement_mode_t secondary_mode,
                                     uint16_t secondary_valid_mask,
+                                    uint16_t secondary_estimated_mask,
                                     uint8_t fault_mask)
 {
     measurement_result_t result;
@@ -942,6 +964,8 @@ static void measurement_fft_publish(uint8_t valid,
     result.secondary_mode = secondary_mode;
     result.valid_mask = valid_mask;
     result.secondary_valid_mask = secondary_valid_mask;
+    result.estimated_mask = estimated_mask;
+    result.secondary_estimated_mask = secondary_estimated_mask;
     result.fault_mask = fault_mask;
     result.valid = valid;
     result.sequence = measurement_fft_result_sequence;
@@ -1022,6 +1046,7 @@ void measurement_fft_init(void)
     measurement_fft_diagnostics.result_valid = 0u;
     measurement_fft_diagnostics.fft_ready = 0u;
     measurement_fft_diagnostics.voltage_calibrated_mask = 0u;
+    measurement_fft_diagnostics.voltage_estimated_mask = 0u;
 
     measurement_fft_spectrum.point_width_hz =
         MEASUREMENT_FFT_SPECTRUM_MAX_HZ
@@ -1192,7 +1217,10 @@ void measurement_fft_process(void)
     uint32_t cycle_start;
     uint16_t valid_mask;
     uint16_t secondary_valid_mask;
-    uint8_t voltage_status[MEASUREMENT_FFT_CHANNEL_COUNT];
+    uint16_t estimated_mask;
+    uint16_t secondary_estimated_mask;
+    measurement_fft_voltage_status_t
+        voltage_status[MEASUREMENT_FFT_CHANNEL_COUNT];
     uint8_t channel;
     uint8_t valid;
     uint8_t fault_mask;
@@ -1244,8 +1272,15 @@ void measurement_fft_process(void)
             &measurement_fft_diagnostics.secondary_dc_voltage,
             &measurement_fft_diagnostics.secondary_rms_voltage);
         measurement_fft_diagnostics.voltage_calibrated_mask =
-            (uint8_t)((voltage_status[0] != 0u ? 0x01u : 0u)
-                      | (voltage_status[1] != 0u ? 0x02u : 0u));
+            (uint8_t)((voltage_status[0]
+                       == MEASUREMENT_FFT_VOLTAGE_CALIBRATED ? 0x01u : 0u)
+                      | (voltage_status[1]
+                         == MEASUREMENT_FFT_VOLTAGE_CALIBRATED ? 0x02u : 0u));
+        measurement_fft_diagnostics.voltage_estimated_mask =
+            (uint8_t)((voltage_status[0]
+                       == MEASUREMENT_FFT_VOLTAGE_ESTIMATED ? 0x01u : 0u)
+                      | (voltage_status[1]
+                         == MEASUREMENT_FFT_VOLTAGE_ESTIMATED ? 0x02u : 0u));
         measurement_fft_diagnostics.amplitude_vpp = span_vpp[0];
         measurement_fft_diagnostics.secondary_amplitude_vpp = span_vpp[1];
 
@@ -1370,6 +1405,8 @@ void measurement_fft_process(void)
         secondary_mode = MEASUREMENT_MODE_UNKNOWN;
         valid_mask = 0u;
         secondary_valid_mask = 0u;
+        estimated_mask = 0u;
+        secondary_estimated_mask = 0u;
         fault_mask = 0u;
         valid = 0u;
         if ((measurement_fft_diagnostics.clipping_mask & 0x01u) != 0u)
@@ -1500,6 +1537,21 @@ void measurement_fft_process(void)
             }
         }
 
+        if (voltage_status[0] == MEASUREMENT_FFT_VOLTAGE_ESTIMATED)
+        {
+            estimated_mask = valid_mask
+                & (MEASUREMENT_VALID_DC_VOLTAGE
+                   | MEASUREMENT_VALID_AMPLITUDE
+                   | MEASUREMENT_VALID_RMS);
+        }
+        if (voltage_status[1] == MEASUREMENT_FFT_VOLTAGE_ESTIMATED)
+        {
+            secondary_estimated_mask = secondary_valid_mask
+                & (MEASUREMENT_VALID_DC_VOLTAGE
+                   | MEASUREMENT_VALID_AMPLITUDE
+                   | MEASUREMENT_VALID_RMS);
+        }
+
         valid =
             ((valid_mask & (MEASUREMENT_VALID_AMPLITUDE
                             | MEASUREMENT_VALID_FREQUENCY
@@ -1520,8 +1572,10 @@ void measurement_fft_process(void)
                                 quality,
                                 mode,
                                 valid_mask,
+                                estimated_mask,
                                 secondary_mode,
                                 secondary_valid_mask,
+                                secondary_estimated_mask,
                                 fault_mask);
         measurement_fft_display_start_ms = HAL_GetTick();
         measurement_fft_state = MEASUREMENT_FFT_STATE_DISPLAY;
@@ -1613,11 +1667,15 @@ uint8_t measurement_fft_set_calibration(
     {
         measurement_fft_diagnostics.voltage_calibrated_mask |=
             (uint8_t)(1u << channel);
+        measurement_fft_diagnostics.voltage_estimated_mask &=
+            (uint8_t)~(1u << channel);
     }
     else
     {
         measurement_fft_diagnostics.voltage_calibrated_mask &=
             (uint8_t)~(1u << channel);
+        measurement_fft_diagnostics.voltage_estimated_mask |=
+            (uint8_t)(1u << channel);
     }
     return 1u;
 }

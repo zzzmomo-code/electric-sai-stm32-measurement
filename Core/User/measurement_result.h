@@ -63,6 +63,8 @@ typedef struct
     measurement_mode_t secondary_mode; /**< CH2 被判定为直流、交流或未知。 */
     uint16_t valid_mask;               /**< CH1 及公共相位有效位。 */
     uint16_t secondary_valid_mask;     /**< CH2 字段有效位。 */
+    uint16_t estimated_mask;           /**< CH1 中使用标称参数估算的字段有效位。 */
+    uint16_t secondary_estimated_mask; /**< CH2 中使用标称参数估算的字段有效位。 */
     uint8_t fault_mask;                /**< 位 0/1 分别表示 CH1/CH2 本帧异常。 */
     uint8_t valid;                     /**< 非零表示双通道交流核心结果完整。 */
     uint32_t sequence;                 /**< 结果发布序号，由算法模块维护。 */

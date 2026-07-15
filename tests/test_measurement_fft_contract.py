@@ -156,6 +156,8 @@ class MeasurementFftContractTest(unittest.TestCase):
             "MEASUREMENT_VALID_SPECTRUM",
             "uint16_t valid_mask",
             "uint16_t secondary_valid_mask",
+            "uint16_t estimated_mask",
+            "uint16_t secondary_estimated_mask",
             "uint8_t fault_mask",
         ):
             with self.subTest(token=token):
@@ -164,6 +166,8 @@ class MeasurementFftContractTest(unittest.TestCase):
         self.assertIn("valid_mask |= MEASUREMENT_VALID_PHASE", fft_source)
         self.assertIn("result->valid_mask", hmi_source)
         self.assertIn("result->secondary_valid_mask", hmi_source)
+        self.assertIn("result->estimated_mask", hmi_source)
+        self.assertIn("result->secondary_estimated_mask", hmi_source)
         self.assertIn('text->wave = "DC";', hmi_source)
 
     def test_ads8688_range_and_voltage_apis_are_public(self):
@@ -216,6 +220,31 @@ class MeasurementFftContractTest(unittest.TestCase):
         self.assertIn("calibration->volts_per_code", source)
         self.assertIn("measurement_fft_calibration[channel]", source)
         self.assertIn("voltage_status[0] != 0u", source)
+
+    def test_uncalibrated_voltage_uses_marked_nominal_estimate(self):
+        """无前级标定时仍应发布 ADC 引脚侧估算，但必须显式标记。"""
+        result_header = (user_dir / "measurement_result.h").read_text(
+            encoding="utf-8"
+        )
+        fft_source = (user_dir / "measurement_fft.c").read_text(
+            encoding="utf-8"
+        )
+        hmi_source = (user_dir / "hmi_tjc.c").read_text(encoding="utf-8")
+
+        for token in (
+            "MEASUREMENT_FFT_ESTIMATED_ADC_VREF_V 3.3f",
+            "MEASUREMENT_FFT_ESTIMATED_VOLTS_PER_CODE",
+            "MEASUREMENT_FFT_VOLTAGE_ESTIMATED",
+            "voltage_estimated_mask",
+            "estimated_mask = valid_mask",
+        ):
+            with self.subTest(token=token):
+                self.assertIn(token, fft_source)
+
+        self.assertIn("uint16_t estimated_mask", result_header)
+        self.assertIn("uint16_t secondary_estimated_mask", result_header)
+        self.assertIn('"~%.3f Vpp"', hmi_source)
+        self.assertIn('(estimated_mask != 0u) ? "EST" : "LIVE"', hmi_source)
 
     def test_synchronized_pair_sample_rate_contract(self):
         """片上双 ADC 必须以80 kSPS同步样本对进入FFT。"""

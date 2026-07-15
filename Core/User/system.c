@@ -44,6 +44,17 @@ static void hmi_tjc_publish_self_test(void)
                         | MEASUREMENT_VALID_THD
                         | MEASUREMENT_VALID_WAVE_TYPE
                         | MEASUREMENT_VALID_PHASE;
+    result.secondary_dc_voltage = 0.0f;
+    result.secondary_amplitude_vpp = 0.0f;
+    result.secondary_rms_voltage = 0.0f;
+    result.secondary_frequency_hz = 0.0f;
+    result.secondary_thd_percent = 0.0f;
+    result.secondary_wave_type = MEASUREMENT_WAVE_UNKNOWN;
+    result.secondary_mode = MEASUREMENT_MODE_UNKNOWN;
+    result.secondary_valid_mask = 0u;
+    result.estimated_mask = 0u;
+    result.secondary_estimated_mask = 0u;
+    result.fault_mask = 0u;
     result.valid = 1u;
     result.sequence = 1u;
     measurement_result_publish(&result);

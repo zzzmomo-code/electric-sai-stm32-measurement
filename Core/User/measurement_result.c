@@ -42,6 +42,8 @@ void measurement_result_init(void)
     measurement_result_latest.secondary_mode = MEASUREMENT_MODE_UNKNOWN;
     measurement_result_latest.valid_mask = 0u;
     measurement_result_latest.secondary_valid_mask = 0u;
+    measurement_result_latest.estimated_mask = 0u;
+    measurement_result_latest.secondary_estimated_mask = 0u;
     measurement_result_latest.fault_mask = 0u;
     measurement_result_latest.valid = 0u;
     measurement_result_latest.sequence = 0u;

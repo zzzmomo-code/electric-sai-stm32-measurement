@@ -189,6 +189,7 @@ static uint8_t hmi_tjc_format_value(char *text,
  * @brief 将一个通道的测量字段转换为五项屏幕文本。
  * @param mode 当前通道测量模式。
  * @param valid_mask 当前通道字段有效位。
+ * @param estimated_mask 当前通道使用标称参数估算的字段有效位。
  * @param fault 非零表示当前通道本帧异常。
  * @param amplitude_vpp 峰峰值，单位为伏。
  * @param frequency_hz 频率，单位为赫兹。
@@ -201,6 +202,7 @@ static uint8_t hmi_tjc_format_value(char *text,
 static uint8_t hmi_tjc_prepare_channel_text(
     measurement_mode_t mode,
     uint16_t valid_mask,
+    uint16_t estimated_mask,
     uint8_t fault,
     float amplitude_vpp,
     float frequency_hz,
@@ -209,6 +211,7 @@ static uint8_t hmi_tjc_prepare_channel_text(
     hmi_tjc_channel_text_t *text)
 {
     uint8_t formatted = 1u;
+    int format_length;
 
     if (text == 0)
     {
@@ -233,7 +236,9 @@ static uint8_t hmi_tjc_prepare_channel_text(
     if (mode == MEASUREMENT_MODE_DC)
     {
         text->wave = "DC";
-        text->status = "LIVE";
+        text->status = ((estimated_mask & MEASUREMENT_VALID_DC_VOLTAGE) != 0u)
+                           ? "EST"
+                           : "LIVE";
         return 1u;
     }
 
@@ -245,11 +250,23 @@ static uint8_t hmi_tjc_prepare_channel_text(
         }
         else
         {
-            formatted &= hmi_tjc_format_value(
-                text->amplitude,
-                sizeof(text->amplitude),
-                HMI_TJC_VALUE_FORMAT_AMPLITUDE,
-                (double)amplitude_vpp);
+            if ((estimated_mask & MEASUREMENT_VALID_AMPLITUDE) != 0u)
+            {
+                format_length = snprintf(text->amplitude,
+                                         sizeof(text->amplitude),
+                                         "~%.3f Vpp",
+                                         (double)amplitude_vpp);
+                formatted &= (uint8_t)((format_length > 0)
+                    && ((size_t)format_length < sizeof(text->amplitude)));
+            }
+            else
+            {
+                formatted &= hmi_tjc_format_value(
+                    text->amplitude,
+                    sizeof(text->amplitude),
+                    HMI_TJC_VALUE_FORMAT_AMPLITUDE,
+                    (double)amplitude_vpp);
+            }
         }
     }
     if ((valid_mask & MEASUREMENT_VALID_FREQUENCY) != 0u)
@@ -304,7 +321,7 @@ static uint8_t hmi_tjc_prepare_channel_text(
         return 0u;
     }
 
-    text->status = "LIVE";
+    text->status = (estimated_mask != 0u) ? "EST" : "LIVE";
     return 1u;
 }
 
@@ -390,6 +407,7 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
     (void)hmi_tjc_prepare_channel_text(
         result->mode,
         result->valid_mask,
+        result->estimated_mask,
         (uint8_t)(result->fault_mask & 0x01u),
         result->amplitude_vpp,
         result->frequency_hz,
@@ -399,6 +417,7 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
     (void)hmi_tjc_prepare_channel_text(
         result->secondary_mode,
         result->secondary_valid_mask,
+        result->secondary_estimated_mask,
         (uint8_t)(result->fault_mask & 0x02u),
         result->secondary_amplitude_vpp,
         result->secondary_frequency_hz,
