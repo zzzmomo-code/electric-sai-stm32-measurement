@@ -128,8 +128,8 @@ static uint32_t measurement_fft_display_start_ms;
 /** 发布结果序号，每完成一帧 FFT 增加一次。 */
 static uint32_t measurement_fft_result_sequence;
 
-/** FFT 运行状态和最近一次完整测量诊断快照。 */
-static measurement_fft_diagnostics_t measurement_fft_diagnostics;
+/** FFT 运行状态和最近一次完整测量诊断快照，供调试器直接观察。 */
+measurement_fft_diagnostics_t measurement_fft_diagnostics;
 
 /** 最近一次面向串口屏压缩得到的 64 点频谱。 */
 static measurement_fft_spectrum_t measurement_fft_spectrum;

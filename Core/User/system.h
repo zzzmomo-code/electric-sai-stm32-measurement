@@ -46,6 +46,9 @@ extern volatile uint8_t adc_dual_dma_full_flag;
 /** 双 ADC 错误标志，由 ADC 错误回调与主循环共享。 */
 extern volatile uint8_t adc_dual_error_flag;
 
+/** FFT 运行诊断快照，仅供主循环和调试器读取最近一帧分析结果。 */
+extern measurement_fft_diagnostics_t measurement_fft_diagnostics;
+
 /**
  * @brief 初始化全部用户模块。
  * @param 无。
