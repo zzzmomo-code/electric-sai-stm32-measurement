@@ -32,6 +32,16 @@ typedef enum
     HMI_TJC_VALUE_FORMAT_PHASE
 } hmi_tjc_value_format_t;
 
+/** 单个测量通道送往串口屏的五项 ASCII 文本。 */
+typedef struct
+{
+    char amplitude[HMI_TJC_TEXT_VALUE_SIZE]; /**< 峰峰值文本。 */
+    char frequency[HMI_TJC_TEXT_VALUE_SIZE]; /**< 频率文本。 */
+    char thd[HMI_TJC_TEXT_VALUE_SIZE];       /**< THD 文本。 */
+    const char *wave;                        /**< 波形类型静态文本。 */
+    const char *status;                      /**< WAIT、LIVE 或 FAULT。 */
+} hmi_tjc_channel_text_t;
+
 /**
  * @brief 将波形枚举转换为串口屏使用的 ASCII 文本。
  * @param wave_type 算法识别的波形类型。
@@ -176,6 +186,129 @@ static uint8_t hmi_tjc_format_value(char *text,
 }
 
 /**
+ * @brief 将一个通道的测量字段转换为五项屏幕文本。
+ * @param mode 当前通道测量模式。
+ * @param valid_mask 当前通道字段有效位。
+ * @param fault 非零表示当前通道本帧异常。
+ * @param amplitude_vpp 峰峰值，单位为伏。
+ * @param frequency_hz 频率，单位为赫兹。
+ * @param thd_percent 总谐波失真，单位为百分比。
+ * @param wave_type 波形分类结果。
+ * @param text 用于接收五项文本的结构体。
+ * @return 文本生成成功返回 1，否则返回 0。
+ * @note 当前页面的幅度栏明确标为 VPP，直流模式不借用该栏显示 Vdc。
+ */
+static uint8_t hmi_tjc_prepare_channel_text(
+    measurement_mode_t mode,
+    uint16_t valid_mask,
+    uint8_t fault,
+    float amplitude_vpp,
+    float frequency_hz,
+    float thd_percent,
+    measurement_wave_type_t wave_type,
+    hmi_tjc_channel_text_t *text)
+{
+    uint8_t formatted = 1u;
+
+    if (text == 0)
+    {
+        return 0u;
+    }
+
+    (void)snprintf(text->amplitude, sizeof(text->amplitude), "--");
+    (void)snprintf(text->frequency, sizeof(text->frequency), "--");
+    (void)snprintf(text->thd, sizeof(text->thd), "--");
+    text->wave = "UNKNOWN";
+    text->status = "WAIT";
+
+    if (fault != 0u)
+    {
+        text->status = "FAULT";
+        return 1u;
+    }
+    if (valid_mask == 0u)
+    {
+        return 1u;
+    }
+    if (mode == MEASUREMENT_MODE_DC)
+    {
+        text->wave = "DC";
+        text->status = "LIVE";
+        return 1u;
+    }
+
+    if ((valid_mask & MEASUREMENT_VALID_AMPLITUDE) != 0u)
+    {
+        if ((!isfinite(amplitude_vpp)) || (amplitude_vpp < 0.0f))
+        {
+            formatted = 0u;
+        }
+        else
+        {
+            formatted &= hmi_tjc_format_value(
+                text->amplitude,
+                sizeof(text->amplitude),
+                HMI_TJC_VALUE_FORMAT_AMPLITUDE,
+                (double)amplitude_vpp);
+        }
+    }
+    if ((valid_mask & MEASUREMENT_VALID_FREQUENCY) != 0u)
+    {
+        if ((!isfinite(frequency_hz)) || (frequency_hz < 0.0f))
+        {
+            formatted = 0u;
+        }
+        else if (frequency_hz < 1000.0f)
+        {
+            formatted &= hmi_tjc_format_value(
+                text->frequency,
+                sizeof(text->frequency),
+                HMI_TJC_VALUE_FORMAT_FREQUENCY_HZ,
+                (double)frequency_hz);
+        }
+        else
+        {
+            formatted &= hmi_tjc_format_value(
+                text->frequency,
+                sizeof(text->frequency),
+                HMI_TJC_VALUE_FORMAT_FREQUENCY_KHZ,
+                (double)(frequency_hz / 1000.0f));
+        }
+    }
+    if ((valid_mask & MEASUREMENT_VALID_THD) != 0u)
+    {
+        if ((!isfinite(thd_percent)) || (thd_percent < 0.0f))
+        {
+            formatted = 0u;
+        }
+        else
+        {
+            formatted &= hmi_tjc_format_value(text->thd,
+                                               sizeof(text->thd),
+                                               HMI_TJC_VALUE_FORMAT_THD,
+                                               (double)thd_percent);
+        }
+    }
+    if ((valid_mask & MEASUREMENT_VALID_WAVE_TYPE) != 0u)
+    {
+        text->wave = hmi_tjc_wave_type_text(wave_type);
+    }
+
+    if (formatted == 0u)
+    {
+        (void)snprintf(text->amplitude, sizeof(text->amplitude), "--");
+        (void)snprintf(text->frequency, sizeof(text->frequency), "--");
+        (void)snprintf(text->thd, sizeof(text->thd), "--");
+        text->wave = "UNKNOWN";
+        text->status = "FAULT";
+        return 0u;
+    }
+
+    text->status = "LIVE";
+    return 1u;
+}
+
+/**
  * @brief 向 HMI 数据帧追加一条全局文本控件赋值命令。
  * @param frame UART 数据帧缓冲区。
  * @param frame_capacity 缓冲区总容量。
@@ -225,7 +358,7 @@ static hmi_tjc_status_t hmi_tjc_append_text_command(
 }
 
 /**
- * @brief 构建一帧包含五条淘晶驰文本指令的 UART 数据。
+ * @brief 构建一帧包含双通道十一条淘晶驰文本指令的 UART 数据。
  * @param result 待显示的测量结果快照。
  * @param frame 用于接收二进制 UART 数据的缓冲区。
  * @param frame_capacity 缓冲区容量，单位为字节。
@@ -238,158 +371,78 @@ hmi_tjc_status_t hmi_tjc_build_frame(const measurement_result_t *result,
                                      uint16_t frame_capacity,
                                      uint16_t *frame_size)
 {
-    char amplitude_text[HMI_TJC_TEXT_VALUE_SIZE];
-    char frequency_text[HMI_TJC_TEXT_VALUE_SIZE];
+    hmi_tjc_channel_text_t channel_text[2];
     char phase_text[HMI_TJC_TEXT_VALUE_SIZE];
-    const char *wave_text;
-    const char *status_text;
+    const char *control_names[11] = {
+        "t_amp", "t_freq", "t_wave", "t_thd", "t_status",
+        "t_amp2", "t_freq2", "t_wave2", "t_thd2", "t_status2",
+        "t_phase"
+    };
+    const char *control_text[11];
     hmi_tjc_status_t status;
-    uint8_t displayable;
+    uint8_t index;
 
     if ((result == 0) || (frame == 0) || (frame_size == 0))
     {
         return HMI_TJC_STATUS_INVALID_ARGUMENT;
     }
 
-    displayable = hmi_tjc_result_is_displayable(result);
-    if (result->valid_mask == 0u)
-    {
-        (void)snprintf(amplitude_text, sizeof(amplitude_text), "--");
-        (void)snprintf(frequency_text, sizeof(frequency_text), "--");
-        (void)snprintf(phase_text, sizeof(phase_text), "--");
-        wave_text = "UNKNOWN";
-        status_text = "WAIT";
-    }
-    else if (displayable == 0u)
-    {
-        (void)snprintf(amplitude_text, sizeof(amplitude_text), "--");
-        (void)snprintf(frequency_text, sizeof(frequency_text), "--");
-        (void)snprintf(phase_text, sizeof(phase_text), "--");
-        wave_text = "UNKNOWN";
-        status_text = "FAULT";
-    }
-    else if ((result->mode == MEASUREMENT_MODE_DC)
-             && ((result->valid_mask & MEASUREMENT_VALID_DC_VOLTAGE) != 0u))
-    {
-        displayable = hmi_tjc_format_value(amplitude_text,
-                                           sizeof(amplitude_text),
-                                           HMI_TJC_VALUE_FORMAT_DC,
-                                           (double)result->dc_voltage);
-        (void)snprintf(frequency_text, sizeof(frequency_text), "--");
-        (void)snprintf(phase_text, sizeof(phase_text), "--");
-        wave_text = "DC";
-        status_text = (displayable != 0u) ? "LIVE" : "FAULT";
-    }
-    else
-    {
-        if ((result->valid_mask & MEASUREMENT_VALID_AMPLITUDE) != 0u)
-        {
-            displayable = hmi_tjc_format_value(
-                amplitude_text,
-                sizeof(amplitude_text),
-                HMI_TJC_VALUE_FORMAT_AMPLITUDE,
-                (double)result->amplitude_vpp);
-        }
-        else
-        {
-            (void)snprintf(amplitude_text, sizeof(amplitude_text), "--");
-        }
+    (void)hmi_tjc_prepare_channel_text(
+        result->mode,
+        result->valid_mask,
+        (uint8_t)(result->fault_mask & 0x01u),
+        result->amplitude_vpp,
+        result->frequency_hz,
+        result->thd_percent,
+        result->wave_type,
+        &channel_text[0]);
+    (void)hmi_tjc_prepare_channel_text(
+        result->secondary_mode,
+        result->secondary_valid_mask,
+        (uint8_t)(result->fault_mask & 0x02u),
+        result->secondary_amplitude_vpp,
+        result->secondary_frequency_hz,
+        result->secondary_thd_percent,
+        result->secondary_wave_type,
+        &channel_text[1]);
 
-        if ((result->valid_mask & MEASUREMENT_VALID_FREQUENCY) == 0u)
-        {
-            (void)snprintf(frequency_text, sizeof(frequency_text), "--");
-        }
-        else if (result->frequency_hz < 1000.0f)
-        {
-             displayable &= hmi_tjc_format_value(frequency_text,
-                                                 sizeof(frequency_text),
-                                                 HMI_TJC_VALUE_FORMAT_FREQUENCY_HZ,
-                                                 (double)result->frequency_hz);
-        }
-        else
-        {
-            displayable &= hmi_tjc_format_value(
-                 frequency_text,
-                 sizeof(frequency_text),
-                HMI_TJC_VALUE_FORMAT_FREQUENCY_KHZ,
-                 (double)(result->frequency_hz / 1000.0f));
-        }
-        if ((result->valid_mask & MEASUREMENT_VALID_PHASE) != 0u)
-        {
-            displayable &= hmi_tjc_format_value(phase_text,
-                                                 sizeof(phase_text),
-                                                 HMI_TJC_VALUE_FORMAT_PHASE,
-                                                 (double)result->phase_deg);
-        }
-        else
-        {
-            (void)snprintf(phase_text, sizeof(phase_text), "--");
-        }
-
-        if (displayable == 0u)
-        {
-            (void)snprintf(amplitude_text, sizeof(amplitude_text), "--");
-            (void)snprintf(frequency_text, sizeof(frequency_text), "--");
-            (void)snprintf(phase_text, sizeof(phase_text), "--");
-            wave_text = "UNKNOWN";
-            status_text = "FAULT";
-        }
-        else
-        {
-            wave_text =
-                ((result->valid_mask & MEASUREMENT_VALID_WAVE_TYPE) != 0u)
-                    ? hmi_tjc_wave_type_text(result->wave_type)
-                    : "UNKNOWN";
-            status_text = "LIVE";
-        }
+    (void)snprintf(phase_text, sizeof(phase_text), "--");
+    if (((result->valid_mask & MEASUREMENT_VALID_PHASE) != 0u)
+        && isfinite(result->phase_deg))
+    {
+        (void)hmi_tjc_format_value(phase_text,
+                                   sizeof(phase_text),
+                                   HMI_TJC_VALUE_FORMAT_PHASE,
+                                   (double)result->phase_deg);
     }
+
+    control_text[0] = channel_text[0].amplitude;
+    control_text[1] = channel_text[0].frequency;
+    control_text[2] = channel_text[0].wave;
+    control_text[3] = channel_text[0].thd;
+    control_text[4] = channel_text[0].status;
+    control_text[5] = channel_text[1].amplitude;
+    control_text[6] = channel_text[1].frequency;
+    control_text[7] = channel_text[1].wave;
+    control_text[8] = channel_text[1].thd;
+    control_text[9] = channel_text[1].status;
+    control_text[10] = phase_text;
 
     *frame_size = 0u;
-    status = hmi_tjc_append_text_command(frame,
-                                         frame_capacity,
-                                         frame_size,
-                                         "t_amp",
-                                         amplitude_text);
-    if (status != HMI_TJC_STATUS_OK)
+    for (index = 0u; index < 11u; index++)
     {
-        return status;
+        status = hmi_tjc_append_text_command(frame,
+                                             frame_capacity,
+                                             frame_size,
+                                             control_names[index],
+                                             control_text[index]);
+        if (status != HMI_TJC_STATUS_OK)
+        {
+            return status;
+        }
     }
 
-    status = hmi_tjc_append_text_command(frame,
-                                         frame_capacity,
-                                         frame_size,
-                                         "t_freq",
-                                         frequency_text);
-    if (status != HMI_TJC_STATUS_OK)
-    {
-        return status;
-    }
-
-    status = hmi_tjc_append_text_command(frame,
-                                         frame_capacity,
-                                         frame_size,
-                                         "t_phase",
-                                         phase_text);
-    if (status != HMI_TJC_STATUS_OK)
-    {
-        return status;
-    }
-
-    status = hmi_tjc_append_text_command(frame,
-                                         frame_capacity,
-                                         frame_size,
-                                         "t_wave",
-                                         wave_text);
-    if (status != HMI_TJC_STATUS_OK)
-    {
-        return status;
-    }
-
-    return hmi_tjc_append_text_command(frame,
-                                       frame_capacity,
-                                       frame_size,
-                                       "t_status",
-                                       status_text);
+    return HMI_TJC_STATUS_OK;
 }
 
 /**
@@ -732,7 +785,7 @@ void hmi_tjc_init(void)
  * @brief 处理 HMI 上电清理和周期刷新。
  * @param 无。
  * @return 无。
- * @note UART 尚未配置时无操作；UART 就绪后每 250 ms 最多轮询发送一帧。
+ * @note UART 尚未配置时无操作；UART 就绪后每 500 ms 最多轮询发送一帧。
  */
 void hmi_tjc_process(void)
 {

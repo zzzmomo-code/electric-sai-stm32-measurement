@@ -17,13 +17,13 @@
 #include "measurement_fft.h"
 
 /** HMI 刷新间隔，单位为毫秒。 */
-#define HMI_TJC_REFRESH_MS 250u
+#define HMI_TJC_REFRESH_MS 500u
 
 /** UART 轮询发送超时，单位为毫秒。9600 波特率下可完整发送最大帧。 */
-#define HMI_TJC_TX_TIMEOUT_MS 250u
+#define HMI_TJC_TX_TIMEOUT_MS 500u
 
 /** UART 轮询发送帧缓冲区长度。 */
-#define HMI_TJC_TX_BUFFER_SIZE 192u
+#define HMI_TJC_TX_BUFFER_SIZE 384u
 
 /** 64 点频谱逐点 add 指令帧的最小建议缓冲区长度。 */
 #define HMI_TJC_SPECTRUM_FRAME_SIZE 1152u
@@ -47,7 +47,7 @@ typedef struct
     uint32_t transmit_attempts;  /**< 已实际调用 HAL_UART_Transmit() 的次数。 */
     uint32_t transmit_successes; /**< UART 轮询发送成功次数。 */
     uint32_t transmit_failures;  /**< UART 轮询发送失败次数。 */
-    uint32_t build_failures;     /**< 五控件命令帧构建失败次数。 */
+    uint32_t build_failures;     /**< 双通道十一控件命令帧构建失败次数。 */
     uint16_t last_frame_size;    /**< 最近一次尝试发送的帧长度。 */
     hmi_tjc_status_t last_status; /**< 最近一次帧构建或发送状态。 */
 } hmi_tjc_diagnostics_t;
@@ -61,7 +61,7 @@ typedef struct
 void hmi_tjc_init(void);
 
 /**
- * @brief 构建一帧包含五条淘晶驰文本指令的 UART 数据。
+ * @brief 构建一帧包含双通道十一条淘晶驰文本指令的 UART 数据。
  * @param result 待显示的测量结果快照。
  * @param frame 用于接收二进制 UART 数据的缓冲区。
  * @param frame_capacity 缓冲区容量，单位为字节。
@@ -112,7 +112,7 @@ hmi_tjc_status_t hmi_tjc_build_spectrum_frame(
  * @brief 处理 HMI 上电清理和周期刷新。
  * @param 无。
  * @return 无。
- * @note 必须由主循环调用；轮询发送会短暂阻塞，刷新率固定为约 4 Hz。
+ * @note 必须由主循环调用；轮询发送会短暂阻塞，刷新率固定为约 2 Hz。
  */
 void hmi_tjc_process(void);
 

@@ -902,13 +902,19 @@ static float measurement_fft_calculate_phase(const q15_t *first_spectrum,
  * @param quality 当前帧质量状态。
  * @param mode 当前输入的直流或交流模式。
  * @param valid_mask 本帧各测量字段有效位。
+ * @param secondary_mode CH2 当前输入的直流或交流模式。
+ * @param secondary_valid_mask CH2 本帧各测量字段有效位。
+ * @param fault_mask 位 0/1 分别表示 CH1/CH2 本帧异常。
  * @return 无。
  * @note 无效结果也会发布并递增序号，使 HMI 回到 WAIT 而不是保留过期有效值。
  */
 static void measurement_fft_publish(uint8_t valid,
                                     measurement_fft_quality_t quality,
                                     measurement_mode_t mode,
-                                    uint16_t valid_mask)
+                                    uint16_t valid_mask,
+                                    measurement_mode_t secondary_mode,
+                                    uint16_t secondary_valid_mask,
+                                    uint8_t fault_mask)
 {
     measurement_result_t result;
 
@@ -918,10 +924,25 @@ static void measurement_fft_publish(uint8_t valid,
     result.rms_voltage = measurement_fft_diagnostics.rms_voltage;
     result.frequency_hz = measurement_fft_diagnostics.peak_frequency_hz;
     result.thd_percent = measurement_fft_diagnostics.thd_percent;
+    result.secondary_dc_voltage =
+        measurement_fft_diagnostics.secondary_dc_voltage;
+    result.secondary_amplitude_vpp =
+        measurement_fft_diagnostics.secondary_amplitude_vpp;
+    result.secondary_rms_voltage =
+        measurement_fft_diagnostics.secondary_rms_voltage;
+    result.secondary_frequency_hz =
+        measurement_fft_diagnostics.secondary_peak_frequency_hz;
+    result.secondary_thd_percent =
+        measurement_fft_diagnostics.secondary_thd_percent;
     result.phase_deg = measurement_fft_diagnostics.phase_deg;
     result.wave_type = measurement_fft_diagnostics.wave_type;
+    result.secondary_wave_type =
+        measurement_fft_diagnostics.secondary_wave_type;
     result.mode = mode;
+    result.secondary_mode = secondary_mode;
     result.valid_mask = valid_mask;
+    result.secondary_valid_mask = secondary_valid_mask;
+    result.fault_mask = fault_mask;
     result.valid = valid;
     result.sequence = measurement_fft_result_sequence;
     measurement_result_publish(&result);
@@ -983,11 +1004,16 @@ void measurement_fft_init(void)
     measurement_fft_diagnostics.secondary_rms_voltage = 0.0f;
     measurement_fft_diagnostics.thd_percent = 0.0f;
     measurement_fft_diagnostics.thd_harmonic_count = 0u;
+    measurement_fft_diagnostics.secondary_thd_percent = 0.0f;
+    measurement_fft_diagnostics.secondary_thd_harmonic_count = 0u;
     measurement_fft_diagnostics.raw_phase_deg = 0.0f;
     measurement_fft_diagnostics.phase_deg = 0.0f;
     measurement_fft_diagnostics.harmonic_ratio_3 = 0.0f;
     measurement_fft_diagnostics.harmonic_ratio_5 = 0.0f;
     measurement_fft_diagnostics.wave_type = MEASUREMENT_WAVE_UNKNOWN;
+    measurement_fft_diagnostics.secondary_harmonic_ratio_3 = 0.0f;
+    measurement_fft_diagnostics.secondary_harmonic_ratio_5 = 0.0f;
+    measurement_fft_diagnostics.secondary_wave_type = MEASUREMENT_WAVE_UNKNOWN;
     measurement_fft_diagnostics.quality =
         (measurement_fft_diagnostics.init_status == (int32_t)ARM_MATH_SUCCESS)
             ? MEASUREMENT_FFT_QUALITY_NOT_READY
@@ -1162,11 +1188,14 @@ void measurement_fft_process(void)
     uint16_t span_code[MEASUREMENT_FFT_CHANNEL_COUNT];
     measurement_fft_quality_t quality;
     measurement_mode_t mode;
+    measurement_mode_t secondary_mode;
     uint32_t cycle_start;
     uint16_t valid_mask;
+    uint16_t secondary_valid_mask;
     uint8_t voltage_status[MEASUREMENT_FFT_CHANNEL_COUNT];
     uint8_t channel;
     uint8_t valid;
+    uint8_t fault_mask;
 
     if (measurement_fft_state == MEASUREMENT_FFT_STATE_READY)
     {
@@ -1270,6 +1299,20 @@ void measurement_fft_process(void)
             measurement_fft_classify_wave(
                 measurement_fft_diagnostics.harmonic_ratio_3,
                 measurement_fft_diagnostics.harmonic_ratio_5);
+        measurement_fft_diagnostics.secondary_harmonic_ratio_3 =
+            measurement_fft_harmonic_ratio(measurement_fft_output[1],
+                                           peak_position[1],
+                                           3u,
+                                           peak_power[1]);
+        measurement_fft_diagnostics.secondary_harmonic_ratio_5 =
+            measurement_fft_harmonic_ratio(measurement_fft_output[1],
+                                           peak_position[1],
+                                           5u,
+                                           peak_power[1]);
+        measurement_fft_diagnostics.secondary_wave_type =
+            measurement_fft_classify_wave(
+                measurement_fft_diagnostics.secondary_harmonic_ratio_3,
+                measurement_fft_diagnostics.secondary_harmonic_ratio_5);
         if (voltage_status[0] != 0u)
         {
             measurement_fft_diagnostics.amplitude_vpp =
@@ -1282,11 +1325,28 @@ void measurement_fft_process(void)
         {
             measurement_fft_diagnostics.amplitude_vpp = NAN;
         }
+        if (voltage_status[1] != 0u)
+        {
+            measurement_fft_diagnostics.secondary_amplitude_vpp =
+                measurement_fft_rms_to_vpp(
+                    measurement_fft_diagnostics.secondary_rms_voltage,
+                    measurement_fft_diagnostics.secondary_wave_type,
+                    span_vpp[1]);
+        }
+        else
+        {
+            measurement_fft_diagnostics.secondary_amplitude_vpp = NAN;
+        }
         measurement_fft_diagnostics.thd_percent =
             measurement_fft_calculate_thd(
                 measurement_fft_output[0],
                 peak_position[0],
                 &measurement_fft_diagnostics.thd_harmonic_count);
+        measurement_fft_diagnostics.secondary_thd_percent =
+            measurement_fft_calculate_thd(
+                measurement_fft_output[1],
+                peak_position[1],
+                &measurement_fft_diagnostics.secondary_thd_harmonic_count);
         measurement_fft_build_spectrum(measurement_fft_output[0],
                                        peak_power[0]);
 
@@ -1307,11 +1367,15 @@ void measurement_fft_process(void)
 
         quality = MEASUREMENT_FFT_QUALITY_OK;
         mode = MEASUREMENT_MODE_UNKNOWN;
+        secondary_mode = MEASUREMENT_MODE_UNKNOWN;
         valid_mask = 0u;
+        secondary_valid_mask = 0u;
+        fault_mask = 0u;
         valid = 0u;
         if ((measurement_fft_diagnostics.clipping_mask & 0x01u) != 0u)
         {
             quality = MEASUREMENT_FFT_QUALITY_CLIPPED;
+            fault_mask |= 0x01u;
         }
         else
         {
@@ -1337,6 +1401,7 @@ void measurement_fft_process(void)
                          measurement_fft_diagnostics.peak_frequency_hz)))
             {
                 quality = MEASUREMENT_FFT_QUALITY_SIGNAL_TOO_SMALL;
+                fault_mask |= 0x01u;
             }
             else
             {
@@ -1382,19 +1447,82 @@ void measurement_fft_process(void)
             }
         }
 
+        if ((measurement_fft_diagnostics.clipping_mask & 0x02u) != 0u)
+        {
+            fault_mask |= 0x02u;
+        }
+        else
+        {
+            if (voltage_status[1] != 0u)
+            {
+                secondary_valid_mask |= MEASUREMENT_VALID_DC_VOLTAGE;
+            }
+            if (span_code[1] < MEASUREMENT_FFT_MINIMUM_SPAN_CODE)
+            {
+                secondary_mode = MEASUREMENT_MODE_DC;
+                measurement_fft_diagnostics.secondary_peak_frequency_hz = 0.0f;
+                measurement_fft_diagnostics.secondary_thd_percent = 0.0f;
+                measurement_fft_diagnostics.secondary_thd_harmonic_count = 0u;
+                measurement_fft_diagnostics.secondary_wave_type =
+                    MEASUREMENT_WAVE_UNKNOWN;
+            }
+            else if ((peak_power[1] <= 0)
+                     || (!isfinite(
+                         measurement_fft_diagnostics.secondary_peak_frequency_hz)))
+            {
+                fault_mask |= 0x02u;
+            }
+            else
+            {
+                secondary_mode = MEASUREMENT_MODE_AC;
+                secondary_valid_mask |= MEASUREMENT_VALID_FREQUENCY;
+                if ((voltage_status[1] != 0u)
+                    && isfinite(
+                        measurement_fft_diagnostics.secondary_amplitude_vpp)
+                    && isfinite(
+                        measurement_fft_diagnostics.secondary_rms_voltage))
+                {
+                    secondary_valid_mask |= MEASUREMENT_VALID_AMPLITUDE
+                                            | MEASUREMENT_VALID_RMS;
+                }
+                if ((measurement_fft_diagnostics.secondary_thd_harmonic_count
+                     != 0u)
+                    && isfinite(
+                        measurement_fft_diagnostics.secondary_thd_percent))
+                {
+                    secondary_valid_mask |= MEASUREMENT_VALID_THD;
+                }
+                if (measurement_fft_diagnostics.secondary_wave_type
+                    != MEASUREMENT_WAVE_UNKNOWN)
+                {
+                    secondary_valid_mask |= MEASUREMENT_VALID_WAVE_TYPE;
+                }
+            }
+        }
+
         valid =
             ((valid_mask & (MEASUREMENT_VALID_AMPLITUDE
                             | MEASUREMENT_VALID_FREQUENCY
                             | MEASUREMENT_VALID_PHASE))
              == (MEASUREMENT_VALID_AMPLITUDE
-                 | MEASUREMENT_VALID_FREQUENCY
-                 | MEASUREMENT_VALID_PHASE))
+                  | MEASUREMENT_VALID_FREQUENCY
+                  | MEASUREMENT_VALID_PHASE))
+             && ((secondary_valid_mask & (MEASUREMENT_VALID_AMPLITUDE
+                                           | MEASUREMENT_VALID_FREQUENCY))
+                 == (MEASUREMENT_VALID_AMPLITUDE
+                     | MEASUREMENT_VALID_FREQUENCY))
                 ? 1u
                 : 0u;
 
         measurement_fft_diagnostics.fft_count++;
         measurement_fft_diagnostics.fft_ready = 1u;
-        measurement_fft_publish(valid, quality, mode, valid_mask);
+        measurement_fft_publish(valid,
+                                quality,
+                                mode,
+                                valid_mask,
+                                secondary_mode,
+                                secondary_valid_mask,
+                                fault_mask);
         measurement_fft_display_start_ms = HAL_GetTick();
         measurement_fft_state = MEASUREMENT_FFT_STATE_DISPLAY;
         return;

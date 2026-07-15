@@ -83,13 +83,20 @@ class MeasurementFftContractTest(unittest.TestCase):
             "amplitude_vpp",
             "secondary_amplitude_vpp",
             "dc_voltage",
+            "secondary_dc_voltage",
             "rms_voltage",
+            "secondary_rms_voltage",
             "thd_percent",
+            "secondary_thd_percent",
             "thd_harmonic_count",
+            "secondary_thd_harmonic_count",
             "raw_phase_deg",
             "phase_deg",
             "harmonic_ratio_3",
             "harmonic_ratio_5",
+            "secondary_harmonic_ratio_3",
+            "secondary_harmonic_ratio_5",
+            "secondary_wave_type",
             "clipping_mask",
             "result_valid",
             "voltage_calibrated_mask",
@@ -148,13 +155,16 @@ class MeasurementFftContractTest(unittest.TestCase):
             "MEASUREMENT_VALID_PHASE",
             "MEASUREMENT_VALID_SPECTRUM",
             "uint16_t valid_mask",
+            "uint16_t secondary_valid_mask",
+            "uint8_t fault_mask",
         ):
             with self.subTest(token=token):
                 self.assertIn(token, header)
 
         self.assertIn("valid_mask |= MEASUREMENT_VALID_PHASE", fft_source)
         self.assertIn("result->valid_mask", hmi_source)
-        self.assertIn('wave_text = "DC";', hmi_source)
+        self.assertIn("result->secondary_valid_mask", hmi_source)
+        self.assertIn('text->wave = "DC";', hmi_source)
 
     def test_ads8688_range_and_voltage_apis_are_public(self):
         """FFT 与最新值存储必须共用同一套量程和电压换算接口。"""

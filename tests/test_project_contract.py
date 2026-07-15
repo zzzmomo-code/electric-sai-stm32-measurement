@@ -346,6 +346,15 @@ class ProjectContractTest(unittest.TestCase):
             "wave_type": "measurement_wave_type_t",
             "mode": "measurement_mode_t",
             "valid_mask": "uint16_t",
+            "secondary_dc_voltage": "float",
+            "secondary_amplitude_vpp": "float",
+            "secondary_rms_voltage": "float",
+            "secondary_frequency_hz": "float",
+            "secondary_thd_percent": "float",
+            "secondary_wave_type": "measurement_wave_type_t",
+            "secondary_mode": "measurement_mode_t",
+            "secondary_valid_mask": "uint16_t",
+            "fault_mask": "uint8_t",
             "valid": "uint8_t",
             "sequence": "uint32_t",
         }
@@ -375,13 +384,29 @@ class ProjectContractTest(unittest.TestCase):
 
         self.assertRegex(
             header,
-            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_REFRESH_MS[ \t]+250u[ \t]*$",
+            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_REFRESH_MS[ \t]+500u[ \t]*$",
         )
         self.assertRegex(
             header,
-            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_TX_BUFFER_SIZE[ \t]+192u[ \t]*$",
+            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_TX_BUFFER_SIZE[ \t]+384u[ \t]*$",
         )
-        for control_name in ("t_amp", "t_freq", "t_phase", "t_wave", "t_status"):
+        self.assertRegex(
+            header,
+            r"(?m)^[ \t]*#define[ \t]+HMI_TJC_TX_TIMEOUT_MS[ \t]+500u[ \t]*$",
+        )
+        for control_name in (
+            "t_amp",
+            "t_freq",
+            "t_wave",
+            "t_thd",
+            "t_status",
+            "t_amp2",
+            "t_freq2",
+            "t_wave2",
+            "t_thd2",
+            "t_status2",
+            "t_phase",
+        ):
             with self.subTest(control=control_name):
                 self.assertIn(f'"{control_name}"', source)
 
@@ -428,13 +453,18 @@ class ProjectContractTest(unittest.TestCase):
             "t_freq",
             "t_phase",
             "t_wave",
+            "t_thd",
             "t_status",
+            "t_amp2",
+            "t_freq2",
+            "t_wave2",
+            "t_thd2",
+            "t_status2",
             "FF FF FF",
             "USART1",
             "PA9",
             "PA10",
             "DMA1 Stream0",
-            "DMA1 Stream1",
             "不使用 USART1 DMA",
             "不启用 USART1 global interrupt",
             "实屏",

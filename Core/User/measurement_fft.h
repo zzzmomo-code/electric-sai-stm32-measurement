@@ -99,11 +99,16 @@ typedef struct
     float secondary_rms_voltage;        /**< AIN1 去直流交流有效值，单位为 V。 */
     float thd_percent;                  /**< AIN0 可用谐波范围内 THD，单位为百分比。 */
     uint8_t thd_harmonic_count;         /**< 本帧实际纳入 THD 的谐波数量。 */
+    float secondary_thd_percent;        /**< AIN1 可用谐波范围内 THD，单位为百分比。 */
+    uint8_t secondary_thd_harmonic_count; /**< AIN1 实际纳入 THD 的谐波数量。 */
     float raw_phase_deg;                /**< 未补偿通道轮询时差的 AIN1-AIN0 相位。 */
     float phase_deg;                    /**< 补偿标称通道时差后的 AIN1-AIN0 相位。 */
     float harmonic_ratio_3;             /**< AIN0 三次谐波与基波幅值比。 */
     float harmonic_ratio_5;             /**< AIN0 五次谐波与基波幅值比。 */
     measurement_wave_type_t wave_type;  /**< AIN0 初步波形分类结果。 */
+    float secondary_harmonic_ratio_3;   /**< AIN1 三次谐波与基波幅值比。 */
+    float secondary_harmonic_ratio_5;   /**< AIN1 五次谐波与基波幅值比。 */
+    measurement_wave_type_t secondary_wave_type; /**< AIN1 初步波形分类结果。 */
     measurement_fft_quality_t quality;  /**< 最近一次结果质量状态。 */
     uint8_t clipping_mask;              /**< 位 0/1 分别表示 AIN0/AIN1 接近满量程削顶。 */
     uint8_t result_valid;               /**< 非零表示最近一次结果已经作为 LIVE 数据发布。 */

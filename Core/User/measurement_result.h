@@ -46,16 +46,25 @@ typedef enum
 /** 一组可供显示或记录的测量结果。 */
 typedef struct
 {
-    float dc_voltage;                  /**< AIN0 平均直流电压，单位为伏。 */
-    float amplitude_vpp;               /**< 峰峰值幅度，单位为伏。 */
-    float rms_voltage;                 /**< 去直流后的交流有效值，单位为伏。 */
-    float frequency_hz;                /**< 频率，单位为赫兹。 */
-    float thd_percent;                 /**< 可用谐波范围内的总谐波失真，单位为百分比。 */
-    float phase_deg;                   /**< 相位差，单位为度。 */
-    measurement_wave_type_t wave_type; /**< 算法识别的波形类型。 */
-    measurement_mode_t mode;           /**< 当前输入被判定为直流、交流或未知。 */
-    uint16_t valid_mask;               /**< 各字段有效位，定义见 MEASUREMENT_VALID_*。 */
-    uint8_t valid;                     /**< 非零表示现有五控件 HMI 可显示完整交流结果。 */
+    float dc_voltage;                  /**< CH1 平均直流电压，单位为伏。 */
+    float amplitude_vpp;               /**< CH1 峰峰值幅度，单位为伏。 */
+    float rms_voltage;                 /**< CH1 去直流后的交流有效值，单位为伏。 */
+    float frequency_hz;                /**< CH1 频率，单位为赫兹。 */
+    float thd_percent;                 /**< CH1 总谐波失真，单位为百分比。 */
+    float secondary_dc_voltage;        /**< CH2 平均直流电压，单位为伏。 */
+    float secondary_amplitude_vpp;     /**< CH2 峰峰值幅度，单位为伏。 */
+    float secondary_rms_voltage;       /**< CH2 去直流后的交流有效值，单位为伏。 */
+    float secondary_frequency_hz;      /**< CH2 频率，单位为赫兹。 */
+    float secondary_thd_percent;       /**< CH2 总谐波失真，单位为百分比。 */
+    float phase_deg;                   /**< CH2 相对 CH1 的相位差，单位为度。 */
+    measurement_wave_type_t wave_type; /**< CH1 算法识别的波形类型。 */
+    measurement_wave_type_t secondary_wave_type; /**< CH2 算法识别的波形类型。 */
+    measurement_mode_t mode;           /**< CH1 被判定为直流、交流或未知。 */
+    measurement_mode_t secondary_mode; /**< CH2 被判定为直流、交流或未知。 */
+    uint16_t valid_mask;               /**< CH1 及公共相位有效位。 */
+    uint16_t secondary_valid_mask;     /**< CH2 字段有效位。 */
+    uint8_t fault_mask;                /**< 位 0/1 分别表示 CH1/CH2 本帧异常。 */
+    uint8_t valid;                     /**< 非零表示双通道交流核心结果完整。 */
     uint32_t sequence;                 /**< 结果发布序号，由算法模块维护。 */
 } measurement_result_t;
 
