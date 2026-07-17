@@ -1,0 +1,11 @@
+../Core/User/hmi_tjc.c:776:25:hmi_tjc_send_frame	8	static
+../Core/User/hmi_tjc.c:514:25:hmi_tjc_append_terminator	4	static
+../Core/User/hmi_tjc.c:373:25:hmi_tjc_append_text_command	32	static
+../Core/User/hmi_tjc.c:209:16:hmi_tjc_prepare_channel_text.isra	80	static
+../Core/User/hmi_tjc.c:421:18:hmi_tjc_build_frame	392	static
+../Core/User/hmi_tjc.c:547:18:hmi_tjc_build_detail_frame	104	static
+../Core/User/hmi_tjc.c:692:18:hmi_tjc_build_spectrum_frame	48	static
+../Core/User/hmi_tjc.c:812:6:hmi_tjc_bind_uart	8	static
+../Core/User/hmi_tjc.c:827:6:hmi_tjc_init	8	static
+../Core/User/hmi_tjc.c:848:6:hmi_tjc_process	80	static
+../Core/User/hmi_tjc.c:904:9:hmi_tjc_get_diagnostics	8	static

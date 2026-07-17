@@ -1,0 +1,13 @@
+../Core/User/measurement_fft.c:367:14:measurement_fft_band_power.constprop	3
+../Core/User/measurement_fft.c:614:31:measurement_fft_analyze_channel.part.0	47
+../Core/User/measurement_fft.c:740:6:measurement_fft_init	2
+../Core/User/measurement_fft.c:778:9:measurement_fft_ingest_pair	7
+../Core/User/measurement_fft.c:820:6:measurement_fft_ingest_sample	3
+../Core/User/measurement_fft.c:836:9:measurement_fft_sampling_required	1
+../Core/User/measurement_fft.c:844:6:measurement_fft_resynchronize	3
+../Core/User/measurement_fft.c:858:6:measurement_fft_process	62
+../Core/User/measurement_fft.c:1083:9:measurement_fft_hmi_refresh_allowed	1
+../Core/User/measurement_fft.c:1088:9:measurement_fft_get_diagnostics	2
+../Core/User/measurement_fft.c:1098:9:measurement_fft_get_spectrum	2
+../Core/User/measurement_fft.c:1108:9:measurement_fft_set_calibration	9
+../Core/User/measurement_fft.c:1138:9:measurement_fft_get_calibration	3

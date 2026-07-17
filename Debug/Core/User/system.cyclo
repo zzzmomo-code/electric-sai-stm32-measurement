@@ -1,0 +1,2 @@
+../Core/User/system.c:70:6:system_init	1
+../Core/User/system.c:90:6:system_process	2

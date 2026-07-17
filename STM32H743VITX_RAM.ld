@@ -138,6 +138,22 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >DTCMRAM AT> RAM_EXEC
 
+  /* 65536 个双 ADC 同步样本对，固定放入 D2 SRAM。 */
+  .adc_sample_pairs (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.adc_sample_pairs)
+    . = ALIGN(32);
+  } >RAM_D2
+
+  /* RAM 调试配置中 D1 SRAM 名为 RAM_EXEC。 */
+  .fft_f32_work (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.fft_f32_work)
+    . = ALIGN(32);
+  } >RAM_EXEC
+
   /* Uninitialized data section */
   . = ALIGN(4);
   .bss :

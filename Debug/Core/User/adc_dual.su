@@ -1,0 +1,9 @@
+../Core/User/adc_dual.c:71:13:adc_dual_update_trigger_state	8	static
+../Core/User/adc_dual.c:121:13:adc_dual_process_block.constprop	48	static,ignoring_inline_asm
+../Core/User/adc_dual.c:216:6:adc_dual_unpack_word	0	static
+../Core/User/adc_dual.c:230:6:adc_dual_init	8	static,ignoring_inline_asm
+../Core/User/adc_dual.c:301:6:adc_dual_process	16	static,ignoring_inline_asm
+../Core/User/adc_dual.c:349:9:adc_dual_get_stats	8	static
+../Core/User/adc_dual.c:362:6:HAL_ADC_ConvHalfCpltCallback	0	static
+../Core/User/adc_dual.c:370:6:HAL_ADC_ConvCpltCallback	0	static
+../Core/User/adc_dual.c:378:6:HAL_ADC_ErrorCallback	0	static

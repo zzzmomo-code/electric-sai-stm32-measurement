@@ -1,0 +1,9 @@
+../Core/User/adc_dual.c:71:13:adc_dual_update_trigger_state	8
+../Core/User/adc_dual.c:121:13:adc_dual_process_block.constprop	11
+../Core/User/adc_dual.c:216:6:adc_dual_unpack_word	3
+../Core/User/adc_dual.c:230:6:adc_dual_init	6
+../Core/User/adc_dual.c:301:6:adc_dual_process	8
+../Core/User/adc_dual.c:349:9:adc_dual_get_stats	2
+../Core/User/adc_dual.c:362:6:HAL_ADC_ConvHalfCpltCallback	2
+../Core/User/adc_dual.c:370:6:HAL_ADC_ConvCpltCallback	2
+../Core/User/adc_dual.c:378:6:HAL_ADC_ErrorCallback	2

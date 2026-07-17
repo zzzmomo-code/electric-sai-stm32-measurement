@@ -139,6 +139,22 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >RAM_D1 AT> FLASH
 
+  /* 65536 个双 ADC 同步样本对，固定放入 D2 SRAM。 */
+  .adc_sample_pairs (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.adc_sample_pairs)
+    . = ALIGN(32);
+  } >RAM_D2
+
+  /* 65536 个 float32_t FFT 原地工作区，固定放入 D1 SRAM。 */
+  .fft_f32_work (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.fft_f32_work)
+    . = ALIGN(32);
+  } >RAM_D1
+
   /* Uninitialized data section */
   . = ALIGN(4);
   .bss :
@@ -176,5 +192,4 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
-
 
