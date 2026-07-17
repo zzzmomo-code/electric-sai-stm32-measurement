@@ -35,5 +35,45 @@ class TimerConfigurationTest(unittest.TestCase):
         self.assertEqual(order, sorted(order))
 
 
+class FrequencyModuleTest(unittest.TestCase):
+    def test_unsigned_delta_math_handles_wrap_and_30mhz(self):
+        previous_counter = 0xFFF0_0000
+        counter_delta = 30_000_000
+        current_counter = (previous_counter + counter_delta) & 0xFFFF_FFFF
+        measured_delta = (current_counter - previous_counter) & 0xFFFF_FFFF
+        cycle_delta = 480_000_000
+        frequency_hz = measured_delta * 480_000_000.0 / cycle_delta
+        self.assertEqual(measured_delta, counter_delta)
+        self.assertAlmostEqual(frequency_hz, 30_000_000.0)
+
+    def test_module_exposes_independent_result_and_process_api(self):
+        header_path = ROOT / "Core/User/frequency_measure.h"
+        self.assertTrue(header_path.exists(), "frequency_measure.h must exist")
+        header = header_path.read_text(encoding="utf-8")
+        self.assertIn("void frequency_measure_init(void);", header)
+        self.assertIn("void frequency_measure_process(void);", header)
+        self.assertIn("extern volatile uint8_t frequency_measure_flag;", header)
+        self.assertIn("extern volatile float frequency_measure_hz;", header)
+
+    def test_tim3_callback_only_assigns_its_flag(self):
+        source_path = ROOT / "Core/User/frequency_measure.c"
+        self.assertTrue(source_path.exists(), "frequency_measure.c must exist")
+        source = source_path.read_text(encoding="utf-8")
+        body = source.split("void HAL_TIM_PeriodElapsedCallback", 1)[1].split("\n}", 1)[0]
+        assigned_flags = re.findall(r"\b([a-z0-9_]+_flag)\s*=", body)
+        self.assertEqual(assigned_flags, ["frequency_measure_flag"])
+        self.assertNotIn("frequency_measure_process();", body)
+        self.assertNotIn("__HAL_TIM_GET_COUNTER", body)
+
+    def test_runtime_uses_counter_and_dwt_deltas_without_resetting_dwt(self):
+        source_path = ROOT / "Core/User/frequency_measure.c"
+        self.assertTrue(source_path.exists(), "frequency_measure.c must exist")
+        source = source_path.read_text(encoding="utf-8")
+        self.assertIn("__HAL_TIM_GET_COUNTER(&htim5)", source)
+        self.assertIn("DWT->CYCCNT", source)
+        self.assertIn("SystemCoreClock", source)
+        self.assertNotIn("DWT->CYCCNT = 0", source)
+
+
 if __name__ == "__main__":
     unittest.main()
