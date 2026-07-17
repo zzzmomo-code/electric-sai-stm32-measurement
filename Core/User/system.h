@@ -20,6 +20,7 @@
 #include "measurement_fft.h"
 #include "fft_f32_65536.h"
 #include "adc_dual.h"
+#include "frequency_measure.h"
 
 /* ADC1/ADC2 与 TIM2 由用户完成 CubeMX 配置并生成后自动启用真实采集实现。 */
 #if defined(__has_include)
@@ -62,7 +63,7 @@ void system_init(void);
  * @brief 执行全部主循环用户功能。
  * @param 无。
  * @return 无。
- * @note 依次处理双 ADC、FFT 状态和串口屏，main.c 不放置业务逻辑。
+ * @note 依次处理外部频率、双 ADC、FFT 状态和串口屏，main.c 不放置业务逻辑。
  */
 void system_process(void);
 

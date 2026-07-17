@@ -75,5 +75,23 @@ class FrequencyModuleTest(unittest.TestCase):
         self.assertNotIn("DWT->CYCCNT = 0", source)
 
 
+class SystemIntegrationTest(unittest.TestCase):
+    def test_system_header_is_the_unified_entry(self):
+        header = (ROOT / "Core/User/system.h").read_text(encoding="utf-8")
+        self.assertIn('#include "frequency_measure.h"', header)
+
+    def test_system_initializes_and_processes_frequency_module(self):
+        source = (ROOT / "Core/User/system.c").read_text(encoding="utf-8")
+        init_body = source.split("void system_init(void)", 1)[1].split("\n}", 1)[0]
+        process_body = source.split("void system_process(void)", 1)[1].split("\n}", 1)[0]
+        self.assertIn("frequency_measure_init();", init_body)
+        self.assertIn("frequency_measure_process();", process_body)
+
+    def test_external_frequency_does_not_replace_fft_result(self):
+        source = (ROOT / "Core/User/frequency_measure.c").read_text(encoding="utf-8")
+        self.assertNotIn("measurement_result_publish", source)
+        self.assertNotIn("measurement_result_t", source)
+
+
 if __name__ == "__main__":
     unittest.main()

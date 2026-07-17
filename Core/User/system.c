@@ -3,8 +3,8 @@
  * @brief 用户自定义模块统一初始化入口。
  *
  * 模块用途：集中调用用户模块初始化函数，避免在 main.c 中堆放业务逻辑。
- * GPIO 引脚映射：无直接 GPIO 引脚；片上 ADC 计划使用 PC4/ADC1_INP4 与 PB1/ADC2_INP5。
- * 依赖的外设和 CubeIDE 配置：当前等待 CubeMX 生成 ADC1/ADC2、TIM2、DMA 和 NVIC；
+ * GPIO 引脚映射：PC4/ADC1_INP4、PB1/ADC2_INP5，以及 PA0/TIM5_CH1 外部频率输入。
+ * 依赖的外设和 CubeIDE 配置：依赖 ADC1/ADC2、TIM2、TIM3、TIM5、DMA 和 NVIC；
  * 串口屏继续依赖 USART1，9600 8N1，轮询发送且不使用 USART DMA。
  * 初始化方法：在 main.c 的 USER CODE BEGIN 2 区域调用 system_init()。
  * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
@@ -65,12 +65,13 @@ static void hmi_tjc_publish_self_test(void)
  * @brief 初始化全部用户功能模块。
  * @param 无。
  * @return 无。
- * @note CubeMX 未生成片上 ADC 配置时，adc_dual_init() 安全返回“未配置”状态。
+ * @note 先初始化 FFT 的 DWT 诊断，再启动复用 DWT 的外部频率测量模块。
  */
 void system_init(void)
 {
     measurement_result_init();
     measurement_fft_init();
+    frequency_measure_init();
     hmi_tjc_init();
 #if defined(SYSTEM_USART1_AVAILABLE)
     hmi_tjc_bind_uart(&huart1);
@@ -82,13 +83,14 @@ void system_init(void)
 }
 
 /**
- * @brief 执行双 ADC、FFT 和串口屏主循环处理。
+ * @brief 执行外部频率、双 ADC、FFT 和串口屏主循环处理。
  * @param 无。
  * @return 无。
  * @note 第二次 adc_dual_process() 只同步 TIM2 启停状态，不重复处理已领取的 DMA 标志。
  */
 void system_process(void)
 {
+    frequency_measure_process();
     adc_dual_process();
     measurement_fft_process();
     adc_dual_process();

@@ -10,6 +10,7 @@
 
 - PC4：ADC1_INP4，CH1 模拟输入。
 - PB1：ADC2_INP5，CH2 模拟输入。
+- PA0：TIM5_CH1，0～3.3 V CMOS 外部频率输入，最高 30 MHz。
 - PA9：USART1_TX，连接串口屏 RX。
 - PA10：USART1_RX，连接串口屏 TX（当前显示链路主要使用 TX）。
 - ADC 输入必须处于 0 至 VDDA 范围内；前端衰减、偏置和保护电路应按实际硬件确认。
@@ -20,6 +21,8 @@
 - ADC1 外部触发：TIM2 TRGO 上升沿。
 - ADC DMA：DMA1 Stream0、Circular、Word/Word、Memory Increment、Very High Priority。
 - TIM2：240 MHz 输入时钟，Prescaler `0`，Counter Period `399`，TRGO 为 Update Event，得到 600000 次/秒触发。
+- TIM5：External Clock Mode 1，触发源 TI1FP1，上升沿，Prescaler `0`，Counter Period `0xFFFFFFFF`，输入滤波 `0`。
+- TIM3：240 MHz 输入时钟，Prescaler `23999`，Counter Period `9999`，产生 1 Hz 更新中断；NVIC 优先级为 6。
 - ADC kernel clock：当前 `.ioc` 为 64 MHz；采样时间 8.5 cycles。更改 ADC 分辨率、时钟或采样时间后必须重新核算转换时间。
 - USART1：9600 8N1，用于串口屏刷新。
 
@@ -51,9 +54,12 @@
 - `Core/User/adc_dual.c`：领取 DMA 标志、维护 Cache、拆分 32 位双 ADC packed word 并提交同步样本对。
 - `Core/User/fft_f32_65536.c`：无 HAL 依赖的 65536 点 F32 实数 FFT。
 - `Core/User/measurement_fft.c`：整帧存储、时域统计、两通道 FFT、诊断和结果发布。
+- `Core/User/frequency_measure.c`：连续读取 TIM5 外部计数与 DWT 周期差，计算独立的外部信号平均频率。
 - `Core/User/hmi_tjc.c`：只读取 `measurement_result_t`，不读取 DMA 缓冲区或 `adc_dual_stats_t`。
 
-`main.c` 的用户初始化区只调用 `system_init()`，主循环只调用 `system_process()`。新增 `Core/User/fft_f32_65536.c` 后，需要按工程当前管理方式将它加入 CubeIDE 构建；用户已选择自行处理 include path 和工程编译配置。
+`frequency_measure_init()` 由 `system_init()` 调用，`frequency_measure_process()` 由 `system_process()` 调用。结果保存在独立调试变量 `frequency_measure_hz`，不替换 FFT 生成的频率结果。TIM3 只负责约 1 Hz 更新调度，频率按 TIM5 计数差和 DWT 实际周期差计算，从而补偿 FFT 造成的主循环延迟。
+
+`main.c` 的用户初始化区只调用 `system_init()`，主循环只调用 `system_process()`。新增 `Core/User/fft_f32_65536.c` 和 `Core/User/frequency_measure.c` 后，需要按工程当前管理方式将它们加入 CubeIDE 构建；用户已选择自行处理 include path 和工程编译配置。
 
 ## 编译、烧录和运行
 
@@ -66,6 +72,8 @@
 ## 验证方法与已知限制
 
 - 用示波器或定时器诊断确认实际触发率为 600 kSPS，并观察 `adc_dual_stats_t` 的 DMA 次数、积压、溢出和丢弃计数。
+- 向 PA0 依次输入 0 Hz、1 Hz、1 kHz、1 MHz、10 MHz 和 30 MHz，使用已校准信号源或频率计对比 `frequency_measure_hz`，并连续观察至少 60 秒。
+- 外部频率结果是相邻两次主循环实际快照之间的平均值；快速扫频时测量窗口不严格对齐 TIM3 更新边沿。绝对精度还受 HSE 晶振和输入边沿质量影响。
 - 依次输入 20 Hz、1 kHz、20 kHz、100 kHz、120 kHz，记录频率、Vpp、RMS、THD、FFT 周期数及长时间稳定性。
 - 用两路相位可控信号检查 0°、±90°、180°；只有两通道主峰位置匹配时相位有效。
 - 100 kHz 时每周期只有 6 个样本；二次谐波仍低于 Nyquist，三次谐波位于边界而不纳入 THD。
