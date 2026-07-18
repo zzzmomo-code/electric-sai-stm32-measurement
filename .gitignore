@@ -1,0 +1,10 @@
+# STM32CubeIDE build analysis files
+*.su
+*.cyclo
+
+# Python test cache
+__pycache__/
+*.py[cod]
+
+# IDE workspace metadata does not belong to an individual project
+.metadata/
