@@ -3,8 +3,9 @@
  * @brief 用户自定义模块统一初始化入口。
  *
  * 模块用途：集中调用用户模块初始化函数，避免在 main.c 中堆放业务逻辑。
- * GPIO 引脚映射：PC4/ADC1_INP4、PB1/ADC2_INP5，以及 PA0/TIM5_CH1 外部频率输入。
- * 依赖的外设和 CubeIDE 配置：依赖 ADC1/ADC2、TIM2、TIM3、TIM5、DMA 和 NVIC；
+ * GPIO 引脚映射：PC4/ADC1_INP4、PB1/ADC2_INP5、PA0/TIM5_CH1，
+ * PB12/AD9834_FSYNC、PB13/SPI2_SCK、PB15/SPI2_MOSI。
+ * 依赖的外设和 CubeIDE 配置：依赖 ADC1/ADC2、TIM2、TIM3、TIM5、SPI2、DMA 和 NVIC；
  * 串口屏继续依赖 USART1，9600 8N1，轮询发送且不使用 USART DMA。
  * 初始化方法：在 main.c 的 USER CODE BEGIN 2 区域调用 system_init()。
  * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
@@ -72,6 +73,7 @@ void system_init(void)
     measurement_result_init();
     measurement_fft_init();
     frequency_measure_init();
+    dds_control_init();
     hmi_tjc_init();
 #if defined(SYSTEM_USART1_AVAILABLE)
     hmi_tjc_bind_uart(&huart1);
@@ -91,6 +93,7 @@ void system_init(void)
 void system_process(void)
 {
     frequency_measure_process();
+    dds_control_process();
     adc_dual_process();
     measurement_fft_process();
     adc_dual_process();

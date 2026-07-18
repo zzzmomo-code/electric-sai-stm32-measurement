@@ -11,6 +11,9 @@
 - PC4：ADC1_INP4，CH1 模拟输入。
 - PB1：ADC2_INP5，CH2 模拟输入。
 - PA0：TIM5_CH1，0～3.3 V CMOS 外部频率输入，最高 30 MHz。
+- PB12：AD9834 FSYNC，普通 GPIO 输出，空闲为高电平。
+- PB13：SPI2_SCK，连接 AD9834 SCLK。
+- PB15：SPI2_MOSI，连接 AD9834 SDATA。
 - PA9：USART1_TX，连接串口屏 RX。
 - PA10：USART1_RX，连接串口屏 TX（当前显示链路主要使用 TX）。
 - ADC 输入必须处于 0 至 VDDA 范围内；前端衰减、偏置和保护电路应按实际硬件确认。
@@ -23,6 +26,7 @@
 - TIM2：240 MHz 输入时钟，Prescaler `0`，Counter Period `399`，TRGO 为 Update Event，得到 600000 次/秒触发。
 - TIM5：External Clock Mode 1，触发源 TI1FP1，上升沿，Prescaler `0`，Counter Period `0xFFFFFFFF`，输入滤波 `0`。
 - TIM3：240 MHz 输入时钟，Prescaler `23999`，Counter Period `9999`，产生 1 Hz 更新中断；NVIC 优先级为 6。
+- SPI2：Transmit Only Master、16 bit、MSB First、CPOL High、CPHA 1 Edge、软件 NSS；SPI123 内核时钟为 64 MHz，Prescaler `8`，SCLK 为 8 MHz。
 - ADC kernel clock：当前 `.ioc` 为 64 MHz；采样时间 8.5 cycles。更改 ADC 分辨率、时钟或采样时间后必须重新核算转换时间。
 - USART1：9600 8N1，用于串口屏刷新。
 
@@ -55,11 +59,27 @@
 - `Core/User/fft_f32_65536.c`：无 HAL 依赖的 65536 点 F32 实数 FFT。
 - `Core/User/measurement_fft.c`：整帧存储、时域统计、两通道 FFT、诊断和结果发布。
 - `Core/User/frequency_measure.c`：连续读取 TIM5 外部计数与 DWT 周期差，计算独立的外部信号平均频率。
+- `Core/User/ad9834.c`：用 SPI2 和手动 FSYNC 写入 AD9834 控制字、频率字和相位字。
+- `Core/User/dds_control.c`：将固定测试频率或 TIM5 粗测频率换算为低侧本振 `fDDS = fin - 100 kHz`。
 - `Core/User/hmi_tjc.c`：只读取 `measurement_result_t`，不读取 DMA 缓冲区或 `adc_dual_stats_t`。
 
 `frequency_measure_init()` 由 `system_init()` 调用，`frequency_measure_process()` 由 `system_process()` 调用。结果保存在独立调试变量 `frequency_measure_hz`，不替换 FFT 生成的频率结果。TIM3 只负责约 1 Hz 更新调度，频率按 TIM5 计数差和 DWT 实际周期差计算，从而补偿 FFT 造成的主循环延迟。
 
 `main.c` 的用户初始化区只调用 `system_init()`，主循环只调用 `system_process()`。新增 `Core/User/fft_f32_65536.c` 和 `Core/User/frequency_measure.c` 后，需要按工程当前管理方式将它们加入 CubeIDE 构建；用户已选择自行处理 include path 和工程编译配置。
+
+## AD9834 无比较器上板自检
+
+当前 `Core/User/dds_control.h` 中 `DDS_CONTROL_FIXED_TEST_ENABLE` 默认为 `1`。程序把输入频率固定为 1 MHz，按低侧本振规划输出 900 kHz，并每秒重写一次频率寄存器，便于用示波器或逻辑分析仪同时检查 DDS 输出和 SPI 通信。
+
+下载后可在调试器 Expressions 中观察：
+
+- `ad9834_diagnostics.initialized`：应为 `1`。
+- `ad9834_diagnostics.output_frequency_hz`：应为 `900000`。
+- `ad9834_diagnostics.error_count`：应保持 `0`。
+- `ad9834_diagnostics.write_count`：初始化后为 `5`，之后每秒增加 `2`。
+- `dds_control_diagnostics.state`：应为 `dds_control_state_test`。
+
+过零比较器接入 PA0/TIM5_CH1 后，将 `DDS_CONTROL_FIXED_TEST_ENABLE` 改为 `0`。此时 `dds_control_process()` 读取 `frequency_measure_hz`，输入处于 1～30 MHz 且目标本振变化不少于 500 Hz 时才更新 AD9834，SPI 操作始终在主循环内执行。
 
 ## 编译、烧录和运行
 
