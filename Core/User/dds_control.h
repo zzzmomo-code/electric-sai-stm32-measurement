@@ -16,10 +16,13 @@
 #include <stdint.h>
 
 /** 无过零比较器时保持为1；比较器接入PA0后改为0。 */
-#define DDS_CONTROL_FIXED_TEST_ENABLE 1u
+#define DDS_CONTROL_FIXED_TEST_ENABLE 0u
 
-/** 固定通信测试模拟的输入频率，1MHz输入对应900kHz DDS输出。 */
+/** 固定通信测试模拟的输入频率，仅用于诊断记录。 */
 #define DDS_CONTROL_TEST_INPUT_HZ 1000000u
+
+/** 无比较器上板测试时的AD9834固定输出频率，单位Hz。 */
+#define DDS_CONTROL_TEST_OUTPUT_HZ 100000u
 
 /** 外差方案的目标中频，单位Hz。 */
 #define DDS_CONTROL_TARGET_IF_HZ 100000u

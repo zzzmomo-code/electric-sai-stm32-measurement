@@ -3,9 +3,11 @@
  * @brief AD9834 DDS底层驱动接口。
  *
  * 模块用途：通过SPI2向AD9834写入16位控制字并设置正弦输出频率。
- * GPIO引脚映射：PB12/FSYNC，PB13/SPI2_SCK，PB15/SPI2_MOSI。
+ * GPIO引脚映射：PB12/FSYNC，PB13/SPI2_SCK，PB15/SPI2_MOSI，
+ * PB14/FSELECT，PD8/PSELECT。
  * 依赖的外设和CubeIDE配置：SPI2主机只发送、16位、MSB优先、
- * CPOL=High、CPHA=1 Edge、8 Mbit/s，FSYNC为空闲高电平GPIO输出。
+ * CPOL=High、CPHA=1 Edge、8 Mbit/s；FSYNC空闲为高电平，FSELECT和
+ * PSELECT默认为低电平；控制寄存器PIN/SW位置1，使选择引脚生效。
  * 初始化方法：由dds_control_init()调用ad9834_init()。
  * 调用方法：初始化后调用ad9834_set_frequency_hz()更新频率。
  */
@@ -29,6 +31,20 @@ typedef enum
     ad9834_status_spi_error
 } ad9834_status_t;
 
+/** AD9834频率寄存器选择，对应PB14/FSELECT电平。 */
+typedef enum
+{
+    ad9834_frequency_register_0 = 0,
+    ad9834_frequency_register_1 = 1
+} ad9834_frequency_register_t;
+
+/** AD9834相位寄存器选择，对应PD8/PSELECT电平。 */
+typedef enum
+{
+    ad9834_phase_register_0 = 0,
+    ad9834_phase_register_1 = 1
+} ad9834_phase_register_t;
+
 /** AD9834运行诊断，便于在调试器Expressions中直接观察。 */
 typedef struct
 {
@@ -39,6 +55,8 @@ typedef struct
     uint16_t last_word;           /**< 最近尝试发送的16位字。 */
     int32_t last_hal_status;       /**< 最近一次HAL SPI返回值。 */
     uint8_t initialized;           /**< 初始化成功后为1。 */
+    uint8_t selected_frequency_register; /**< 当前FSELECT选择，0为FREQ0。 */
+    uint8_t selected_phase_register;     /**< 当前PSELECT选择，0为PHASE0。 */
 } ad9834_diagnostics_t;
 
 /** AD9834运行诊断快照。 */
@@ -59,6 +77,23 @@ ad9834_status_t ad9834_init(uint32_t initial_frequency_hz);
  * @note 函数使用阻塞式SPI发送两个16位字，调用时间很短但不能放在中断中。
  */
 ad9834_status_t ad9834_set_frequency_hz(uint32_t frequency_hz);
+
+/**
+ * @brief 通过PB14/FSELECT选择AD9834频率寄存器。
+ * @param frequency_register 要选择的FREQ0或FREQ1。
+ * @return 无。
+ * @note 本函数只切换引脚，不写入频率寄存器。
+ */
+void ad9834_select_frequency_register(
+    ad9834_frequency_register_t frequency_register);
+
+/**
+ * @brief 通过PD8/PSELECT选择AD9834相位寄存器。
+ * @param phase_register 要选择的PHASE0或PHASE1。
+ * @return 无。
+ * @note 本函数只切换引脚，不写入相位寄存器。
+ */
+void ad9834_select_phase_register(ad9834_phase_register_t phase_register);
 
 /**
  * @brief 计算AD9834的28位频率控制字。

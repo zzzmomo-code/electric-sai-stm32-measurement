@@ -39,7 +39,11 @@ class DdsContractTest(unittest.TestCase):
             "PB12.PinState=GPIO_PIN_SET",
             "PB12.Signal=GPIO_Output",
             "PB13.Signal=SPI2_SCK",
+            "PB14.GPIO_Label=FS",
+            "PB14.Signal=GPIO_Output",
             "PB15.Signal=SPI2_MOSI",
+            "PD8.GPIO_Label=PS",
+            "PD8.Signal=GPIO_Output",
             "RCC.SPI123CLockSelection=RCC_SPI123CLKSOURCE_CLKP",
             "RCC.SPI123Freq_Value=64000000",
             "SPI2.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_8",
@@ -58,8 +62,8 @@ class DdsContractTest(unittest.TestCase):
 
         self.assertIn("#define AD9834_MCLK_HZ 75000000u", header)
         self.assertIn("((uint64_t)frequency_hz) << 28", source)
-        self.assertIn("AD9834_CONTROL_RESET 0x2100u", source)
-        self.assertIn("AD9834_CONTROL_RUN   0x2000u", source)
+        self.assertIn("AD9834_CONTROL_RESET 0x2300u", source)
+        self.assertIn("AD9834_CONTROL_RUN   0x2200u", source)
         self.assertIn("HAL_SPI_Transmit(&hspi2", source)
 
         fsync_low = source.index("DDS_FSYNC_Pin, GPIO_PIN_RESET")
@@ -68,12 +72,30 @@ class DdsContractTest(unittest.TestCase):
         self.assertLess(fsync_low, transmit)
         self.assertLess(transmit, fsync_high)
 
-    def test_fixed_board_test_outputs_900khz(self) -> None:
+    def test_driver_controls_frequency_and_phase_select_pins(self) -> None:
+        header = read_text("Core/User/ad9834.h")
+        source = read_text("Core/User/ad9834.c")
+
+        self.assertIn("ad9834_select_frequency_register", header)
+        self.assertIn("ad9834_select_phase_register", header)
+        self.assertIn("HAL_GPIO_WritePin(FS_GPIO_Port, FS_Pin, pin_state);", source)
+        self.assertIn("HAL_GPIO_WritePin(PS_GPIO_Port, PS_Pin, pin_state);", source)
+        self.assertIn(
+            "ad9834_select_frequency_register(ad9834_frequency_register_0);",
+            source,
+        )
+        self.assertIn(
+            "ad9834_select_phase_register(ad9834_phase_register_0);",
+            source,
+        )
+
+    def test_formal_mode_tracks_input_minus_100khz(self) -> None:
         header = read_text("Core/User/dds_control.h")
         source = read_text("Core/User/dds_control.c")
 
-        self.assertIn("#define DDS_CONTROL_FIXED_TEST_ENABLE 1u", header)
+        self.assertIn("#define DDS_CONTROL_FIXED_TEST_ENABLE 0u", header)
         self.assertIn("#define DDS_CONTROL_TEST_INPUT_HZ 1000000u", header)
+        self.assertIn("#define DDS_CONTROL_TEST_OUTPUT_HZ 100000u", header)
         self.assertIn("#define DDS_CONTROL_TARGET_IF_HZ 100000u", header)
         self.assertIn("return input_frequency_hz - DDS_CONTROL_TARGET_IF_HZ;", source)
         self.assertEqual(1_000_000 - 100_000, 900_000)

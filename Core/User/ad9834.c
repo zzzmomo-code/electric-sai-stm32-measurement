@@ -3,7 +3,8 @@
  * @brief AD9834 DDS底层驱动实现。
  *
  * 模块用途：使用SPI2和手动FSYNC完成AD9834寄存器写入。
- * GPIO引脚映射：PB12/FSYNC，PB13/SPI2_SCK，PB15/SPI2_MOSI。
+ * GPIO引脚映射：PB12/FSYNC，PB13/SPI2_SCK，PB15/SPI2_MOSI，
+ * PB14/FSELECT，PD8/PSELECT。
  * 依赖的外设和CubeIDE配置：见ad9834.h。
  * 初始化方法：由dds_control_init()调用ad9834_init()。
  * 调用方法：主循环通过dds_control间接调用本模块。
@@ -11,14 +12,49 @@
 
 #include "system.h"
 
-#define AD9834_CONTROL_RESET 0x2100u
-#define AD9834_CONTROL_RUN   0x2000u
+#define AD9834_CONTROL_RESET 0x2300u
+#define AD9834_CONTROL_RUN   0x2200u
 #define AD9834_FREQ0_ADDRESS 0x4000u
 #define AD9834_PHASE0_ZERO   0xC000u
 #define AD9834_SPI_TIMEOUT_MS 10u
 
 /** AD9834运行诊断快照。 */
 volatile ad9834_diagnostics_t ad9834_diagnostics;
+
+/**
+ * @brief 通过PB14/FSELECT选择AD9834频率寄存器。
+ * @param frequency_register 要选择的FREQ0或FREQ1。
+ * @return 无。
+ * @note 低电平选择FREQ0，高电平选择FREQ1；本函数不会写寄存器内容。
+ */
+void ad9834_select_frequency_register(
+    ad9834_frequency_register_t frequency_register)
+{
+    GPIO_PinState pin_state = (frequency_register == ad9834_frequency_register_1)
+                                  ? GPIO_PIN_SET
+                                  : GPIO_PIN_RESET;
+
+    HAL_GPIO_WritePin(FS_GPIO_Port, FS_Pin, pin_state);
+    ad9834_diagnostics.selected_frequency_register =
+        (uint8_t)(pin_state == GPIO_PIN_SET);
+}
+
+/**
+ * @brief 通过PD8/PSELECT选择AD9834相位寄存器。
+ * @param phase_register 要选择的PHASE0或PHASE1。
+ * @return 无。
+ * @note 低电平选择PHASE0，高电平选择PHASE1；本函数不会写寄存器内容。
+ */
+void ad9834_select_phase_register(ad9834_phase_register_t phase_register)
+{
+    GPIO_PinState pin_state = (phase_register == ad9834_phase_register_1)
+                                  ? GPIO_PIN_SET
+                                  : GPIO_PIN_RESET;
+
+    HAL_GPIO_WritePin(PS_GPIO_Port, PS_Pin, pin_state);
+    ad9834_diagnostics.selected_phase_register =
+        (uint8_t)(pin_state == GPIO_PIN_SET);
+}
 
 /**
  * @brief 向AD9834发送一个16位字。
@@ -114,7 +150,11 @@ ad9834_status_t ad9834_init(uint32_t initial_frequency_hz)
     ad9834_diagnostics.last_word = 0u;
     ad9834_diagnostics.last_hal_status = (int32_t)HAL_OK;
     ad9834_diagnostics.initialized = 0u;
+    ad9834_diagnostics.selected_frequency_register = 0u;
+    ad9834_diagnostics.selected_phase_register = 0u;
     HAL_GPIO_WritePin(DDS_FSYNC_GPIO_Port, DDS_FSYNC_Pin, GPIO_PIN_SET);
+    ad9834_select_frequency_register(ad9834_frequency_register_0);
+    ad9834_select_phase_register(ad9834_phase_register_0);
 
     status = ad9834_write_word(AD9834_CONTROL_RESET);
     if (status != ad9834_status_ok)

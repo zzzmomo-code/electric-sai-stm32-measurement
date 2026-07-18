@@ -59,6 +59,10 @@ void Error_Handler(void);
 /* Private defines -----------------------------------------------------------*/
 #define DDS_FSYNC_Pin GPIO_PIN_12
 #define DDS_FSYNC_GPIO_Port GPIOB
+#define FS_Pin GPIO_PIN_14
+#define FS_GPIO_Port GPIOB
+#define PS_Pin GPIO_PIN_8
+#define PS_GPIO_Port GPIOD
 
 /* USER CODE BEGIN Private defines */
 

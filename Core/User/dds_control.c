@@ -2,7 +2,7 @@
  * @file dds_control.c
  * @brief 输入频率到AD9834本振频率的控制实现。
  *
- * 模块用途：固定测试模式每秒重写一次900kHz，正式模式读取TIM5粗测频结果
+ * 模块用途：固定测试模式每秒重写一次指定测试频率，正式模式读取TIM5粗测频结果
  * 并在频率变化达到500Hz时更新DDS。
  * GPIO引脚映射：无直接GPIO引脚，底层映射见ad9834.h。
  * 依赖的外设和CubeIDE配置：依赖frequency_measure和ad9834模块。
@@ -57,11 +57,9 @@ uint32_t dds_control_calculate_output_hz(uint32_t input_frequency_hz)
  * @param input_frequency_hz 当前采用的输入频率。
  * @return 无，失败时状态切换为error。
  */
-static void dds_control_apply_frequency(uint32_t input_frequency_hz)
+static void dds_control_apply_output(uint32_t input_frequency_hz,
+                                     uint32_t output_frequency_hz)
 {
-    uint32_t output_frequency_hz;
-
-    output_frequency_hz = dds_control_calculate_output_hz(input_frequency_hz);
     if ((output_frequency_hz == 0u)
         || (ad9834_set_frequency_hz(output_frequency_hz) != ad9834_status_ok))
     {
@@ -74,6 +72,17 @@ static void dds_control_apply_frequency(uint32_t input_frequency_hz)
     dds_control_diagnostics.output_frequency_hz = output_frequency_hz;
     dds_control_diagnostics.update_count++;
     dds_control_last_update_ms = HAL_GetTick();
+}
+
+/**
+ * @brief 按低侧本振公式计算并设置DDS输出频率。
+ * @param input_frequency_hz 当前输入信号频率，单位Hz。
+ * @return 无，失败状态记录在dds_control_diagnostics中。
+ */
+static void dds_control_apply_frequency(uint32_t input_frequency_hz)
+{
+    dds_control_apply_output(input_frequency_hz,
+                             dds_control_calculate_output_hz(input_frequency_hz));
 }
 
 /**
@@ -92,8 +101,12 @@ void dds_control_init(void)
     dds_control_diagnostics.error_count = 0u;
     dds_control_last_update_ms = HAL_GetTick();
 
+#if (DDS_CONTROL_FIXED_TEST_ENABLE != 0u)
+    initial_output_hz = DDS_CONTROL_TEST_OUTPUT_HZ;
+#else
     initial_output_hz = dds_control_calculate_output_hz(
         DDS_CONTROL_TEST_INPUT_HZ);
+#endif
     if (ad9834_init(initial_output_hz) != ad9834_status_ok)
     {
         dds_control_diagnostics.error_count = 1u;
@@ -124,7 +137,8 @@ void dds_control_process(void)
     if ((uint32_t)(now_ms - dds_control_last_update_ms)
         >= DDS_CONTROL_TEST_REFRESH_MS)
     {
-        dds_control_apply_frequency(DDS_CONTROL_TEST_INPUT_HZ);
+        dds_control_apply_output(DDS_CONTROL_TEST_INPUT_HZ,
+                                 DDS_CONTROL_TEST_OUTPUT_HZ);
         if (dds_control_diagnostics.state != dds_control_state_error)
         {
             dds_control_diagnostics.state = dds_control_state_test;
