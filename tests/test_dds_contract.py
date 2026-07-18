@@ -1,5 +1,6 @@
 import re
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 
@@ -11,6 +12,25 @@ def read_text(relative_path: str) -> str:
 
 
 class DdsContractTest(unittest.TestCase):
+    def test_all_hal_driver_sources_are_included(self) -> None:
+        project = ET.fromstring(read_text(".cproject"))
+        source_entries = [
+            entry
+            for entry in project.iter("entry")
+            if entry.get("name") == "Drivers/STM32H7xx_HAL_Driver/Src"
+        ]
+
+        self.assertGreater(len(source_entries), 0)
+        for entry in source_entries:
+            excluded = entry.get("excluding", "").split("|")
+            excluded_hal = [
+                name
+                for name in excluded
+                if name.startswith("stm32h7xx_hal_")
+                and not name.endswith("_template.c")
+            ]
+            self.assertEqual([], excluded_hal)
+
     def test_ioc_matches_ad9834_spi_contract(self) -> None:
         ioc = read_text("h743_pre1.ioc")
 
