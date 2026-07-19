@@ -12,6 +12,10 @@
  * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
  */
 
+/*
+ * DAC 输出补充映射：PC4/OPAMP1_VOUT，DAC1_OUT1 通过片内连接进入 OPAMP1。
+ * 依赖 DAC1 Channel 1 内部输出和 OPAMP1 Follower-DAC_OUT1-INP 配置。
+ */
 #include "system.h"
 
 /**
@@ -71,6 +75,8 @@ static void hmi_tjc_publish_self_test(void)
  */
 void system_init(void)
 {
+    /* 先启动 VGA 控制电压输出，并以 0 档作为安全默认值。 */
+    (void)dac_output_init();
     measurement_result_init();
     measurement_fft_init();
     frequency_measure_init();
