@@ -29,6 +29,7 @@
 - PB15：SPI2_MOSI，连接 AD9834 SDATA。
 - PB14：AD9834 FSELECT，低电平选择 FREQ0，高电平选择 FREQ1。
 - PD8：AD9834 PSELECT，低电平选择 PHASE0，高电平选择 PHASE1。
+- PC4: DAC1输出直流信号
 - MCU、比较器和 AD9834 必须共地。
 
 AD9834 初始化使用控制寄存器的 RESET 位完成软件复位，不需要 MCU 单独控制硬件 RESET 引脚。硬件 RESET、SLEEP 等未由本工程控制的引脚应按实际模块原理图固定到有效电平，不得悬空。
