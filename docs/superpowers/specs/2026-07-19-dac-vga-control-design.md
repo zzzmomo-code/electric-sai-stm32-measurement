@@ -17,7 +17,7 @@
 
 ## 六档定义
 
-档位、电压、12 位 DAC 码、控制电压和默认理论增益如下。DAC 码按 3.3 V 参考电压和 4095 满量程计算；默认 `Rf = RG = 1.0f`。
+档位、电压、片上 DAC 自动换算结果、控制电压和默认理论增益如下。片上 DAC 固定使用 HAL 的 12 位右对齐模式，数字码由目标电压和 3.3 V 参考电压自动换算，不作为用户可调参数；默认 `Rf = RG = 1.0f`。
 
 | 档位 | DAC 电压 VDAC | DAC 码 | VG | VGA 增益 |
 |---:|---:|---:|---:|---:|
@@ -42,15 +42,15 @@ VOUT = (+VIN - -VIN) * (1 + VG) * Rf / RG
 
 `Core/User/vga_control.h` 保留以下可修改参数：
 
-- DAC 参考电压和 12 位满量程码。
-- 六档 DAC 输出电压和对应 DAC 码。
+- DAC 参考电压，用于按实际 VDDA 校准输出电压。
+- 六档 DAC 输出电压。
 - `VG` 公式的比例系数与偏置。
 - `Rf` 和 `RG`，初始值均为 `1.0f`；实际阻值确定后只需修改宏。
 - 从 DAC 电压计算 `VG` 的函数式宏。
 - 从 `VG` 计算 VGA 增益的函数式宏。
 - 从差分输入、`VG`、`Rf` 和 `RG` 计算 `VOUT` 的函数式宏。
 
-宏参数均加括号，避免表达式优先级问题。`RG` 必须为非零正数，并在编译期进行约束检查。
+六个 DAC 码不定义为可调宏。模块内部固定使用 `DAC_ALIGN_12B_R`，并按 `round(VDAC / VREF * 4095)` 自动得到写入值。宏参数均加括号，避免表达式优先级问题。`RG` 必须为非零正数，并在编译期进行约束检查。
 
 ## 模块与接口
 
@@ -76,8 +76,9 @@ vga_control_status_t vga_control_gain_from_level(uint8_t level, float *gain);
 
 `vga_control_set_level()` 使用 `switch (level)`：
 
-- 六个 `case` 分别取得对应档位的 DAC 码；
-- 调用 HAL 设置 DAC 数据；DAC 通道只在初始化时启动一次；
+- 六个 `case` 分别取得对应档位的 DAC 电压；
+- 模块内部将目标电压自动换算为 12 位右对齐 DAC 码；
+- 使用 `DAC_ALIGN_12B_R` 调用 HAL 设置 DAC 数据；DAC 通道只在初始化时启动一次；
 - 只有 HAL 设置成功后，才更新当前档位和相关诊断值；
 - `default` 返回 `vga_control_status_invalid_level`，不得调用 HAL，也不得改变当前状态；
 - HAL 调用失败时返回 `vga_control_status_dac_error`，不得把失败档位记录为当前有效档位。
@@ -110,7 +111,8 @@ vga_control_status_t vga_control_gain_from_level(uint8_t level, float *gain);
 
 新增离线契约测试，至少覆盖：
 
-- 六档宏、电压和 DAC 码正确；
+- 六档电压宏正确，且自动换算结果为 `0、819、1638、2457、3276、4095`；
+- HAL 写入固定使用片上 DAC 的 `DAC_ALIGN_12B_R`，不存在六个可手动修改的 DAC 码宏；
 - 六档 `VG` 为 `-1.0` 至 `1.0`，步进 `0.4`；
 - 默认 `Rf/RG = 1` 时六档增益为 `0.0` 至 `2.0`，步进 `0.4`；
 - 设置档位和计算增益均使用 `switch`，并包含非法档位 `default`；
