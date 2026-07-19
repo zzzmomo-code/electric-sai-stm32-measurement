@@ -857,6 +857,7 @@ void measurement_fft_resynchronize(void)
 
 void measurement_fft_process(void)
 {
+    HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
     measurement_fft_time_metrics_t time_metrics[MEASUREMENT_FFT_CHANNEL_COUNT];
     measurement_fft_channel_analysis_t analysis[MEASUREMENT_FFT_CHANNEL_COUNT];
     measurement_fft_voltage_status_t voltage_status[MEASUREMENT_FFT_CHANNEL_COUNT];

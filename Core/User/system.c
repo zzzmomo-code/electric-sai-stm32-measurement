@@ -103,5 +103,4 @@ void system_process(void)
     {
         hmi_tjc_process();
     }
-    HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
 }
