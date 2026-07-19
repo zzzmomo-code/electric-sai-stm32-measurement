@@ -173,3 +173,74 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - 频率绝对精度受输入边沿质量、H743 系统时钟和 AD9834 75 MHz 参考时钟误差影响。
 - 当前只完成 DDS 控制全流程；AD835 混频、中频滤波、VGA 自动增益、片上 ADC 幅度测量和整机校准仍需后续联调。
 - 仓库中保留了前一训练题的双 ADC、FFT 和串口屏模块，当前 DDS 链路不以这些模块的测量结果作为验收依据。
+## DAC 与 VGA 增益控制（2026-07-19）
+
+本工程使用 STM32H743VIT6 的 DAC1 Channel 1 产生 VGA 控制电压。DAC1_OUT1
+通过片内模拟连接进入 OPAMP1，OPAMP1 工作于电压跟随器模式，最终从
+`PC4/OPAMP1_VOUT` 输出。开发环境为 STM32CubeIDE 1.19.0；系统使用 25 MHz
+外部晶振，PLL1 配置保持 480 MHz CPU 主频。
+
+CubeIDE/CubeMX 配置入口为 `Pinout & Configuration > Analog`：
+
+1. 在 `DAC1` 中启用 `OUT1 connected to on chip peripherals only`，保持无触发、
+   Sample and Hold Disabled、Connect to external peripheral Enabled。
+2. 在 `OPAMP1` 中选择 `Follower-DAC_OUT1-INP`，Power Mode 使用 Normal，
+   Trimming 使用 Factory。
+3. 在 Pinout 中确认 PC4 为 `OPAMP1_VOUT`，GPIO 模式为 Analog、No pull。
+4. 在 `Clock Configuration` 中确认 HSE 为 25 MHz，PLL1 参数为 M=5、N=192、
+   P=2，SYSCLK 为 480 MHz，HCLK 为 240 MHz。
+5. 在 `Project Manager > Code Generator` 勾选 `Keep User Code when re-generating`，
+   使用 `Alt+K` 或工具栏 `GENERATE CODE` 重新生成。生成后不要手工修改
+   `MX_DAC1_Init()`、`MX_OPAMP1_Init()` 或 `SystemClock_Config()`。
+
+用户驱动位于 `Core/User/dac_output.c` 和 `Core/User/dac_output.h`，由
+`system_init()` 自动启动 OPAMP1、设置安全的 0 档并启动 DAC1。六档标称输出为：
+
+| 档位 | DAC 标称电压/V | 默认 VG | 默认 VGA 差分增益 |
+|---:|---:|---:|---:|
+| 0 | 0.00 | -1.0 | 0.0 |
+| 1 | 0.66 | -0.6 | 0.4 |
+| 2 | 1.32 | -0.2 | 0.8 |
+| 3 | 1.98 | 0.2 | 1.2 |
+| 4 | 2.64 | 0.6 | 1.6 |
+| 5 | 3.30 | 1.0 | 2.0 |
+
+外部电路模型为：
+
+```text
+VG = (20 / 33) * VDAC - 1
+VOUT = ((+VIN) - (-VIN)) * (1 + VG) * RF / RG
+gain = (1 + VG) * RF / RG
+```
+
+`RF` 与 `RG` 默认均为 10 kohm。可在 `dac_output.h` 中修改以下宏：
+
+```c
+#define DAC_OUTPUT_RF_OHM                   10000.0f
+#define DAC_OUTPUT_RG_OHM                   10000.0f
+#define DAC_OUTPUT_GAIN_CALIBRATION         1.0f
+#define DAC_OUTPUT_OFFSET_CALIBRATION_V     0.0f
+```
+
+设置和查询示例：
+
+```c
+float gain;
+
+if (dac_output_set_level(3u) == dac_output_status_ok)
+{
+    (void)dac_output_get_vga_gain(3u, &gain);
+}
+```
+
+档位超出 `0..5`、查询输出指针为空或 HAL 操作失败时，函数返回错误；设置失败
+不会更新软件记录的当前档位。校准关系为
+`VDAC=标称电压*DAC_OUTPUT_GAIN_CALIBRATION+DAC_OUTPUT_OFFSET_CALIBRATION_V`，
+结果在换算 12 位 DAC 码值前限制到 0 V 至参考电压。
+
+烧录后应使用高输入阻抗万用表或示波器测量 PC4 六档电压，再调整比例和偏移
+校准宏。DAC 参考电压取决于实际 VDDA，片内 OPAMP 的输出摆幅和外部负载也会
+影响结果，因此 3.30 V 档不保证在真实硬件上精确达到 3.300 V。当前只完成理论
+换算、静态契约和目标构建验证，板上六档电压与外部 VGA 增益仍需实测确认。
+
+---
