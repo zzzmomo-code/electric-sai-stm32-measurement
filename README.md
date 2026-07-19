@@ -21,6 +21,7 @@
 
 - MCU：STM32H743VIT6。
 - DDS：AD9834，外部 MCLK 为 75 MHz。
+- PA4 / DAC1_OUT1：输出 VGA 控制链路的六档直流电压，连接外部控制电压放大器输入端。
 - PA0：TIM5_CH1，接过零比较器输出的 0～3.3 V 方波。
 - PB12：AD9834 FSYNC，空闲为高电平。
 - PB13：SPI2_SCK，连接 AD9834 SCLK。
@@ -54,6 +55,14 @@ AD9834 初始化使用控制寄存器的 RESET 位完成软件复位，不需要
 - PB12/FSYNC 初始为高；PB14/FSELECT、PD8/PSELECT 初始为低。
 - 不使用 SPI DMA 和 SPI 中断。
 
+### DAC1 / VGA 控制
+
+- `PA4 -> DAC1_OUT1`，GPIO 使用模拟模式、无上下拉。
+- DAC1 Channel 1 使用 `DAC_TRIGGER_NONE`，直流档位由软件写入。
+- 输出缓冲使用 `DAC_OUTPUTBUFFER_ENABLE`，不使用 DMA 和 DAC 中断。
+- `MX_DAC1_Init()` 必须在 `system_init()` 之前执行；用户代码不修改 CubeMX 生成的 DAC 初始化函数。
+- 六档目标电压为 `0、0.66、1.32、1.98、2.64、3.3 V`。
+
 CubeMX 重新生成代码前启用 `Project Manager > Code Generator > Keep User Code when re-generating`。不要手工修改自动生成的 `MX_*_Init()`，用户模块统一放在 `Core/User`。
 
 ## 软件流程
@@ -80,6 +89,42 @@ FTW = round(fLO * 2^28 / 75 MHz)
 
 初始化顺序为软件复位、写 FREQ0、写 PHASE0、退出复位。FSYNC 在每个 16 位 SPI 字发送前拉低，发送结束后恢复高电平。
 
+### DAC 与 VGA 六档增益
+
+`vga_control.c` 启动片上 DAC1_OUT1，并在上电时默认选择第 0 档。档位设置函数使用 `switch` 明确处理 0～5 档；非法档位返回错误，不调用 HAL，也不改变当前 DAC 输出。
+
+片上 DAC 固定使用 12 位右对齐模式。用户只配置电压，模块按实际参考电压自动换算数字码，不需要手工维护六个 DAC 量程码。
+
+| 档位 | VDAC | 自动换算的 12 位码 | VG | 默认 VGA 增益 |
+|---:|---:|---:|---:|---:|
+| 0 | 0.00 V | 0 | -1.0 V | 0.0 |
+| 1 | 0.66 V | 819 | -0.6 V | 0.4 |
+| 2 | 1.32 V | 1638 | -0.2 V | 0.8 |
+| 3 | 1.98 V | 2457 | 0.2 V | 1.2 |
+| 4 | 2.64 V | 3276 | 0.6 V | 1.6 |
+| 5 | 3.30 V | 4095 | 1.0 V | 2.0 |
+
+理论关系为：
+
+```text
+VG = (20 / 33) * VDAC - 1
+VGA_GAIN = (1 + VG) * Rf / RG
+VOUT = (+VIN - -VIN) * (1 + VG) * Rf / RG
+```
+
+六档电压、DAC 参考电压、`VG` 比例与偏置、`Rf`、`RG`、增益公式和 `VOUT` 公式均位于 `Core/User/vga_control.h`。默认 `Rf=RG=1.0`；实际电阻确定后修改对应宏即可。
+
+设置第 3 档并取得理论增益的示例：
+
+```c
+float vga_gain;
+
+if (vga_control_set_level(3u) == vga_control_status_ok)
+{
+    (void)vga_control_gain_from_level(3u, &vga_gain);
+}
+```
+
 ## 模式切换
 
 模式开关位于 `Core/User/dds_control.h`：
@@ -99,7 +144,9 @@ FTW = round(fLO * 2^28 / 75 MHz)
 - `Core/User/frequency_measure.c`：TIM5 外部计数及 DWT 时间测量。
 - `Core/User/dds_control.c`：输入频率检查、低侧本振计算和更新阈值控制。
 - `Core/User/ad9834.c`：AD9834 SPI 驱动、FTW 计算及 FSELECT/PSELECT 控制。
+- `Core/User/vga_control.c`：DAC1_OUT1 六档直流输出、VG 计算和 VGA 理论增益计算。
 - `tests/test_dds_contract.py`：检查 IOC、SPI 时序约定、频率公式和模块调用关系。
+- `tests/test_vga_control_contract.py`：检查六档电压、自动 DAC 换算、增益公式和系统初始化关系。
 
 `main.c` 用户初始化区只调用 `system_init()`，主循环只调用 `system_process()`。
 
@@ -131,11 +178,19 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - `ad9834_diagnostics.write_count`：成功写入的 16 位字数。
 - `ad9834_diagnostics.error_count`：SPI 写入错误次数，正常应保持 0。
 - `ad9834_diagnostics.last_hal_status`：最近一次 HAL SPI 状态，正常为 `HAL_OK`。
+- `vga_control_diagnostics.current_level`：最近一次成功写入的 DAC 档位。
+- `vga_control_diagnostics.dac_voltage_v`：当前档位的 DAC 目标电压。
+- `vga_control_diagnostics.vg_voltage_v`：当前档位对应的 VG 理论值。
+- `vga_control_diagnostics.vga_gain`：当前档位对应的 VGA 理论差分增益。
+- `vga_control_diagnostics.last_hal_status`：最近一次 DAC HAL 操作状态。
 
 ## 已知限制与后续工作
 
 - 输入方波必须满足 STM32H743 GPIO 电平范围；模拟信号应先经过可靠的过零比较器整形。
 - 当前频率规划采用低侧本振，输入有效范围为 1～30 MHz，目标中频固定为 100 kHz。
 - 频率绝对精度受输入边沿质量、H743 系统时钟和 AD9834 75 MHz 参考时钟误差影响。
-- 当前只完成 DDS 控制全流程；AD835 混频、中频滤波、VGA 自动增益、片上 ADC 幅度测量和整机校准仍需后续联调。
+- 当前已完成 VGA 六档手动控制接口，但自动增益闭环仍需后续联调。
+- DAC 实际输出会受 VDDA、片上 DAC 误差和外部负载影响；应使用万用表或示波器逐档测量 PA4。
+- VG 与实际 VGA 增益还会受外部放大器偏置/增益误差、Rf/RG 电阻误差及 VGA 器件特性影响，理论值不能替代实板校准。
+- AD835 混频、中频滤波、片上 ADC 幅度测量和整机校准仍需后续联调。
 - 仓库中保留了前一训练题的双 ADC、FFT 和串口屏模块，当前 DDS 链路不以这些模块的测量结果作为验收依据。

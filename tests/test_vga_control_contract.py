@@ -125,6 +125,20 @@ class VgaControlContractTest(unittest.TestCase):
             loop_statements,
         )
 
+    def test_readme_documents_dac_vga_control(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        required = (
+            "PA4 / DAC1_OUT1",
+            "DAC_TRIGGER_NONE",
+            "DAC_OUTPUTBUFFER_ENABLE",
+            "vga_control_set_level",
+            "vga_control_gain_from_level",
+            "VG = (20 / 33) * VDAC - 1",
+            "0、0.66、1.32、1.98、2.64、3.3 V",
+        )
+        for text in required:
+            self.assertIn(text, readme)
+
 
 if __name__ == "__main__":
     unittest.main()
