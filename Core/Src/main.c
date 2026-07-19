@@ -19,6 +19,7 @@
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 #include "adc.h"
+#include "dac.h"
 #include "dma.h"
 #include "spi.h"
 #include "tim.h"
@@ -108,6 +109,7 @@ int main(void)
   MX_TIM3_Init();
   MX_TIM5_Init();
   MX_SPI2_Init();
+  MX_DAC1_Init();
   /* USER CODE BEGIN 2 */
   system_init();
 

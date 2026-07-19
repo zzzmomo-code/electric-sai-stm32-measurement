@@ -114,6 +114,23 @@ class VgaControlContractTest(unittest.TestCase):
         self.assertIsNotNone(init_body)
         self.assertIn("vga_control_init();", init_body.group("body"))
 
+    def test_cubemx_dac_dependency_is_present(self):
+        dac_header = ROOT / "Core/Inc/dac.h"
+        dac_source = ROOT / "Core/Src/dac.c"
+        self.assertTrue(dac_header.exists())
+        self.assertTrue(dac_source.exists())
+
+        ioc = (ROOT / "h743_pre1.ioc").read_text(encoding="utf-8")
+        hal_config = (ROOT / "Core/Inc/stm32h7xx_hal_conf.h").read_text(
+            encoding="utf-8"
+        )
+        main = (ROOT / "Core/Src/main.c").read_text(encoding="utf-8")
+        self.assertIn("DAC1.DAC_Channel-DAC_OUT1=DAC_CHANNEL_1", ioc)
+        self.assertIn("PA4.Signal=COMP_DAC11_group", ioc)
+        self.assertIn("#define HAL_DAC_MODULE_ENABLED", hal_config)
+        self.assertIn('#include "dac.h"', main)
+        self.assertLess(main.index("MX_DAC1_Init();"), main.index("system_init();"))
+
     def test_main_user_regions_remain_thin(self):
         main = (ROOT / "Core/Src/main.c").read_text(encoding="utf-8")
         init_region = main.split("/* USER CODE BEGIN 2 */", 1)[1].split(
