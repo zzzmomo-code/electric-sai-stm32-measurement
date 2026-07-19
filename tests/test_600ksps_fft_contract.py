@@ -23,6 +23,18 @@ class SamplingDesignTest(unittest.TestCase):
 
 
 class SourceContractTest(unittest.TestCase):
+    def test_adc1_uses_pa6_inp3(self):
+        ioc = (ROOT / "h743_pre1.ioc").read_text(encoding="utf-8")
+        adc_source = (ROOT / "Core/Src/adc.c").read_text(encoding="utf-8")
+        self.assertIn("ADC1.Channel-0\\#ChannelRegularConversion=ADC_CHANNEL_3", ioc)
+        self.assertIn("PA6.Signal=ADCx_INP3", ioc)
+        self.assertIn("SH.ADCx_INP3.0=ADC1_INP3,IN3-Single-Ended", ioc)
+        self.assertNotIn("PC4.Signal=ADCx_INP4", ioc)
+        self.assertIn("sConfig.Channel = ADC_CHANNEL_3;", adc_source)
+        self.assertIn("PA6     ------> ADC1_INP3", adc_source)
+        self.assertIn("HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);", adc_source)
+        self.assertIn("HAL_GPIO_DeInit(GPIOA, GPIO_PIN_6);", adc_source)
+
     def test_fft_module_exists_and_exposes_forward_api(self):
         header = (ROOT / "Core/User/fft_f32_65536.h").read_text(encoding="utf-8")
         source = (ROOT / "Core/User/fft_f32_65536.c").read_text(encoding="utf-8")
