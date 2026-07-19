@@ -4,8 +4,8 @@
  *
  * 模块用途：接收 ADC1 与 ADC2 双重规则同步模式产生的 32 位 DMA 数据，拆分为
  * 同一触发时刻的两路 16 位采样，并在主循环中送入测量算法。
- * GPIO 引脚映射：计划使用 PC4/ADC1_INP4 作为 CH1，PB1/ADC2_INP5 作为 CH2；
- * 在 CubeMX 尚未生成 ADC 配置前，本模块保持“未配置”状态且不访问硬件。
+ * GPIO 引脚映射：PA6/ADC1_INP3 为 CH1，PB1/ADC2_INP5 为 CH2。
+ * CubeMX 已生成双 ADC 配置；缺少生成头文件时，本模块仍保持安全占位状态。
  * 依赖的外设和 CubeIDE 配置：ADC1/ADC2 Dual Regular Simultaneous、TIM2 TRGO
  * 600 kHz、ADC1 DMA1 Stream0 Circular Word/Word，以及 DMA1 Stream0 中断。
  * 初始化方法：由 system_init() 调用 adc_dual_init()。

@@ -34,6 +34,16 @@ class SourceContractTest(unittest.TestCase):
         self.assertIn("PA6     ------> ADC1_INP3", adc_source)
         self.assertIn("HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);", adc_source)
         self.assertIn("HAL_GPIO_DeInit(GPIOA, GPIO_PIN_6);", adc_source)
+        documented_files = (
+            "Core/User/adc_dual.c",
+            "Core/User/adc_dual.h",
+            "Core/User/measurement_fft.c",
+            "Core/User/system.c",
+        )
+        for relative_path in documented_files:
+            text = (ROOT / relative_path).read_text(encoding="utf-8")
+            self.assertIn("PA6/ADC1_INP3", text)
+            self.assertNotIn("PC4/ADC1_INP4", text)
 
     def test_fft_module_exists_and_exposes_forward_api(self):
         header = (ROOT / "Core/User/fft_f32_65536.h").read_text(encoding="utf-8")
