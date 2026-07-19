@@ -44,6 +44,11 @@ class SourceContractTest(unittest.TestCase):
             text = (ROOT / relative_path).read_text(encoding="utf-8")
             self.assertIn("PA6/ADC1_INP3", text)
             self.assertNotIn("PC4/ADC1_INP4", text)
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("PA6：ADC1_INP3", readme)
+        self.assertIn("IN3 Single-ended", readme)
+        self.assertIn("ADC_CHANNEL_3", readme)
+        self.assertNotIn("PC4/ADC1_INP4", readme)
 
     def test_fft_module_exists_and_exposes_forward_api(self):
         header = (ROOT / "Core/User/fft_f32_65536.h").read_text(encoding="utf-8")
