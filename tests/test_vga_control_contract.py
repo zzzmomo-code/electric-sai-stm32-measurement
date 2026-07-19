@@ -64,7 +64,23 @@ class VgaControlContractTest(unittest.TestCase):
         body = source.split("vga_control_status_t vga_control_set_level", 1)[1]
         switch_body = body.split("HAL_DAC_SetValue", 1)[0]
         default_body = switch_body.rsplit("default:", 1)[1]
+        self.assertIn(
+            "vga_control_diagnostics.last_status = "
+            "vga_control_status_invalid_level;",
+            default_body,
+        )
         self.assertIn("return vga_control_status_invalid_level;", default_body)
+
+    def test_init_preloads_zero_before_starting_dac(self):
+        source = (ROOT / "Core/User/vga_control.c").read_text(encoding="utf-8")
+        init_body = source.split("void vga_control_init(void)", 1)[1].split(
+            "vga_control_status_t vga_control_set_level", 1
+        )[0]
+        preload = init_body.index(
+            "HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 0u)"
+        )
+        start = init_body.index("HAL_DAC_Start(&hdac1, DAC_CHANNEL_1)")
+        self.assertLess(preload, start)
 
     def test_public_api_and_diagnostics_are_declared(self):
         header = (ROOT / "Core/User/vga_control.h").read_text(encoding="utf-8")

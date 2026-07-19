@@ -63,8 +63,16 @@ static uint32_t vga_control_voltage_to_dac_code(float dac_voltage_v)
  */
 void vga_control_init(void)
 {
-    /** DAC 启动操作的 HAL 返回状态。 */
+    /** DAC 预装和启动操作的 HAL 返回状态。 */
     HAL_StatusTypeDef hal_status;
+
+    hal_status = HAL_DAC_SetValue(&hdac1, DAC_CHANNEL_1, DAC_ALIGN_12B_R, 0u);
+    vga_control_diagnostics.last_hal_status = (uint32_t)hal_status;
+    if (hal_status != HAL_OK)
+    {
+        vga_control_diagnostics.last_status = vga_control_status_dac_error;
+        return;
+    }
 
     hal_status = HAL_DAC_Start(&hdac1, DAC_CHANNEL_1);
     vga_control_diagnostics.last_hal_status = (uint32_t)hal_status;
@@ -117,6 +125,7 @@ vga_control_status_t vga_control_set_level(uint8_t level)
             dac_voltage_v = VGA_CONTROL_LEVEL_5_VOLTAGE_V;
             break;
         default:
+            vga_control_diagnostics.last_status = vga_control_status_invalid_level;
             return vga_control_status_invalid_level;
     }
 

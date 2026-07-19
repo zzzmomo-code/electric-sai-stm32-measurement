@@ -80,7 +80,7 @@ extern vga_control_diagnostics_t vga_control_diagnostics;
  * @brief 启动 DAC1_OUT1，并把系统安全初始化为第 0 档。
  * @param 无。
  * @return 无；执行结果写入 vga_control_diagnostics。
- * @note 依赖 MX_DAC1_Init() 已完成；会启动 DAC 通道并写入 0 V 目标值。
+ * @note 依赖 MX_DAC1_Init() 已完成；先预装 0 V 目标值，再启动 DAC 通道。
  */
 void vga_control_init(void);
 
