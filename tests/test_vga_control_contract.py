@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 import unittest
 
 
@@ -78,6 +79,50 @@ class VgaControlContractTest(unittest.TestCase):
         )
         self.assertIn(
             "extern vga_control_diagnostics_t vga_control_diagnostics;", header
+        )
+
+    def test_system_header_is_the_unified_dac_and_vga_entry(self):
+        header = (ROOT / "Core/User/system.h").read_text(encoding="utf-8")
+        self.assertIn('#include "dac.h"', header)
+        self.assertIn('#include "vga_control.h"', header)
+
+    def test_system_initializes_vga_after_cubemx_initializes_dac(self):
+        main = (ROOT / "Core/Src/main.c").read_text(encoding="utf-8")
+        system = (ROOT / "Core/User/system.c").read_text(encoding="utf-8")
+        self.assertLess(main.index("MX_DAC1_Init();"), main.index("system_init();"))
+        init_body = re.search(
+            r"void system_init\(void\)\s*\{(?P<body>.*?)\n\}",
+            system,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(init_body)
+        self.assertIn("vga_control_init();", init_body.group("body"))
+
+    def test_main_user_regions_remain_thin(self):
+        main = (ROOT / "Core/Src/main.c").read_text(encoding="utf-8")
+        init_region = main.split("/* USER CODE BEGIN 2 */", 1)[1].split(
+            "/* USER CODE END 2 */", 1
+        )[0]
+        loop_region = main.split("/* USER CODE BEGIN 3 */", 1)[1].split(
+            "/* USER CODE END 3 */", 1
+        )[0]
+        init_statements = [
+            line.strip()
+            for line in init_region.splitlines()
+            if line.strip().endswith(";")
+        ]
+        loop_statements = [
+            line.strip()
+            for line in loop_region.splitlines()
+            if line.strip().endswith(";")
+        ]
+        self.assertEqual(
+            ["system_init();"],
+            init_statements,
+        )
+        self.assertEqual(
+            ["system_process();"],
+            loop_statements,
         )
 
 

@@ -3,9 +3,10 @@
  * @brief 用户代码统一头文件入口。
  *
  * 模块用途：集中包含 HAL 生成头文件与全部用户模块头文件。
- * GPIO 引脚映射：无直接 GPIO 引脚，各模块映射见对应模块说明。
- * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h、adc.h、tim.h、spi.h，
- * 启用串口屏时还依赖 usart.h。旧 ADS8688 模块已从片上 ADC 工程的活动构建中排除。
+ * GPIO 引脚映射：统一入口无直接 GPIO；VGA 模块使用 PA4/DAC1_OUT1，其他映射见对应模块说明。
+ * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h、dac.h、adc.h、tim.h、spi.h，
+ * 启用串口屏时还依赖 usart.h。DAC1_OUT1 配置为无触发并开启输出缓冲。
+ * 旧 ADS8688 模块已从片上 ADC 工程的活动构建中排除。
  * 初始化方法：HAL 与 MX_* 初始化完成后调用 system_init()。
  * 调用方法：main.c 及其他用户 .c 文件仅包含本头文件。
  */
@@ -14,6 +15,7 @@
 #define SYSTEM_H
 
 #include "main.h"
+#include "dac.h"
 #include "math.h"
 #include "measurement_result.h"
 #include "hmi_tjc.h"
@@ -23,6 +25,7 @@
 #include "frequency_measure.h"
 #include "ad9834.h"
 #include "dds_control.h"
+#include "vga_control.h"
 
 /* ADC1/ADC2 与 TIM2 由用户完成 CubeMX 配置并生成后自动启用真实采集实现。 */
 #if defined(__has_include)
