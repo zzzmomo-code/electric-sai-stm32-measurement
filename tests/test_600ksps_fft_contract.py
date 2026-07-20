@@ -62,7 +62,8 @@ class SourceContractTest(unittest.TestCase):
             "capture_resync_count", "ch1_frame_min_code", "ch1_frame_max_code",
             "ch1_frame_mean_code", "ch2_frame_min_code", "ch2_frame_max_code",
             "ch2_frame_mean_code", "peak_bin", "secondary_peak_bin",
-            "peak_offset_bins", "peak_frequency_hz", "secondary_peak_frequency_hz",
+            "peak_offset_bins", "raw_peak_frequency_hz", "peak_frequency_hz",
+            "secondary_raw_peak_frequency_hz", "secondary_peak_frequency_hz",
             "amplitude_vpp", "secondary_amplitude_vpp", "dc_voltage",
             "secondary_dc_voltage", "rms_voltage", "secondary_rms_voltage",
             "thd_percent", "secondary_thd_percent", "raw_phase_deg", "phase_deg",
@@ -71,6 +72,75 @@ class SourceContractTest(unittest.TestCase):
         }
         for field in required:
             self.assertRegex(header, rf"\b{re.escape(field)}\b")
+
+    def test_fft_frequency_calibration_formula_is_exposed(self):
+        header = (ROOT / "Core/User/measurement_fft.h").read_text(
+            encoding="utf-8"
+        )
+        source = (ROOT / "Core/User/measurement_fft.c").read_text(
+            encoding="utf-8"
+        )
+        required_header = (
+            "#define MEASUREMENT_FFT_FREQUENCY_SPLIT_HZ 40000.0f",
+            "#define MEASUREMENT_FFT_LOW_FREQUENCY_GAIN 0.9999807f",
+            "#define MEASUREMENT_FFT_LOW_FREQUENCY_OFFSET_HZ (-0.2414f)",
+            "#define MEASUREMENT_FFT_HIGH_FREQUENCY_GAIN 0.99995854f",
+            "#define MEASUREMENT_FFT_HIGH_FREQUENCY_OFFSET_HZ (-0.3226f)",
+            "float measurement_fft_calibrate_frequency(float raw_frequency_hz);",
+        )
+        for text in required_header:
+            self.assertIn(text, header)
+
+        self.assertIn(
+            "float measurement_fft_calibrate_frequency(float raw_frequency_hz)",
+            source,
+        )
+        self.assertIn(
+            "raw_frequency_hz <= MEASUREMENT_FFT_FREQUENCY_SPLIT_HZ",
+            source,
+        )
+        self.assertIn("MEASUREMENT_FFT_LOW_FREQUENCY_GAIN", source)
+        self.assertIn("MEASUREMENT_FFT_HIGH_FREQUENCY_GAIN", source)
+
+    def test_fft_frequency_calibration_math_and_boundary(self):
+        def calibrate(raw_frequency_hz):
+            if raw_frequency_hz <= 0.0:
+                return 0.0
+            if raw_frequency_hz <= 40000.0:
+                calibrated = 0.9999807 * raw_frequency_hz - 0.2414
+            else:
+                calibrated = 0.99995854 * raw_frequency_hz - 0.3226
+            return max(calibrated, 0.0)
+
+        self.assertEqual(0.0, calibrate(0.0))
+        self.assertEqual(0.0, calibrate(-1.0))
+        self.assertAlmostEqual(999.7393, calibrate(1000.0), places=4)
+        self.assertAlmostEqual(39998.9866, calibrate(40000.0), places=4)
+        self.assertAlmostEqual(39999.01895854, calibrate(40001.0), places=5)
+
+    def test_both_fft_channels_preserve_raw_and_publish_calibrated_frequency(self):
+        source = (ROOT / "Core/User/measurement_fft.c").read_text(
+            encoding="utf-8"
+        )
+        required_source = (
+            "measurement_fft_diagnostics.raw_peak_frequency_hz =",
+            "measurement_fft_diagnostics.secondary_raw_peak_frequency_hz =",
+            "measurement_fft_calibrate_frequency(\n"
+            "                measurement_fft_diagnostics.raw_peak_frequency_hz)",
+            "measurement_fft_calibrate_frequency(\n"
+            "                measurement_fft_diagnostics.secondary_raw_peak_frequency_hz)",
+            "result.frequency_hz = measurement_fft_diagnostics.peak_frequency_hz;",
+            "measurement_fft_diagnostics.secondary_peak_frequency_hz;",
+        )
+        for text in required_source:
+            self.assertIn(text, source)
+
+        self.assertGreaterEqual(
+            source.count("raw_peak_frequency_hz = 0.0f;"), 2
+        )
+        self.assertGreaterEqual(
+            source.count("peak_frequency_hz = 0.0f;"), 4
+        )
 
     def test_hmi_voltage_and_vpp_do_not_read_adc_stats(self):
         source = (ROOT / "Core/User/hmi_tjc.c").read_text(encoding="utf-8")
