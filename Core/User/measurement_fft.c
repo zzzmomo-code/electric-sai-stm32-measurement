@@ -117,6 +117,39 @@ static uint16_t measurement_fft_legacy_pair[MEASUREMENT_FFT_CHANNEL_COUNT];
 static uint8_t measurement_fft_legacy_pair_mask;
 
 /**
+ * @brief 使用分段线性公式校准 FFT 插值得到的频率。
+ * @param raw_frequency_hz 未经本公式校准的 FFT 插值频率，单位为 Hz。
+ * @return 校准后的非负频率；输入无效、非正或结果为负时返回 0 Hz。
+ * @note 纯数值计算，不访问外设，也不修改模块状态；40000 Hz 使用低频段公式。
+ */
+float measurement_fft_calibrate_frequency(float raw_frequency_hz)
+{
+    float calibrated_frequency_hz;
+
+    if ((!isfinite(raw_frequency_hz)) || (raw_frequency_hz <= 0.0f))
+    {
+        return 0.0f;
+    }
+
+    if (raw_frequency_hz <= MEASUREMENT_FFT_FREQUENCY_SPLIT_HZ)
+    {
+        calibrated_frequency_hz =
+            MEASUREMENT_FFT_LOW_FREQUENCY_GAIN * raw_frequency_hz
+            + MEASUREMENT_FFT_LOW_FREQUENCY_OFFSET_HZ;
+    }
+    else
+    {
+        calibrated_frequency_hz =
+            MEASUREMENT_FFT_HIGH_FREQUENCY_GAIN * raw_frequency_hz
+            + MEASUREMENT_FFT_HIGH_FREQUENCY_OFFSET_HZ;
+    }
+
+    return (calibrated_frequency_hz > 0.0f)
+               ? calibrated_frequency_hz
+               : 0.0f;
+}
+
+/**
  * @brief 使能 Cortex-M7 DWT 周期计数器。
  * @param 无。
  * @return 无。
@@ -918,10 +951,16 @@ void measurement_fft_process(void)
         measurement_fft_diagnostics.peak_bin = analysis[0].peak_bin;
         measurement_fft_diagnostics.secondary_peak_bin = analysis[1].peak_bin;
         measurement_fft_diagnostics.peak_offset_bins = analysis[0].peak_offset;
-        measurement_fft_diagnostics.peak_frequency_hz =
+        measurement_fft_diagnostics.raw_peak_frequency_hz =
             analysis[0].peak_position * measurement_fft_diagnostics.bin_width_hz;
-        measurement_fft_diagnostics.secondary_peak_frequency_hz =
+        measurement_fft_diagnostics.peak_frequency_hz =
+            measurement_fft_calibrate_frequency(
+                measurement_fft_diagnostics.raw_peak_frequency_hz);
+        measurement_fft_diagnostics.secondary_raw_peak_frequency_hz =
             analysis[1].peak_position * measurement_fft_diagnostics.bin_width_hz;
+        measurement_fft_diagnostics.secondary_peak_frequency_hz =
+            measurement_fft_calibrate_frequency(
+                measurement_fft_diagnostics.secondary_raw_peak_frequency_hz);
         measurement_fft_diagnostics.harmonic_ratio_3 = analysis[0].harmonic_ratio_3;
         measurement_fft_diagnostics.harmonic_ratio_5 = analysis[0].harmonic_ratio_5;
         measurement_fft_diagnostics.secondary_harmonic_ratio_3 =
@@ -984,6 +1023,7 @@ void measurement_fft_process(void)
                 if (channel == 0u)
                 {
                     quality = MEASUREMENT_FFT_QUALITY_DC_INPUT;
+                    measurement_fft_diagnostics.raw_peak_frequency_hz = 0.0f;
                     measurement_fft_diagnostics.peak_frequency_hz = 0.0f;
                     measurement_fft_diagnostics.thd_percent = 0.0f;
                     measurement_fft_diagnostics.thd_harmonic_count = 0u;
@@ -993,6 +1033,8 @@ void measurement_fft_process(void)
                 }
                 else
                 {
+                    measurement_fft_diagnostics.secondary_raw_peak_frequency_hz =
+                        0.0f;
                     measurement_fft_diagnostics.secondary_peak_frequency_hz =
                         0.0f;
                     measurement_fft_diagnostics.secondary_thd_percent = 0.0f;

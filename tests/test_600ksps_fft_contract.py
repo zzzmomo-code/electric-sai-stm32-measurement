@@ -135,12 +135,16 @@ class SourceContractTest(unittest.TestCase):
         for text in required_source:
             self.assertIn(text, source)
 
-        self.assertGreaterEqual(
-            source.count("raw_peak_frequency_hz = 0.0f;"), 2
+        zero_assignments = (
+            "measurement_fft_diagnostics.raw_peak_frequency_hz = 0.0f;",
+            "measurement_fft_diagnostics.peak_frequency_hz = 0.0f;",
+            "measurement_fft_diagnostics.secondary_raw_peak_frequency_hz =\n"
+            "                        0.0f;",
+            "measurement_fft_diagnostics.secondary_peak_frequency_hz =\n"
+            "                        0.0f;",
         )
-        self.assertGreaterEqual(
-            source.count("peak_frequency_hz = 0.0f;"), 4
-        )
+        for text in zero_assignments:
+            self.assertIn(text, source)
 
     def test_hmi_voltage_and_vpp_do_not_read_adc_stats(self):
         source = (ROOT / "Core/User/hmi_tjc.c").read_text(encoding="utf-8")

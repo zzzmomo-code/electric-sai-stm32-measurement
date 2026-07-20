@@ -38,6 +38,17 @@
 /** 频谱无有效能量时使用的相对幅度下限，单位为 0.1 dB。 */
 #define MEASUREMENT_FFT_SPECTRUM_FLOOR_DB_X10 (-800)
 
+/** 分段频率校准的切换点，等于此值时使用低频段公式。 */
+#define MEASUREMENT_FFT_FREQUENCY_SPLIT_HZ 40000.0f
+/** 低频段频率校准增益。 */
+#define MEASUREMENT_FFT_LOW_FREQUENCY_GAIN 0.9999807f
+/** 低频段频率校准偏置，单位为 Hz。 */
+#define MEASUREMENT_FFT_LOW_FREQUENCY_OFFSET_HZ (-0.2414f)
+/** 高频段频率校准增益。 */
+#define MEASUREMENT_FFT_HIGH_FREQUENCY_GAIN 0.99995854f
+/** 高频段频率校准偏置，单位为 Hz。 */
+#define MEASUREMENT_FFT_HIGH_FREQUENCY_OFFSET_HZ (-0.3226f)
+
 /** 最近一次测量结果的质量状态，供调试器和后续诊断界面读取。 */
 typedef enum
 {
@@ -92,8 +103,10 @@ typedef struct
     uint16_t peak_bin;                  /**< AIN0 主峰整数频点。 */
     uint16_t secondary_peak_bin;        /**< AIN1 主峰整数频点。 */
     float peak_offset_bins;             /**< AIN0 三点抛物线插值得到的亚频点偏移。 */
-    float peak_frequency_hz;            /**< AIN0 插值主频率，单位为 Hz。 */
-    float secondary_peak_frequency_hz;  /**< AIN1 插值主频率，单位为 Hz。 */
+    float raw_peak_frequency_hz;        /**< AIN0 未经公式校准的插值主频率，单位为 Hz。 */
+    float peak_frequency_hz;            /**< AIN0 经分段公式校准的主频率，单位为 Hz。 */
+    float secondary_raw_peak_frequency_hz; /**< AIN1 未经公式校准的插值主频率，单位为 Hz。 */
+    float secondary_peak_frequency_hz;  /**< AIN1 经分段公式校准的主频率，单位为 Hz。 */
     float amplitude_vpp;                /**< AIN0 时域峰峰值，单位为 V。 */
     float secondary_amplitude_vpp;      /**< AIN1 时域峰峰值，单位为 V。 */
     float dc_voltage;                   /**< AIN0 窗口平均直流电压，单位为 V。 */
@@ -119,6 +132,14 @@ typedef struct
     uint8_t voltage_calibrated_mask;    /**< 位 0/1 表示 CH1/CH2 已具备有效电压校准。 */
     uint8_t voltage_estimated_mask;     /**< 位 0/1 表示 CH1/CH2 当前使用标称电压估算。 */
 } measurement_fft_diagnostics_t;
+
+/**
+ * @brief 使用分段线性公式校准 FFT 插值得到的频率。
+ * @param raw_frequency_hz 未经本公式校准的 FFT 插值频率，单位为 Hz。
+ * @return 校准后的非负频率；输入无效、非正或结果为负时返回 0 Hz。
+ * @note 纯数值计算，不访问外设，也不修改模块状态；40000 Hz 使用低频段公式。
+ */
+float measurement_fft_calibrate_frequency(float raw_frequency_hz);
 
 /**
  * @brief 初始化 65536 点 F32 FFT 帧状态、诊断和频谱快照。
