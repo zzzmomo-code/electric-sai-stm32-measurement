@@ -61,7 +61,7 @@ AD9834 初始化使用控制寄存器的 RESET 位完成软件复位，不需要
 - DAC1 Channel 1 使用 `DAC_TRIGGER_NONE`，直流档位由软件写入。
 - 输出缓冲使用 `DAC_OUTPUTBUFFER_ENABLE`，不使用 DMA 和 DAC 中断。
 - `MX_DAC1_Init()` 必须在 `system_init()` 之前执行；用户代码不修改 CubeMX 生成的 DAC 初始化函数。
-- 六档目标电压为 `0、0.66、1.32、1.98、2.64、3.3 V`。
+- 六档 DAC 指令电压为 `0、0.66、1.32、1.98、2.64、3.3 V`，仅用于自动生成 DAC 码。
 
 CubeMX 重新生成代码前启用 `Project Manager > Code Generator > Keep User Code when re-generating`。不要手工修改自动生成的 `MX_*_Init()`，用户模块统一放在 `Core/User`。
 
@@ -93,26 +93,26 @@ FTW = round(fLO * 2^28 / 75 MHz)
 
 `vga_control.c` 启动片上 DAC1_OUT1，并在上电时默认选择第 0 档。档位设置函数使用 `switch` 明确处理 0～5 档；非法档位返回错误，不调用 HAL，也不改变当前 DAC 输出。
 
-片上 DAC 固定使用 12 位右对齐模式。用户只配置电压，模块按实际参考电压自动换算数字码，不需要手工维护六个 DAC 量程码。
+片上 DAC 固定使用 12 位右对齐模式。六档指令电压只用于自动换算数字码，不需要手工维护六个 DAC 量程码。PA4 实测电压用于后续 VG、AV 和 VOUT 模型计算，改变实测模型不会改变 DAC 输出码。
 
-| 档位 | VDAC | 自动换算的 12 位码 | VG | 默认 VGA 增益 |
-|---:|---:|---:|---:|---:|
-| 0 | 0.00 V | 0 | -1.0 V | 0.0 |
-| 1 | 0.66 V | 819 | -0.6 V | 0.4 |
-| 2 | 1.32 V | 1638 | -0.2 V | 0.8 |
-| 3 | 1.98 V | 2457 | 0.2 V | 1.2 |
-| 4 | 2.64 V | 3276 | 0.6 V | 1.6 |
-| 5 | 3.30 V | 4095 | 1.0 V | 2.0 |
+| 档位 | DAC 指令电压 | 自动换算的 12 位码 | PA4 实测电压 | VG | 默认 AV |
+|---:|---:|---:|---:|---:|---:|
+| 0 | 0.00 V | 0 | 0.023 V | -0.986061 V | 0.013939 |
+| 1 | 0.66 V | 819 | 0.683 V | -0.586061 V | 0.413939 |
+| 2 | 1.32 V | 1638 | 1.362 V | -0.174545 V | 0.825455 |
+| 3 | 1.98 V | 2457 | 2.040 V | 0.236364 V | 1.236364 |
+| 4 | 2.64 V | 3276 | 2.720 V | 0.648485 V | 1.648485 |
+| 5 | 3.30 V | 4095 | 3.370 V | 1.042424 V | 2.042424 |
 
 理论关系为：
 
 ```text
-VG = (20 / 33) * VDAC - 1
-VGA_GAIN = (1 + VG) * Rf / RG
-VOUT = (+VIN - -VIN) * (1 + VG) * Rf / RG
+VG = (20 / 33) * VPA4_MEASURED - 1
+AV = (1 + VG) * Rf / RG
+VOUT = (+VIN - -VIN) * AV
 ```
 
-六档电压、DAC 参考电压、`VG` 比例与偏置、`Rf`、`RG`、增益公式和 `VOUT` 公式均位于 `Core/User/vga_control.h`。默认 `Rf=RG=1.0`；实际电阻确定后修改对应宏即可。
+六档 DAC 指令电压、PA4 实测电压、DAC 参考电压、`VG` 比例与偏置、`Rf`、`RG`、增益公式和 `VOUT` 公式均位于 `Core/User/vga_control.h`。`VGA_CONTROL_LEVEL_x_VOLTAGE_V` 只用于生成 DAC 码，`VGA_CONTROL_LEVEL_x_MEASURED_VOLTAGE_V` 用于计算 VG、AV 和 VOUT。重新逐档测量 PA4 后，只需更新对应的实测电压宏。默认 `Rf=RG=1.0`；实际电阻确定后修改对应宏即可。
 
 设置第 3 档并取得理论增益的示例：
 
@@ -179,9 +179,10 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - `ad9834_diagnostics.error_count`：SPI 写入错误次数，正常应保持 0。
 - `ad9834_diagnostics.last_hal_status`：最近一次 HAL SPI 状态，正常为 `HAL_OK`。
 - `vga_control_diagnostics.current_level`：最近一次成功写入的 DAC 档位。
-- `vga_control_diagnostics.dac_voltage_v`：当前档位的 DAC 目标电压。
-- `vga_control_diagnostics.vg_voltage_v`：当前档位对应的 VG 理论值。
-- `vga_control_diagnostics.vga_gain`：当前档位对应的 VGA 理论差分增益。
+- `vga_control_diagnostics.dac_voltage_v`：当前档位用于生成 DAC 码的指令电压。
+- `vga_control_diagnostics.measured_voltage_v`：当前档位用于模型计算的 PA4 实测电压。
+- `vga_control_diagnostics.vg_voltage_v`：基于 PA4 实测电压计算的 VG。
+- `vga_control_diagnostics.vga_gain`：基于 PA4 实测电压计算的 VGA 电压增益 AV。
 - `vga_control_diagnostics.last_hal_status`：最近一次 DAC HAL 操作状态。
 
 ## 已知限制与后续工作
@@ -190,7 +191,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - 当前频率规划采用低侧本振，输入有效范围为 1～30 MHz，目标中频固定为 100 kHz。
 - 频率绝对精度受输入边沿质量、H743 系统时钟和 AD9834 75 MHz 参考时钟误差影响。
 - 当前已完成 VGA 六档手动控制接口，但自动增益闭环仍需后续联调。
-- DAC 实际输出会受 VDDA、片上 DAC 误差和外部负载影响；应使用万用表或示波器逐档测量 PA4。
+- DAC 实际输出会受 VDDA、片上 DAC 误差和外部负载影响；硬件条件改变后应重新逐档测量 PA4，并更新六个实测电压宏。
 - VG 与实际 VGA 增益还会受外部放大器偏置/增益误差、Rf/RG 电阻误差及 VGA 器件特性影响，理论值不能替代实板校准。
 - AD835 混频、中频滤波、片上 ADC 幅度测量和整机校准仍需后续联调。
 - 仓库中保留了前一训练题的双 ADC、FFT 和串口屏模块，当前 DDS 链路不以这些模块的测量结果作为验收依据。

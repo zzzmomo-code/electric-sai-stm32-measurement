@@ -231,8 +231,11 @@ class VgaControlContractTest(unittest.TestCase):
             "DAC_OUTPUTBUFFER_ENABLE",
             "vga_control_set_level",
             "vga_control_gain_from_level",
-            "VG = (20 / 33) * VDAC - 1",
+            "VG = (20 / 33) * VPA4_MEASURED - 1",
             "0、0.66、1.32、1.98、2.64、3.3 V",
+            "PA4 实测电压",
+            "VPA4_MEASURED",
+            "measured_voltage_v",
         )
         for text in required:
             self.assertIn(text, readme)
