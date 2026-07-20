@@ -857,7 +857,6 @@ void measurement_fft_resynchronize(void)
 
 void measurement_fft_process(void)
 {
-    HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
     measurement_fft_time_metrics_t time_metrics[MEASUREMENT_FFT_CHANNEL_COUNT];
     measurement_fft_channel_analysis_t analysis[MEASUREMENT_FFT_CHANNEL_COUNT];
     measurement_fft_voltage_status_t voltage_status[MEASUREMENT_FFT_CHANNEL_COUNT];
@@ -876,6 +875,7 @@ void measurement_fft_process(void)
     if ((measurement_fft_state == MEASUREMENT_FFT_STATE_READY)
         && (measurement_fft_frame_ready != 0u))
     {
+        HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);//反转开发板LED
         measurement_fft_processing = 1u;
         for (channel = 0u; channel < MEASUREMENT_FFT_CHANNEL_COUNT; channel++)
         {

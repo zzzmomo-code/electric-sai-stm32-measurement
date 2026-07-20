@@ -6,8 +6,8 @@
 ../Core/User/measurement_fft.c:836:9:measurement_fft_sampling_required	0	static
 ../Core/User/measurement_fft.c:844:6:measurement_fft_resynchronize	4	static
 ../Core/User/measurement_fft.c:858:6:measurement_fft_process	272	static
-../Core/User/measurement_fft.c:1083:9:measurement_fft_hmi_refresh_allowed	0	static
-../Core/User/measurement_fft.c:1088:9:measurement_fft_get_diagnostics	8	static
-../Core/User/measurement_fft.c:1098:9:measurement_fft_get_spectrum	8	static
-../Core/User/measurement_fft.c:1108:9:measurement_fft_set_calibration	8	static
-../Core/User/measurement_fft.c:1138:9:measurement_fft_get_calibration	0	static
+../Core/User/measurement_fft.c:1084:9:measurement_fft_hmi_refresh_allowed	0	static
+../Core/User/measurement_fft.c:1089:9:measurement_fft_get_diagnostics	8	static
+../Core/User/measurement_fft.c:1099:9:measurement_fft_get_spectrum	8	static
+../Core/User/measurement_fft.c:1109:9:measurement_fft_set_calibration	8	static
+../Core/User/measurement_fft.c:1139:9:measurement_fft_get_calibration	0	static
