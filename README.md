@@ -110,8 +110,27 @@ fLO = fin - 100000 Hz
 FTW = round(fLO * 2^28 / 75 MHz)
 ```
 
-默认 `DDS_CONTROL_FIXED_TEST_ENABLE=0u`，运行正式跟随模式。设置为 1 时使用固定
-测试输出。正式模式下 FSELECT 和 PSELECT 保持低电平，使用 FREQ0 和 PHASE0。
+默认 `DDS_CONTROL_FIXED_TEST_ENABLE=0u`，运行由串口屏立即测量按键触发的补偿
+模式。设置为 1 时使用固定测试输出。正式模式下 FSELECT 和 PSELECT 保持低电平，
+使用 FREQ0 和 PHASE0。
+
+收到 `M` 后，系统先请求 TIM5 立即测频，并按粗测结果设置一次 DDS 初值：
+
+```text
+M -> TIM5 immediate coarse frequency -> DDS = fTIM5 - 100 kHz
+```
+
+粗调不计入闭环次数。随后只消费新的、有效的 CH1 ADC/FFT 校准频率帧。由于低侧
+本振满足 `fADC = fEXTERNAL - fDDS`，每帧执行：
+
+```text
+error = fADC - 100 kHz
+fDDS_new = fDDS_current + error
+```
+
+每次 DDS 成功更新后重新同步 FFT 采集，避免一个窗口混入调整前后的样本。无效或
+重复 FFT 帧不计数；完成五次成功修正后保持最终 DDS 频率，不再由普通 TIM3/TIM5
+周期测量自动改变。再次发送 `M` 会清零计数，并重新执行粗调和五次闭环修正。
 
 ### 双通道 FFT 与频率校准
 
@@ -247,6 +266,9 @@ printh 4D
 ```
 
 USART1 回调只保存单字节命令并设置接收标志；档位切换和立即测量请求均在主循环处理。
+`M` 命令同时调用 `frequency_measure_request_now()` 和
+`dds_control_request_compensation()`，实际 TIM5 读取、FFT 判断和 DDS 写入均在主循环
+完成。
 HMI 的电压和峰峰值来自 `measurement_result`。`adc_dual_get_stats()` 只用于 ADC 错误
 状态和 `overflow_count` 显示，不参与电压或幅度换算。
 
