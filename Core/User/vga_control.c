@@ -22,6 +22,7 @@ vga_control_diagnostics_t vga_control_diagnostics = {
     0.0f,
     0.0f,
     0.0f,
+    0.0f,
     vga_control_status_dac_error,
     (uint32_t)HAL_ERROR
 };
@@ -93,8 +94,10 @@ void vga_control_init(void)
  */
 vga_control_status_t vga_control_set_level(uint8_t level)
 {
-    /** 当前档位对应的 DAC 目标电压。 */
+    /** 当前档位用于自动生成 DAC 数字码的指令电压。 */
     float dac_voltage_v;
+    /** 当前档位 PA4 的实测电压，仅用于 VG 与 AV 模型计算。 */
+    float measured_voltage_v;
     /** 当前档位对应的外部放大器控制电压。 */
     float vg_voltage_v;
     /** 当前档位对应的 VGA 理论差分增益。 */
@@ -108,21 +111,27 @@ vga_control_status_t vga_control_set_level(uint8_t level)
     {
         case 0u:
             dac_voltage_v = VGA_CONTROL_LEVEL_0_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_0_MEASURED_VOLTAGE_V;
             break;
         case 1u:
             dac_voltage_v = VGA_CONTROL_LEVEL_1_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_1_MEASURED_VOLTAGE_V;
             break;
         case 2u:
             dac_voltage_v = VGA_CONTROL_LEVEL_2_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_2_MEASURED_VOLTAGE_V;
             break;
         case 3u:
             dac_voltage_v = VGA_CONTROL_LEVEL_3_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_3_MEASURED_VOLTAGE_V;
             break;
         case 4u:
             dac_voltage_v = VGA_CONTROL_LEVEL_4_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_4_MEASURED_VOLTAGE_V;
             break;
         case 5u:
             dac_voltage_v = VGA_CONTROL_LEVEL_5_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_5_MEASURED_VOLTAGE_V;
             break;
         default:
             vga_control_diagnostics.last_status = vga_control_status_invalid_level;
@@ -138,10 +147,11 @@ vga_control_status_t vga_control_set_level(uint8_t level)
         return vga_control_status_dac_error;
     }
 
-    vg_voltage_v = VGA_CONTROL_VG_FROM_DAC_VOLTAGE(dac_voltage_v);
+    vg_voltage_v = VGA_CONTROL_VG_FROM_DAC_VOLTAGE(measured_voltage_v);
     gain = VGA_CONTROL_GAIN_FROM_VG(vg_voltage_v);
     vga_control_diagnostics.current_level = level;
     vga_control_diagnostics.dac_voltage_v = dac_voltage_v;
+    vga_control_diagnostics.measured_voltage_v = measured_voltage_v;
     vga_control_diagnostics.vg_voltage_v = vg_voltage_v;
     vga_control_diagnostics.vga_gain = gain;
     vga_control_diagnostics.last_status = vga_control_status_ok;
@@ -158,9 +168,9 @@ vga_control_status_t vga_control_set_level(uint8_t level)
  */
 vga_control_status_t vga_control_gain_from_level(uint8_t level, float *gain)
 {
-    /** 当前档位对应的 DAC 目标电压。 */
-    float dac_voltage_v;
-    /** 根据 DAC 电压计算得到的外部控制电压。 */
+    /** 当前档位 PA4 的实测电压，用于 VG 与 AV 模型计算。 */
+    float measured_voltage_v;
+    /** 根据 PA4 实测电压计算得到的外部控制电压。 */
     float vg_voltage_v;
 
     if (gain == NULL)
@@ -171,28 +181,28 @@ vga_control_status_t vga_control_gain_from_level(uint8_t level, float *gain)
     switch (level)
     {
         case 0u:
-            dac_voltage_v = VGA_CONTROL_LEVEL_0_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_0_MEASURED_VOLTAGE_V;
             break;
         case 1u:
-            dac_voltage_v = VGA_CONTROL_LEVEL_1_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_1_MEASURED_VOLTAGE_V;
             break;
         case 2u:
-            dac_voltage_v = VGA_CONTROL_LEVEL_2_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_2_MEASURED_VOLTAGE_V;
             break;
         case 3u:
-            dac_voltage_v = VGA_CONTROL_LEVEL_3_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_3_MEASURED_VOLTAGE_V;
             break;
         case 4u:
-            dac_voltage_v = VGA_CONTROL_LEVEL_4_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_4_MEASURED_VOLTAGE_V;
             break;
         case 5u:
-            dac_voltage_v = VGA_CONTROL_LEVEL_5_VOLTAGE_V;
+            measured_voltage_v = VGA_CONTROL_LEVEL_5_MEASURED_VOLTAGE_V;
             break;
         default:
             return vga_control_status_invalid_level;
     }
 
-    vg_voltage_v = VGA_CONTROL_VG_FROM_DAC_VOLTAGE(dac_voltage_v);
+    vg_voltage_v = VGA_CONTROL_VG_FROM_DAC_VOLTAGE(measured_voltage_v);
     *gain = VGA_CONTROL_GAIN_FROM_VG(vg_voltage_v);
 
     return vga_control_status_ok;

@@ -18,18 +18,31 @@
 /** 片上 DAC 的标称参考电压；实测 VDDA 不同时可修改此宏进行校准。 */
 #define VGA_CONTROL_DAC_REFERENCE_VOLTAGE_V 3.30f
 
-/** 第 0 档 DAC 目标输出电压。 */
+/** 第 0 档 DAC 指令电压，仅用于自动生成片上 DAC 数字码。 */
 #define VGA_CONTROL_LEVEL_0_VOLTAGE_V 0.00f
-/** 第 1 档 DAC 目标输出电压。 */
+/** 第 1 档 DAC 指令电压，仅用于自动生成片上 DAC 数字码。 */
 #define VGA_CONTROL_LEVEL_1_VOLTAGE_V 0.66f
-/** 第 2 档 DAC 目标输出电压。 */
+/** 第 2 档 DAC 指令电压，仅用于自动生成片上 DAC 数字码。 */
 #define VGA_CONTROL_LEVEL_2_VOLTAGE_V 1.32f
-/** 第 3 档 DAC 目标输出电压。 */
+/** 第 3 档 DAC 指令电压，仅用于自动生成片上 DAC 数字码。 */
 #define VGA_CONTROL_LEVEL_3_VOLTAGE_V 1.98f
-/** 第 4 档 DAC 目标输出电压。 */
+/** 第 4 档 DAC 指令电压，仅用于自动生成片上 DAC 数字码。 */
 #define VGA_CONTROL_LEVEL_4_VOLTAGE_V 2.64f
-/** 第 5 档 DAC 目标输出电压。 */
+/** 第 5 档 DAC 指令电压，仅用于自动生成片上 DAC 数字码。 */
 #define VGA_CONTROL_LEVEL_5_VOLTAGE_V 3.30f
+
+/** 第 0 档 PA4/DAC1_OUT1 对地实测电压，用于 VG 与 AV 模型计算。 */
+#define VGA_CONTROL_LEVEL_0_MEASURED_VOLTAGE_V 0.023f
+/** 第 1 档 PA4/DAC1_OUT1 对地实测电压，用于 VG 与 AV 模型计算。 */
+#define VGA_CONTROL_LEVEL_1_MEASURED_VOLTAGE_V 0.683f
+/** 第 2 档 PA4/DAC1_OUT1 对地实测电压，用于 VG 与 AV 模型计算。 */
+#define VGA_CONTROL_LEVEL_2_MEASURED_VOLTAGE_V 1.362f
+/** 第 3 档 PA4/DAC1_OUT1 对地实测电压，用于 VG 与 AV 模型计算。 */
+#define VGA_CONTROL_LEVEL_3_MEASURED_VOLTAGE_V 2.040f
+/** 第 4 档 PA4/DAC1_OUT1 对地实测电压，用于 VG 与 AV 模型计算。 */
+#define VGA_CONTROL_LEVEL_4_MEASURED_VOLTAGE_V 2.720f
+/** 第 5 档 PA4/DAC1_OUT1 对地实测电压，用于 VG 与 AV 模型计算。 */
+#define VGA_CONTROL_LEVEL_5_MEASURED_VOLTAGE_V 3.370f
 
 /** 外部控制电压放大器公式 VG=(20/33)*VDAC-1 的比例系数。 */
 #define VGA_CONTROL_VG_SCALE (20.0f / 33.0f)
@@ -66,9 +79,10 @@ typedef enum
 typedef struct
 {
     uint8_t current_level;                 /**< 最近一次成功写入的档位。 */
-    float dac_voltage_v;                   /**< 最近一次成功设置的 DAC 目标电压。 */
-    float vg_voltage_v;                    /**< 最近一次成功档位对应的 VG 理论值。 */
-    float vga_gain;                        /**< 最近一次成功档位对应的 VGA 理论增益。 */
+    float dac_voltage_v;                   /**< 当前档位用于生成 DAC 码的指令电压。 */
+    float measured_voltage_v;              /**< 当前档位 PA4 实测电压，用于 VG 与 AV 模型。 */
+    float vg_voltage_v;                    /**< 基于 PA4 实测电压计算的 VG。 */
+    float vga_gain;                        /**< 基于 PA4 实测电压计算的 VGA 电压增益 AV。 */
     vga_control_status_t last_status;      /**< 最近一次设置或初始化的模块状态。 */
     uint32_t last_hal_status;              /**< 最近一次 DAC HAL 操作的返回状态。 */
 } vga_control_diagnostics_t;
