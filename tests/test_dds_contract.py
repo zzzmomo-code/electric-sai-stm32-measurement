@@ -103,6 +103,61 @@ class DdsContractTest(unittest.TestCase):
         expected_ftw = ((900_000 << 28) + 75_000_000 // 2) // 75_000_000
         self.assertEqual(expected_ftw, 3_221_225)
 
+    def test_adc_compensation_api_states_and_diagnostics(self) -> None:
+        header = read_text("Core/User/dds_control.h")
+
+        required = (
+            "#define DDS_CONTROL_COMPENSATION_LIMIT 5u",
+            "dds_control_state_coarse",
+            "dds_control_state_compensating",
+            "dds_control_state_holding",
+            "uint8_t compensation_count;",
+            "uint32_t compensation_request_count;",
+            "float adc_frequency_hz;",
+            "int32_t frequency_error_hz;",
+            "uint32_t last_result_sequence;",
+            "void dds_control_request_compensation(void);",
+        )
+        for text in required:
+            self.assertIn(text, header)
+
+    def test_adc_compensation_math_direction(self) -> None:
+        def compensate(current_dds_hz: int, adc_hz: float) -> int:
+            error_hz = round(adc_hz - 100_000.0)
+            return current_dds_hz + error_hz
+
+        self.assertEqual(900_250, compensate(900_000, 100_250.0))
+        self.assertEqual(899_750, compensate(900_000, 99_750.0))
+        self.assertEqual(900_000, compensate(900_000, 100_000.0))
+
+    def test_adc_compensation_consumes_five_new_valid_fft_results(self) -> None:
+        source = read_text("Core/User/dds_control.c")
+
+        required = (
+            "measurement_result_get_snapshot(&result)",
+            "MEASUREMENT_VALID_FREQUENCY",
+            "result.sequence == dds_control_diagnostics.last_result_sequence",
+            "dds_control_diagnostics.frequency_error_hz",
+            "measurement_fft_resynchronize();",
+            "dds_control_diagnostics.compensation_count++;",
+            ">= DDS_CONTROL_COMPENSATION_LIMIT",
+            "dds_control_state_holding",
+        )
+        for text in required:
+            self.assertIn(text, source)
+
+        self.assertIn("AD9834_MAX_OUTPUT_HZ", source)
+        self.assertIn("isfinite(result.frequency_hz)", source)
+
+    def test_hmi_immediate_measurement_starts_compensation(self) -> None:
+        source = read_text("Core/User/hmi_tjc.c")
+        command_branch = source.split(
+            "else if ((command == (uint8_t)'M')", 1
+        )[1].split("else", 1)[0]
+
+        self.assertIn("frequency_measure_request_now();", command_branch)
+        self.assertIn("dds_control_request_compensation();", command_branch)
+
     def test_system_initializes_spi_before_dds(self) -> None:
         main = read_text("Core/Src/main.c")
         system = read_text("Core/User/system.c")
