@@ -89,6 +89,17 @@ FTW = round(fLO * 2^28 / 75 MHz)
 
 初始化顺序为软件复位、写 FREQ0、写 PHASE0、退出复位。FSYNC 在每个 16 位 SPI 字发送前拉低，发送结束后恢复高电平。
 
+### FFT 双通道频率校准
+
+双通道 FFT 三点插值得到的原始频率分别保存在 `raw_peak_frequency_hz` 和 `secondary_raw_peak_frequency_hz`。模块通过 `measurement_fft_calibrate_frequency()` 独立校准两路频率：
+
+```text
+f_raw <= 40000 Hz: f_cal = 0.9999807 * f_raw - 0.2414
+f_raw >  40000 Hz: f_cal = 0.99995854 * f_raw - 0.3226
+```
+
+40000 Hz 使用第一段。`measurement_result` 与 HMI 发布校准结果；raw 字段只供调试和重新标定使用。该公式不影响 TIM5 独立测频。
+
 ### DAC 与 VGA 六档增益
 
 `vga_control.c` 启动片上 DAC1_OUT1，并在上电时默认选择第 0 档。档位设置函数使用 `switch` 明确处理 0～5 档；非法档位返回错误，不调用 HAL，也不改变当前 DAC 输出。
@@ -178,6 +189,10 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - `ad9834_diagnostics.write_count`：成功写入的 16 位字数。
 - `ad9834_diagnostics.error_count`：SPI 写入错误次数，正常应保持 0。
 - `ad9834_diagnostics.last_hal_status`：最近一次 HAL SPI 状态，正常为 `HAL_OK`。
+- `measurement_fft_diagnostics.raw_peak_frequency_hz`：CH1 未经分段公式校准的 FFT 插值频率。
+- `measurement_fft_diagnostics.peak_frequency_hz`：CH1 经分段公式校准后的频率。
+- `measurement_fft_diagnostics.secondary_raw_peak_frequency_hz`：CH2 未经分段公式校准的 FFT 插值频率。
+- `measurement_fft_diagnostics.secondary_peak_frequency_hz`：CH2 经分段公式校准后的频率。
 - `vga_control_diagnostics.current_level`：最近一次成功写入的 DAC 档位。
 - `vga_control_diagnostics.dac_voltage_v`：当前档位用于生成 DAC 码的指令电压。
 - `vga_control_diagnostics.measured_voltage_v`：当前档位用于模型计算的 PA4 实测电压。

@@ -155,6 +155,19 @@ class SourceContractTest(unittest.TestCase):
         self.assertNotIn("adc_dual_get_stats", source)
         self.assertNotIn("adc_dual_stats_t", source)
 
+    def test_readme_documents_fft_frequency_calibration(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        required = (
+            "0.9999807",
+            "0.99995854",
+            "40000 Hz",
+            "raw_peak_frequency_hz",
+            "secondary_raw_peak_frequency_hz",
+            "measurement_fft_calibrate_frequency",
+        )
+        for text in required:
+            self.assertIn(text, readme)
+
     def test_adc_callbacks_only_set_their_flag(self):
         source = (ROOT / "Core/User/adc_dual.c").read_text(encoding="utf-8")
         expected = (
