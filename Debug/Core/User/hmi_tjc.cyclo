@@ -10,7 +10,7 @@
 ../Core/User/hmi_tjc.c:1051:6:hmi_tjc_bind_uart	3
 ../Core/User/hmi_tjc.c:1071:6:hmi_tjc_init	1
 ../Core/User/hmi_tjc.c:1099:6:hmi_tjc_process_input	8
-../Core/User/hmi_tjc.c:1164:6:HAL_UART_RxCpltCallback	2
-../Core/User/hmi_tjc.c:1178:6:HAL_UART_ErrorCallback	2
-../Core/User/hmi_tjc.c:1193:6:hmi_tjc_process	6
-../Core/User/hmi_tjc.c:1246:9:hmi_tjc_get_diagnostics	2
+../Core/User/hmi_tjc.c:1165:6:HAL_UART_RxCpltCallback	2
+../Core/User/hmi_tjc.c:1179:6:HAL_UART_ErrorCallback	2
+../Core/User/hmi_tjc.c:1194:6:hmi_tjc_process	6
+../Core/User/hmi_tjc.c:1247:9:hmi_tjc_get_diagnostics	2
