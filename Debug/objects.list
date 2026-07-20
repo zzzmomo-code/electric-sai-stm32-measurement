@@ -18,6 +18,7 @@
 "./Core/User/fft_f32_65536.o"
 "./Core/User/frequency_measure.o"
 "./Core/User/hmi_tjc.o"
+"./Core/User/measurement_conversion.o"
 "./Core/User/measurement_fft.o"
 "./Core/User/measurement_result.o"
 "./Core/User/system.o"

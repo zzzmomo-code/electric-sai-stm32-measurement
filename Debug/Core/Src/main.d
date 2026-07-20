@@ -51,7 +51,8 @@ Core/Src/main.o: ../Core/Src/main.c ../Core/Inc/main.h \
  D:/CubeIDE/h743_pre1/Core/User/frequency_measure.h \
  D:/CubeIDE/h743_pre1/Core/User/ad9834.h \
  D:/CubeIDE/h743_pre1/Core/User/dds_control.h \
- D:/CubeIDE/h743_pre1/Core/User/vga_control.h
+ D:/CubeIDE/h743_pre1/Core/User/vga_control.h \
+ D:/CubeIDE/h743_pre1/Core/User/measurement_conversion.h
 ../Core/Inc/main.h:
 ../Drivers/STM32H7xx_HAL_Driver/Inc/stm32h7xx_hal.h:
 ../Core/Inc/stm32h7xx_hal_conf.h:
@@ -112,3 +113,4 @@ D:/CubeIDE/h743_pre1/Core/User/frequency_measure.h:
 D:/CubeIDE/h743_pre1/Core/User/ad9834.h:
 D:/CubeIDE/h743_pre1/Core/User/dds_control.h:
 D:/CubeIDE/h743_pre1/Core/User/vga_control.h:
+D:/CubeIDE/h743_pre1/Core/User/measurement_conversion.h:

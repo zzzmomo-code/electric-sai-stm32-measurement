@@ -122,6 +122,7 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     system_process();
+
   }
   /* USER CODE END 3 */
 }

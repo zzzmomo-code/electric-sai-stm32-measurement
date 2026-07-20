@@ -26,6 +26,7 @@
 #include "ad9834.h"
 #include "dds_control.h"
 #include "vga_control.h"
+#include "measurement_conversion.h"
 
 /* ADC1/ADC2 与 TIM2 由用户完成 CubeMX 配置并生成后自动启用真实采集实现。 */
 #if defined(__has_include)

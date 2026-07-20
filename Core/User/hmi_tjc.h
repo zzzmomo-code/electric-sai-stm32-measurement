@@ -4,7 +4,7 @@
  *
  * 模块用途：将测量结果格式化为淘晶驰文本和频谱指令，并在 UART 可用时低频轮询发送基础页面。
  * GPIO 引脚映射：由 CubeMX 为后续选定 UART 分配，不在本模块硬编码引脚。
- * 依赖的外设和 CubeIDE 配置：运行发送依赖一个异步 UART；不使用 UART DMA 或 UART 全局中断。
+ * 依赖的外设和 CubeIDE 配置：USART1 配置为 9600 8N1，并启用 USART1 全局中断；不使用 DMA。
  * 初始化方法：系统启动时调用 hmi_tjc_init()；CubeMX 启用 UART 后再绑定 UART 句柄。
  * 调用方法：主循环持续调用 hmi_tjc_process()；扩展页面通过详细指标和频谱构帧接口接入。
  */
@@ -41,14 +41,18 @@ typedef enum
     HMI_TJC_STATUS_HAL_ERROR
 } hmi_tjc_status_t;
 
-/** 串口屏轮询发送与帧构建诊断数据。 */
+/** 串口屏收发与帧构建诊断数据。 */
 typedef struct
 {
     uint32_t transmit_attempts;  /**< 已实际调用 HAL_UART_Transmit() 的次数。 */
     uint32_t transmit_successes; /**< UART 轮询发送成功次数。 */
     uint32_t transmit_failures;  /**< UART 轮询发送失败次数。 */
-    uint32_t build_failures;     /**< 双通道十三控件命令帧构建失败次数。 */
+    uint32_t build_failures;     /**< 串口屏文本命令帧构建失败次数。 */
+    uint32_t receive_count;      /**< 已收到的单字节按键命令数量。 */
+    uint32_t command_count;      /**< 已成功执行的按键命令数量。 */
+    uint32_t command_errors;     /**< 无效命令或 UART 接收错误数量。 */
     uint16_t last_frame_size;    /**< 最近一次尝试发送的帧长度。 */
+    uint8_t last_command;        /**< 最近一次收到的原始命令字节。 */
     hmi_tjc_status_t last_status; /**< 最近一次帧构建或发送状态。 */
 } hmi_tjc_diagnostics_t;
 
@@ -117,6 +121,14 @@ hmi_tjc_status_t hmi_tjc_build_spectrum_frame(
 void hmi_tjc_process(void);
 
 /**
+ * @brief 处理串口屏按键命令并重新启动单字节中断接收。
+ * @param 无。
+ * @return 无。
+ * @note 必须由主循环调用；'1' 至 '5' 选择 VGA 档位，'M' 立即请求一次 TIM5 测频。
+ */
+void hmi_tjc_process_input(void);
+
+/**
  * @brief 读取串口屏模块累计诊断数据。
  * @param diagnostics 用于接收诊断快照的指针。
  * @return 指针有效时返回 1，否则返回 0。
@@ -131,7 +143,7 @@ uint8_t hmi_tjc_get_diagnostics(hmi_tjc_diagnostics_t *diagnostics);
  * @brief 绑定 CubeMX 生成的 UART 句柄。
  * @param huart 已配置为 9600 8N1 的 UART 句柄。
  * @return 无。
- * @note 只能在 UART 初始化完成后调用；不要求 DMA 或 UART 全局中断，重新绑定会重新发送串口屏清理帧。
+ * @note 只能在 UART 初始化完成后调用；要求 USART1 全局中断，不使用 DMA。
  */
 void hmi_tjc_bind_uart(UART_HandleTypeDef *huart);
 #endif

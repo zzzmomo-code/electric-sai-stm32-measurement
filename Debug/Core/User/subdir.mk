@@ -11,6 +11,7 @@ C_SRCS += \
 ../Core/User/fft_f32_65536.c \
 ../Core/User/frequency_measure.c \
 ../Core/User/hmi_tjc.c \
+../Core/User/measurement_conversion.c \
 ../Core/User/measurement_fft.c \
 ../Core/User/measurement_result.c \
 ../Core/User/system.c \
@@ -23,6 +24,7 @@ OBJS += \
 ./Core/User/fft_f32_65536.o \
 ./Core/User/frequency_measure.o \
 ./Core/User/hmi_tjc.o \
+./Core/User/measurement_conversion.o \
 ./Core/User/measurement_fft.o \
 ./Core/User/measurement_result.o \
 ./Core/User/system.o \
@@ -35,6 +37,7 @@ C_DEPS += \
 ./Core/User/fft_f32_65536.d \
 ./Core/User/frequency_measure.d \
 ./Core/User/hmi_tjc.d \
+./Core/User/measurement_conversion.d \
 ./Core/User/measurement_fft.d \
 ./Core/User/measurement_result.d \
 ./Core/User/system.d \
@@ -48,7 +51,7 @@ Core/User/%.o Core/User/%.su Core/User/%.cyclo: ../Core/User/%.c Core/User/subdi
 clean: clean-Core-2f-User
 
 clean-Core-2f-User:
-	-$(RM) ./Core/User/ad9834.cyclo ./Core/User/ad9834.d ./Core/User/ad9834.o ./Core/User/ad9834.su ./Core/User/adc_dual.cyclo ./Core/User/adc_dual.d ./Core/User/adc_dual.o ./Core/User/adc_dual.su ./Core/User/dds_control.cyclo ./Core/User/dds_control.d ./Core/User/dds_control.o ./Core/User/dds_control.su ./Core/User/fft_f32_65536.cyclo ./Core/User/fft_f32_65536.d ./Core/User/fft_f32_65536.o ./Core/User/fft_f32_65536.su ./Core/User/frequency_measure.cyclo ./Core/User/frequency_measure.d ./Core/User/frequency_measure.o ./Core/User/frequency_measure.su ./Core/User/hmi_tjc.cyclo ./Core/User/hmi_tjc.d ./Core/User/hmi_tjc.o ./Core/User/hmi_tjc.su ./Core/User/measurement_fft.cyclo ./Core/User/measurement_fft.d ./Core/User/measurement_fft.o ./Core/User/measurement_fft.su ./Core/User/measurement_result.cyclo ./Core/User/measurement_result.d ./Core/User/measurement_result.o ./Core/User/measurement_result.su ./Core/User/system.cyclo ./Core/User/system.d ./Core/User/system.o ./Core/User/system.su ./Core/User/vga_control.cyclo ./Core/User/vga_control.d ./Core/User/vga_control.o ./Core/User/vga_control.su
+	-$(RM) ./Core/User/ad9834.cyclo ./Core/User/ad9834.d ./Core/User/ad9834.o ./Core/User/ad9834.su ./Core/User/adc_dual.cyclo ./Core/User/adc_dual.d ./Core/User/adc_dual.o ./Core/User/adc_dual.su ./Core/User/dds_control.cyclo ./Core/User/dds_control.d ./Core/User/dds_control.o ./Core/User/dds_control.su ./Core/User/fft_f32_65536.cyclo ./Core/User/fft_f32_65536.d ./Core/User/fft_f32_65536.o ./Core/User/fft_f32_65536.su ./Core/User/frequency_measure.cyclo ./Core/User/frequency_measure.d ./Core/User/frequency_measure.o ./Core/User/frequency_measure.su ./Core/User/hmi_tjc.cyclo ./Core/User/hmi_tjc.d ./Core/User/hmi_tjc.o ./Core/User/hmi_tjc.su ./Core/User/measurement_conversion.cyclo ./Core/User/measurement_conversion.d ./Core/User/measurement_conversion.o ./Core/User/measurement_conversion.su ./Core/User/measurement_fft.cyclo ./Core/User/measurement_fft.d ./Core/User/measurement_fft.o ./Core/User/measurement_fft.su ./Core/User/measurement_result.cyclo ./Core/User/measurement_result.d ./Core/User/measurement_result.o ./Core/User/measurement_result.su ./Core/User/system.cyclo ./Core/User/system.d ./Core/User/system.o ./Core/User/system.su ./Core/User/vga_control.cyclo ./Core/User/vga_control.d ./Core/User/vga_control.o ./Core/User/vga_control.su
 
 .PHONY: clean-Core-2f-User
 

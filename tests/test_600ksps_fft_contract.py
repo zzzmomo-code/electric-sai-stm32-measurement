@@ -82,10 +82,10 @@ class SourceContractTest(unittest.TestCase):
         )
         required_header = (
             "#define MEASUREMENT_FFT_FREQUENCY_SPLIT_HZ 40000.0f",
-            "#define MEASUREMENT_FFT_LOW_FREQUENCY_GAIN 0.9999807f",
-            "#define MEASUREMENT_FFT_LOW_FREQUENCY_OFFSET_HZ (-0.2414f)",
-            "#define MEASUREMENT_FFT_HIGH_FREQUENCY_GAIN 0.99995854f",
-            "#define MEASUREMENT_FFT_HIGH_FREQUENCY_OFFSET_HZ (-0.3226f)",
+            "#define MEASUREMENT_FFT_LOW_FREQUENCY_GAIN 1.0000193004f",
+            "#define MEASUREMENT_FFT_LOW_FREQUENCY_OFFSET_HZ (0.24140466f)",
+            "#define MEASUREMENT_FFT_HIGH_FREQUENCY_GAIN 1.0000414617f",
+            "#define MEASUREMENT_FFT_HIGH_FREQUENCY_OFFSET_HZ (0.3261338f)",
             "float measurement_fft_calibrate_frequency(float raw_frequency_hz);",
         )
         for text in required_header:
@@ -107,16 +107,16 @@ class SourceContractTest(unittest.TestCase):
             if raw_frequency_hz <= 0.0:
                 return 0.0
             if raw_frequency_hz <= 40000.0:
-                calibrated = 0.9999807 * raw_frequency_hz - 0.2414
+                calibrated = 1.0000193004 * raw_frequency_hz + 0.24140466
             else:
-                calibrated = 0.99995854 * raw_frequency_hz - 0.3226
+                calibrated = 1.0000414617 * raw_frequency_hz + 0.3261338
             return max(calibrated, 0.0)
 
         self.assertEqual(0.0, calibrate(0.0))
         self.assertEqual(0.0, calibrate(-1.0))
-        self.assertAlmostEqual(999.7393, calibrate(1000.0), places=4)
-        self.assertAlmostEqual(39998.9866, calibrate(40000.0), places=4)
-        self.assertAlmostEqual(39999.01895854, calibrate(40001.0), places=5)
+        self.assertAlmostEqual(1000.26070506, calibrate(1000.0), places=5)
+        self.assertAlmostEqual(40001.01342066, calibrate(40000.0), places=5)
+        self.assertAlmostEqual(40002.9846432617, calibrate(40001.0), places=5)
 
     def test_both_fft_channels_preserve_raw_and_publish_calibrated_frequency(self):
         source = (ROOT / "Core/User/measurement_fft.c").read_text(
@@ -152,14 +152,17 @@ class SourceContractTest(unittest.TestCase):
         self.assertIn("result->secondary_dc_voltage", source)
         self.assertIn("result->amplitude_vpp", source)
         self.assertIn("result->secondary_amplitude_vpp", source)
-        self.assertNotIn("adc_dual_get_stats", source)
-        self.assertNotIn("adc_dual_stats_t", source)
+        self.assertIn("adc_dual_get_stats", source)
+        self.assertIn("adc.state == ADC_DUAL_STATE_ERROR", source)
+        self.assertIn("adc.overflow_count", source)
+        self.assertNotIn("adc.ch1_recent_mean_code", source)
+        self.assertNotIn("adc.ch2_recent_mean_code", source)
 
     def test_readme_documents_fft_frequency_calibration(self):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         required = (
-            "0.9999807",
-            "0.99995854",
+            "1.0000193004",
+            "1.0000414617",
             "40000 Hz",
             "raw_peak_frequency_hz",
             "secondary_raw_peak_frequency_hz",

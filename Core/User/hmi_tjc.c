@@ -4,7 +4,7 @@
  *
  * 模块用途：读取测量结果快照，构建淘晶驰文本和频谱指令，并通过 UART 轮询发送基础页面。
  * GPIO 引脚映射：无硬编码 GPIO；UART 引脚由 CubeMX 和 hmi_tjc_bind_uart() 决定。
- * 依赖的外设和 CubeIDE 配置：运行发送依赖 UART 9600 8N1；不使用 TX DMA 或 UART 中断。
+ * 依赖的外设和 CubeIDE 配置：USART1 为 9600 8N1，并启用全局中断；不使用 DMA。
  * 初始化方法：系统启动调用 hmi_tjc_init()，CubeMX UART 初始化后绑定 UART 句柄。
  * 调用方法：主循环调用 hmi_tjc_process()；扩展控件准备完成后可调用详细指标和频谱构帧接口。
  */
@@ -410,6 +410,236 @@ static hmi_tjc_status_t hmi_tjc_append_text_command(
 }
 
 /**
+ * @brief 格式化本题页面使用的频率文本。
+ * @param text 输出缓冲区。
+ * @param text_capacity 缓冲区容量。
+ * @param frequency_hz 频率，单位为 Hz。
+ * @param estimated 非零时在文本前增加约等号标记。
+ * @return 成功返回 1，参数或长度异常返回 0。
+ */
+static uint8_t hmi_tjc_format_runtime_frequency(char *text,
+                                                uint16_t text_capacity,
+                                                float frequency_hz,
+                                                uint8_t estimated)
+{
+    const char *prefix = (estimated != 0u) ? "~" : "";
+    int length;
+
+    if ((text == 0) || (text_capacity == 0u) || (!isfinite(frequency_hz))
+        || (frequency_hz < 0.0f))
+    {
+        return 0u;
+    }
+
+    if (frequency_hz >= 1000000.0f)
+    {
+        length = snprintf(text, text_capacity, "%s%.6f MHz",
+                          prefix, (double)(frequency_hz / 1000000.0f));
+    }
+    else if (frequency_hz >= 1000.0f)
+    {
+        length = snprintf(text, text_capacity, "%s%.3f kHz",
+                          prefix, (double)(frequency_hz / 1000.0f));
+    }
+    else
+    {
+        length = snprintf(text, text_capacity, "%s%.1f Hz",
+                          prefix, (double)frequency_hz);
+    }
+
+    return ((length >= 0) && ((uint32_t)length < text_capacity)) ? 1u : 0u;
+}
+
+/**
+ * @brief 构建第二道训练题实时页面的十个文本控件。
+ * @param frame UART 数据帧缓冲区。
+ * @param frame_capacity 缓冲区容量。
+ * @param frame_size 返回实际帧长度。
+ * @return 构帧状态。
+ * @note ADC 无可靠结果时仍显示可取得的估算值，并使用 ~ 或 EST 标识。
+ */
+static hmi_tjc_status_t hmi_tjc_build_runtime_frame(uint8_t *frame,
+                                                    uint16_t frame_capacity,
+                                                    uint16_t *frame_size)
+{
+    measurement_result_t result = {0};
+    measurement_fft_diagnostics_t fft = {0};
+    adc_dual_stats_t adc = {0};
+    const char *names[10] = {
+        "t_timer_freq", "t_adc_freq", "t_adc_amp", "t_real_freq", "t_real_amp",
+        "t_wave", "t_dds_freq", "t_vga", "t_status", "t_overflow"
+    };
+    const char *values[10];
+    char timer_text[HMI_TJC_TEXT_VALUE_SIZE];
+    char adc_frequency_text[HMI_TJC_TEXT_VALUE_SIZE];
+    char adc_amplitude_text[HMI_TJC_TEXT_VALUE_SIZE];
+    char real_frequency_text[HMI_TJC_TEXT_VALUE_SIZE];
+    char real_amplitude_text[HMI_TJC_TEXT_VALUE_SIZE];
+    char dds_text[HMI_TJC_TEXT_VALUE_SIZE];
+    char vga_text[HMI_TJC_TEXT_VALUE_SIZE];
+    char overflow_text[HMI_TJC_TEXT_VALUE_SIZE];
+    float timer_frequency_hz = frequency_measure_hz;
+    float adc_frequency_hz = 0.0f;
+    float adc_amplitude_vpp = 0.0f;
+    float real_frequency_hz;
+    float real_amplitude_vpp;
+    measurement_wave_type_t wave_type = MEASUREMENT_WAVE_UNKNOWN;
+    const char *status_text = "WAIT";
+    uint32_t dds_frequency_hz = dds_control_diagnostics.output_frequency_hz;
+    uint8_t vga_level = vga_control_diagnostics.current_level;
+    if(vga_level>5u) vga_level=0u;
+    uint8_t adc_frequency_estimated = 1u;
+    uint8_t adc_amplitude_estimated = 1u;
+    uint8_t adc_amplitude_available = 0u;
+    uint8_t index;
+    hmi_tjc_status_t status;
+
+    (void)measurement_result_get_snapshot(&result);
+    (void)measurement_fft_get_diagnostics(&fft);
+    (void)adc_dual_get_stats(&adc);
+
+    if ((result.valid_mask & MEASUREMENT_VALID_FREQUENCY) != 0u)
+    {
+        adc_frequency_hz = result.frequency_hz;
+        adc_frequency_estimated = (uint8_t)((result.estimated_mask
+                                             & MEASUREMENT_VALID_FREQUENCY) != 0u);
+    }
+    else if (fft.fft_ready != 0u)
+    {
+        adc_frequency_hz = fft.peak_frequency_hz;
+    }
+
+    if ((result.valid_mask & MEASUREMENT_VALID_AMPLITUDE) != 0u)
+    {
+        adc_amplitude_vpp = result.amplitude_vpp;
+        adc_amplitude_available = 1u;
+        adc_amplitude_estimated = (uint8_t)((result.estimated_mask
+                                             & MEASUREMENT_VALID_AMPLITUDE) != 0u);
+    }
+    else if (fft.fft_ready != 0u)
+    {
+        adc_amplitude_vpp = fft.amplitude_vpp;
+        adc_amplitude_available = 1u;
+    }
+
+    if ((result.valid_mask & MEASUREMENT_VALID_WAVE_TYPE) != 0u)
+    {
+        wave_type = result.wave_type;
+    }
+    else if (fft.fft_ready != 0u)
+    {
+        wave_type = fft.wave_type;
+    }
+
+    real_frequency_hz = measurement_conversion_frequency_hz(
+        timer_frequency_hz, (float)dds_frequency_hz, adc_frequency_hz);
+    real_amplitude_vpp = measurement_conversion_amplitude_vpp(
+        adc_amplitude_vpp, vga_level);
+
+    if ((adc.state == ADC_DUAL_STATE_ERROR)
+        || (dds_control_diagnostics.state == dds_control_state_error)
+    	|| (vga_control_diagnostics.last_status != vga_control_status_ok))
+    {
+        status_text = "ERROR";
+    }
+    else if ((fft.clipping_mask & 0x01u) != 0u)
+    {
+        status_text = "CLIP";
+    }
+    else if ((adc_frequency_hz >= 90000.0f) && (adc_frequency_hz <= 110000.0f))
+    {
+        status_text = "LOCK";
+    }
+    else if ((timer_frequency_hz > 0.0f) || (fft.fft_ready != 0u))
+    {
+        status_text = "EST";
+    }
+
+    if (timer_frequency_hz > 0.0f)
+    {
+        (void)hmi_tjc_format_runtime_frequency(timer_text, sizeof(timer_text),
+                                                timer_frequency_hz, 0u);
+    }
+    else
+    {
+        (void)snprintf(timer_text, sizeof(timer_text), "--");
+    }
+    if (adc_frequency_hz > 0.0f)
+    {
+        (void)hmi_tjc_format_runtime_frequency(adc_frequency_text,
+                                                sizeof(adc_frequency_text),
+                                                adc_frequency_hz,
+                                                adc_frequency_estimated);
+    }
+    else
+    {
+        (void)snprintf(adc_frequency_text, sizeof(adc_frequency_text), "--");
+    }
+    if (adc_amplitude_available != 0u)
+    {
+        (void)snprintf(adc_amplitude_text, sizeof(adc_amplitude_text),
+                       "%s%.3f Vpp",
+                       (adc_amplitude_estimated != 0u) ? "~" : "",
+                       (double)adc_amplitude_vpp);
+        (void)snprintf(real_amplitude_text, sizeof(real_amplitude_text),
+                       "~%.3f Vpp", (double)real_amplitude_vpp);
+    }
+    else
+    {
+        (void)snprintf(adc_amplitude_text, sizeof(adc_amplitude_text), "--");
+        (void)snprintf(real_amplitude_text, sizeof(real_amplitude_text), "--");
+    }
+    if (real_frequency_hz > 0.0f)
+    {
+        (void)hmi_tjc_format_runtime_frequency(
+            real_frequency_text,
+            sizeof(real_frequency_text),
+            real_frequency_hz,
+            (uint8_t)(adc_frequency_hz <= 0.0f));
+    }
+    else
+    {
+        (void)snprintf(real_frequency_text, sizeof(real_frequency_text), "--");
+    }
+    if (dds_frequency_hz > 0u)
+    {
+        (void)hmi_tjc_format_runtime_frequency(dds_text, sizeof(dds_text),
+                                                (float)dds_frequency_hz, 0u);
+    }
+    else
+    {
+        (void)snprintf(dds_text, sizeof(dds_text), "--");
+    }
+    (void)snprintf(vga_text, sizeof(vga_text), "G%u", (unsigned int)vga_level);
+    (void)snprintf(overflow_text, sizeof(overflow_text), "%lu",
+                   (unsigned long)adc.overflow_count);
+
+    values[0] = timer_text;
+    values[1] = adc_frequency_text;
+    values[2] = adc_amplitude_text;
+    values[3] = real_frequency_text;
+    values[4] = real_amplitude_text;
+    values[5] = hmi_tjc_wave_type_text(wave_type);
+    values[6] = dds_text;
+    values[7] = vga_text;
+    values[8] = status_text;
+    values[9] = overflow_text;
+
+    *frame_size = 0u;
+    for (index = 0u; index < 10u; index++)
+    {
+        status = hmi_tjc_append_text_command(frame, frame_capacity, frame_size,
+                                             names[index], values[index]);
+        if (status != HMI_TJC_STATUS_OK)
+        {
+            return status;
+        }
+    }
+
+    return HMI_TJC_STATUS_OK;
+}
+
+/**
  * @brief 构建一帧包含双通道十三条淘晶驰文本指令的 UART 数据。
  * @param result 待显示的测量结果快照。
  * @param frame 用于接收二进制 UART 数据的缓冲区。
@@ -758,6 +988,15 @@ static hmi_tjc_diagnostics_t hmi_tjc_diagnostics;
 /** 绑定的 CubeMX UART 句柄。 */
 static UART_HandleTypeDef *hmi_tjc_uart;
 
+/** UART 中断每次接收的一个按键命令字节。 */
+static uint8_t hmi_tjc_rx_byte;
+
+/** 接收完成标志，由 USART 中断与主循环并发访问。 */
+static volatile uint8_t hmi_tjc_rx_flag;
+
+/** 接收错误标志，由 USART 中断与主循环并发访问。 */
+static volatile uint8_t hmi_tjc_rx_error_flag;
+
 /** UART 轮询发送使用的固定帧缓冲区。 */
 static uint8_t hmi_tjc_tx_buffer[HMI_TJC_TX_BUFFER_SIZE];
 
@@ -807,13 +1046,18 @@ static hmi_tjc_status_t hmi_tjc_send_frame(uint16_t frame_size)
  * @brief 绑定 CubeMX 生成的 UART 句柄。
  * @param huart 已配置为 9600 8N1 的 UART 句柄。
  * @return 无。
- * @note 重新绑定后在下一次 process 中发送清理帧，无 DMA 或中断依赖。
+ * @note 重新绑定后启动单字节中断接收，并在下一次 process 中发送清理帧。
  */
 void hmi_tjc_bind_uart(UART_HandleTypeDef *huart)
 {
     hmi_tjc_uart = huart;
     hmi_tjc_flush_pending = 1u;
     hmi_tjc_last_refresh_ms = HAL_GetTick();
+    if ((hmi_tjc_uart != 0)
+        && (HAL_UART_Receive_IT(hmi_tjc_uart, &hmi_tjc_rx_byte, 1u) != HAL_OK))
+    {
+        hmi_tjc_diagnostics.command_errors++;
+    }
 }
 
 #endif
@@ -830,14 +1074,115 @@ void hmi_tjc_init(void)
     hmi_tjc_diagnostics.transmit_successes = 0u;
     hmi_tjc_diagnostics.transmit_failures = 0u;
     hmi_tjc_diagnostics.build_failures = 0u;
+    hmi_tjc_diagnostics.receive_count = 0u;
+    hmi_tjc_diagnostics.command_count = 0u;
+    hmi_tjc_diagnostics.command_errors = 0u;
     hmi_tjc_diagnostics.last_frame_size = 0u;
+    hmi_tjc_diagnostics.last_command = 0u;
     hmi_tjc_diagnostics.last_status = HMI_TJC_STATUS_UART_UNAVAILABLE;
 #if defined(HAL_UART_MODULE_ENABLED)
     hmi_tjc_uart = 0;
+    hmi_tjc_rx_byte = 0u;
+    hmi_tjc_rx_flag = 0u;
+    hmi_tjc_rx_error_flag = 0u;
     hmi_tjc_flush_pending = 1u;
     hmi_tjc_last_refresh_ms = HAL_GetTick();
 #endif
 }
+
+/**
+ * @brief 处理串口屏按键命令并重新启动接收。
+ * @param 无。
+ * @return 无。
+ * @note 命令解析和 DAC/TIM5 操作只在主循环执行。
+ */
+void hmi_tjc_process_input(void)
+{
+#if defined(HAL_UART_MODULE_ENABLED)
+    uint8_t command;
+
+    if (hmi_tjc_uart == 0)
+    {
+        return;
+    }
+
+    if (hmi_tjc_rx_error_flag != 0u)
+    {
+        hmi_tjc_rx_error_flag = 0u;
+        hmi_tjc_rx_flag = 0u;
+        hmi_tjc_diagnostics.command_errors++;
+        (void)HAL_UART_Receive_IT(hmi_tjc_uart, &hmi_tjc_rx_byte, 1u);
+        return;
+    }
+
+    if (hmi_tjc_rx_flag == 0u)
+    {
+        return;
+    }
+
+    command = hmi_tjc_rx_byte;
+    hmi_tjc_rx_flag = 0u;
+    hmi_tjc_diagnostics.receive_count++;
+    hmi_tjc_diagnostics.last_command = command;
+
+    if ((command >= (uint8_t)'1') && (command <= (uint8_t)'5'))
+    {
+        if (vga_control_set_level((uint8_t)(command - (uint8_t)'0'))
+            == vga_control_status_ok)
+        {
+            hmi_tjc_diagnostics.command_count++;
+        }
+        else
+        {
+            hmi_tjc_diagnostics.command_errors++;
+        }
+    }
+    else if ((command == (uint8_t)'M') || (command == (uint8_t)'m'))
+    {
+        frequency_measure_request_now();
+        hmi_tjc_diagnostics.command_count++;
+    }
+    else
+    {
+        hmi_tjc_diagnostics.command_errors++;
+    }
+
+    if (HAL_UART_Receive_IT(hmi_tjc_uart, &hmi_tjc_rx_byte, 1u) != HAL_OK)
+    {
+        hmi_tjc_diagnostics.command_errors++;
+    }
+#endif
+}
+
+#if defined(HAL_UART_MODULE_ENABLED)
+/**
+ * @brief 处理 HAL UART 接收完成回调。
+ * @param huart 产生接收完成事件的 UART 句柄。
+ * @return 无。
+ * @note 中断上下文只设置接收完成标志。
+ */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == hmi_tjc_uart)
+    {
+        hmi_tjc_rx_flag = 1u;
+    }
+}
+
+/**
+ * @brief 处理 HAL UART 错误回调。
+ * @param huart 产生错误事件的 UART 句柄。
+ * @return 无。
+ * @note 中断上下文只设置接收错误标志。
+ */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
+{
+    if (huart == hmi_tjc_uart)
+    {
+        hmi_tjc_rx_error_flag = 1u;
+    }
+}
+#endif
 
 /**
  * @brief 处理 HMI 上电清理和周期刷新。
@@ -848,7 +1193,6 @@ void hmi_tjc_init(void)
 void hmi_tjc_process(void)
 {
 #if defined(HAL_UART_MODULE_ENABLED)
-    measurement_result_t result;
     hmi_tjc_status_t status;
     uint16_t frame_size;
     uint32_t now;
@@ -879,11 +1223,9 @@ void hmi_tjc_process(void)
     }
     hmi_tjc_last_refresh_ms = now;
 
-    (void)measurement_result_get_snapshot(&result);
-    status = hmi_tjc_build_frame(&result,
-                                 hmi_tjc_tx_buffer,
-                                 HMI_TJC_TX_BUFFER_SIZE,
-                                 &frame_size);
+    status = hmi_tjc_build_runtime_frame(hmi_tjc_tx_buffer,
+                                         HMI_TJC_TX_BUFFER_SIZE,
+                                         &frame_size);
     if (status != HMI_TJC_STATUS_OK)
     {
         hmi_tjc_diagnostics.build_failures++;

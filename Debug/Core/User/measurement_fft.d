@@ -45,7 +45,8 @@ Core/User/measurement_fft.o: ../Core/User/measurement_fft.c \
  D:/CubeIDE/h743_pre1/Drivers/CMSIS/DSP/Include/arm_math.h \
  ../Drivers/CMSIS/Include/cmsis_compiler.h ../Core/User/adc_dual.h \
  ../Core/User/frequency_measure.h ../Core/User/ad9834.h \
- ../Core/User/dds_control.h ../Core/User/vga_control.h ../Core/Inc/adc.h \
+ ../Core/User/dds_control.h ../Core/User/vga_control.h \
+ ../Core/User/measurement_conversion.h ../Core/Inc/adc.h \
  ../Core/Inc/tim.h ../Core/Inc/spi.h ../Core/Inc/usart.h
 ../Core/User/system.h:
 ../Core/Inc/main.h:
@@ -101,6 +102,7 @@ D:/CubeIDE/h743_pre1/Drivers/CMSIS/DSP/Include/arm_math.h:
 ../Core/User/ad9834.h:
 ../Core/User/dds_control.h:
 ../Core/User/vga_control.h:
+../Core/User/measurement_conversion.h:
 ../Core/Inc/adc.h:
 ../Core/Inc/tim.h:
 ../Core/Inc/spi.h:

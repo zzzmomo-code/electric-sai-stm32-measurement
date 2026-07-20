@@ -227,6 +227,8 @@ class VgaControlContractTest(unittest.TestCase):
         readme = (ROOT / "README.md").read_text(encoding="utf-8")
         required = (
             "PA4 / DAC1_OUT1",
+            "PC4 / ADC1_INP4",
+            "PB1 / ADC2_INP5",
             "DAC_TRIGGER_NONE",
             "DAC_OUTPUTBUFFER_ENABLE",
             "vga_control_set_level",
@@ -234,7 +236,7 @@ class VgaControlContractTest(unittest.TestCase):
             "VG = (20 / 33) * VPA4_MEASURED - 1",
             "0、0.66、1.32、1.98、2.64、3.3 V",
             "PA4 实测电压",
-            "VPA4_MEASURED",
+            "VGA_CONTROL_LEVEL_0_MEASURED_VOLTAGE_V",
             "measured_voltage_v",
         )
         for text in required:

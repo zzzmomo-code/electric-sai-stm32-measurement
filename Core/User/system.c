@@ -7,7 +7,7 @@
  * PB12/AD9834_FSYNC、PB13/SPI2_SCK、PB15/SPI2_MOSI、
  * PB14/AD9834_FSELECT、PD8/AD9834_PSELECT。
  * 依赖的外设和 CubeIDE 配置：依赖 DAC1、ADC1/ADC2、TIM2、TIM3、TIM5、SPI2、DMA 和 NVIC；
- * 串口屏继续依赖 USART1，9600 8N1，轮询发送且不使用 USART DMA。
+ * 串口屏继续依赖 USART1，9600 8N1，接收使用全局中断,轮询发送且不使用 USART DMA。
  * 初始化方法：在 main.c 的 USER CODE BEGIN 2 区域调用 system_init()。
  * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
  */
@@ -84,6 +84,23 @@ void system_init(void)
     hmi_tjc_publish_self_test();
 #endif
     adc_dual_init();
+//    校准ADC
+    measurement_fft_calibration_t ch1_calibration =
+    {
+        .volts_per_code = 0.00005035400390625f,
+        .offset_v = 0.0f,
+        .valid = 1u
+    };
+
+    measurement_fft_set_calibration(0u, &ch1_calibration);
+    measurement_fft_calibration_t ch2_calibration =
+    {
+        .volts_per_code = 0.00005035400390625f,
+        .offset_v = 0.0f,
+        .valid = 1u
+    };
+
+    measurement_fft_set_calibration(1u, &ch2_calibration);
 }
 
 /**
@@ -94,6 +111,7 @@ void system_init(void)
  */
 void system_process(void)
 {
+	hmi_tjc_process_input();
     frequency_measure_process();
     dds_control_process();
     adc_dual_process();

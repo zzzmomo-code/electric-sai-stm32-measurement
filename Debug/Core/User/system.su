@@ -1,2 +1,2 @@
-../Core/User/system.c:72:6:system_init	8	static
-../Core/User/system.c:95:6:system_process	8	static
+../Core/User/system.c:72:6:system_init	32	static
+../Core/User/system.c:112:6:system_process	8	static
