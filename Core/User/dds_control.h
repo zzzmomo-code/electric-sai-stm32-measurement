@@ -2,10 +2,11 @@
  * @file dds_control.h
  * @brief 输入频率到AD9834本振频率的控制接口。
  *
- * 模块用途：测试阶段使用固定输入频率，正式阶段读取TIM5粗测频结果，
- * 按fDDS=fin-100kHz设置低侧本振。
+ * 模块用途：测试阶段使用固定输入频率；正式阶段由立即测量命令触发 TIM5 粗调，
+ * 再根据 ADC/FFT 中频连续修正 DDS 五次并保持最终频率。
  * GPIO引脚映射：无直接GPIO引脚，底层映射见ad9834.h。
- * 依赖的外设和CubeIDE配置：依赖frequency_measure和ad9834模块。
+ * 依赖的外设和CubeIDE配置：依赖 frequency_measure、measurement_result、
+ * measurement_fft 和 ad9834 模块。
  * 初始化方法：由system_init()调用dds_control_init()。
  * 调用方法：由system_process()持续调用dds_control_process()。
  */
@@ -27,6 +28,9 @@
 /** 外差方案的目标中频，单位Hz。 */
 #define DDS_CONTROL_TARGET_IF_HZ 100000u
 
+/** 每次立即测量需要成功完成的 ADC 闭环补偿次数。 */
+#define DDS_CONTROL_COMPENSATION_LIMIT 5u
+
 /** 题目允许的输入频率范围，单位Hz。 */
 #define DDS_CONTROL_MIN_INPUT_HZ 1000000u
 #define DDS_CONTROL_MAX_INPUT_HZ 30000000u
@@ -36,7 +40,9 @@ typedef enum
 {
     dds_control_state_waiting = 0,
     dds_control_state_test,
-    dds_control_state_tracking,
+    dds_control_state_coarse,
+    dds_control_state_compensating,
+    dds_control_state_holding,
     dds_control_state_error
 } dds_control_state_t;
 
@@ -48,6 +54,11 @@ typedef struct
     uint32_t output_frequency_hz; /**< 当前目标DDS输出频率。 */
     uint32_t update_count;        /**< 成功更新DDS频率次数。 */
     uint32_t error_count;         /**< DDS更新失败次数。 */
+    uint8_t compensation_count;   /**< 本轮已成功完成的 ADC 闭环补偿次数。 */
+    uint32_t compensation_request_count; /**< 收到的立即补偿请求总数。 */
+    float adc_frequency_hz;       /**< 最近一次用于补偿的校准后 ADC 中频。 */
+    int32_t frequency_error_hz;   /**< 最近一次 ADC 中频相对 100 kHz 的误差。 */
+    uint32_t last_result_sequence; /**< 最近一次已消费的 FFT 结果序号。 */
 } dds_control_diagnostics_t;
 
 /** DDS控制层运行诊断快照。 */
@@ -66,6 +77,14 @@ void dds_control_init(void);
  * @return 无，结果通过dds_control_diagnostics查看。
  */
 void dds_control_process(void);
+
+/**
+ * @brief 请求重新执行一次 TIM5 粗调和五次 ADC 中频闭环补偿。
+ * @param 无。
+ * @return 无。
+ * @note 仅设置主循环消费的请求；可在补偿、保持或错误状态下重新开始一轮。
+ */
+void dds_control_request_compensation(void);
 
 /**
  * @brief 根据输入频率计算低侧DDS本振频率。

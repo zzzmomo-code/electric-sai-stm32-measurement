@@ -1140,6 +1140,7 @@ void hmi_tjc_process_input(void)
     else if ((command == (uint8_t)'M') || (command == (uint8_t)'m'))
     {
         frequency_measure_request_now();
+        dds_control_request_compensation();
         hmi_tjc_diagnostics.command_count++;
     }
     else
