@@ -22,16 +22,46 @@
 - MCU：STM32H743VIT6。
 - DDS：AD9834，外部 MCLK 为 75 MHz。
 - PA0：TIM5_CH1，接过零比较器输出的 0～3.3 V 方波。
+- PA6：ADC1_INP3，作为双 ADC 同步采集的 CH1 模拟输入。
+- PB1：ADC2_INP5，作为双 ADC 同步采集的 CH2 模拟输入。
 - PB12：AD9834 FSYNC，空闲为高电平。
 - PB13：SPI2_SCK，连接 AD9834 SCLK。
 - PB15：SPI2_MOSI，连接 AD9834 SDATA。
 - PB14：AD9834 FSELECT，低电平选择 FREQ0，高电平选择 FREQ1。
 - PD8：AD9834 PSELECT，低电平选择 PHASE0，高电平选择 PHASE1。
+- PC4: DAC1输出直流信号
 - MCU、比较器和 AD9834 必须共地。
 
 AD9834 初始化使用控制寄存器的 RESET 位完成软件复位，不需要 MCU 单独控制硬件 RESET 引脚。硬件 RESET、SLEEP 等未由本工程控制的引脚应按实际模块原理图固定到有效电平，不得悬空。
 
 ## CubeMX 配置
+
+### ADC1 / ADC2 双路同步采集
+
+1. 打开工程根目录的 `h743_pre1.ioc`，进入 `Pinout & Configuration`。
+2. 在芯片引脚图中单击 PA6，选择 `ADC1_INP3`；在 ADC1 通道设置中确认显示 `IN3 Single-ended`。PC4 不再分配给 ADC1。
+3. 打开 `Analog > ADC1 > Parameter Settings`：
+   - Resolution：`16 Bits`；
+   - Scan Conversion Mode：Disabled；
+   - Regular Conversion 数量：`1`；
+   - Rank 1 Channel：`ADC_CHANNEL_3`；
+   - Sampling Time：`8.5 Cycles`；
+   - External Trigger Conversion Source：`Timer 2 Trigger Out event`；
+   - External Trigger Conversion Edge：`Rising Edge`；
+   - Conversion Data Management Mode：`DMA Circular Mode`；
+   - Overrun：`Overwritten`。
+4. 在 ADC1 的 Multi-mode 设置中选择 `Dual regular simultaneous mode`。ADC1 为主 ADC；ADC2 保持 PB1、`ADC2_INP5`、Rank 1、单端输入和 `8.5 Cycles`。
+5. 打开 `Analog > ADC1 > DMA Settings`，确认：
+   - DMA：`DMA1 Stream 0`，Request 为 `ADC1`；
+   - Direction：Peripheral to Memory；
+   - Peripheral/Memory Increment：Disable/Enable；
+   - Peripheral/Memory Data Width：Word/Word；
+   - Mode：Circular；Priority：Very High；FIFO：Disabled。
+6. 打开 `System Core > NVIC`，保留 `DMA1 Stream0 global interrupt` 和共享 `ADC1 and ADC2 global interrupt`，抢占优先级均为 5。换脚不需要新增 DMA 或中断。
+7. 打开 `Clock Configuration`，确认 ADC 内核时钟仍为 64 MHz，ADC1/ADC2 Clock Prescaler 均为 Asynchronous clock divided by 2。PA6 改为模拟模式后不使用 GPIO 上拉、下拉、输出速度或复用功能。
+8. 打开 `Project Manager > Code Generator`，勾选 `Keep User Code when re-generating`，按 `Alt+K` 或点击工具栏 `GENERATE CODE` 重新生成。生成后检查 `Core/Src/adc.c` 包含 `ADC_CHANNEL_3`、GPIOA Pin 6 初始化及反初始化。
+
+该迁移只改变 ADC1 的物理输入和规则通道；TIM2 TRGO、ADC2、DMA 数据格式、NVIC 优先级和 FFT 数据顺序均保持不变。
 
 ### TIM5 输入计数
 
@@ -57,6 +87,8 @@ AD9834 初始化使用控制寄存器的 RESET 位完成软件复位，不需要
 CubeMX 重新生成代码前启用 `Project Manager > Code Generator > Keep User Code when re-generating`。不要手工修改自动生成的 `MX_*_Init()`，用户模块统一放在 `Core/User`。
 
 ## 软件流程
+
+TIM2 以 600 kHz TRGO 同时触发 ADC1 的 PA6/INP3 和 ADC2 的 PB1/INP5。ADC1 继续作为双模式主 ADC，DMA1 Stream0 循环读取 32 位公共数据：低 16 位是 ADC1/CH1，高 16 位是 ADC2/CH2。DMA 半满、满和 ADC 错误回调只设置标志，拆包、统计及 FFT 输入均由主循环处理。
 
 `frequency_measure.c` 连续读取 TIM5 的 32 位累计计数，同时使用 Cortex-M7 DWT 周期计数器获得真实测量时间：
 
@@ -111,6 +143,8 @@ FTW = round(fLO * 2^28 / 75 MHz)
 4. 使用 ST-LINK 下载并运行。
 5. 将过零比较器输出接到 PA0，示波器连接 AD9834 输出端并共地。
 6. 改变输入方波频率，检查 DDS 输出是否满足 `fDDS = fin - 100 kHz`。
+7. 向 PA6 输入位于 `VSSA`～`VDDA` 范围内且与 MCU 共地的模拟信号，在 Expressions 中观察 `adc_dual_stats.ch1_recent_min_code`、`ch1_recent_max_code` 和 `ch1_recent_mean_code` 随信号变化。
+8. 同时向 PB1 输入测试信号，确认 `dma_half_count`、`dma_full_count` 持续增加、`error_count` 保持 0，并验证 CH1/CH2 FFT 结果对应同一 TIM2 触发时刻。
 
 离线契约测试：
 
@@ -135,7 +169,79 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 ## 已知限制与后续工作
 
 - 输入方波必须满足 STM32H743 GPIO 电平范围；模拟信号应先经过可靠的过零比较器整形。
+- PA6 和 PB1 的 ADC 模拟输入必须保持在 `VSSA`～`VDDA` 允许范围内；高源阻抗信号需要缓冲或增大采样时间，当前 `8.5 Cycles` 配置应结合模拟前端驱动能力进行实板验证。
 - 当前频率规划采用低侧本振，输入有效范围为 1～30 MHz，目标中频固定为 100 kHz。
 - 频率绝对精度受输入边沿质量、H743 系统时钟和 AD9834 75 MHz 参考时钟误差影响。
 - 当前只完成 DDS 控制全流程；AD835 混频、中频滤波、VGA 自动增益、片上 ADC 幅度测量和整机校准仍需后续联调。
 - 仓库中保留了前一训练题的双 ADC、FFT 和串口屏模块，当前 DDS 链路不以这些模块的测量结果作为验收依据。
+## DAC 与 VGA 增益控制（2026-07-19）
+
+本工程使用 STM32H743VIT6 的 DAC1 Channel 1 产生 VGA 控制电压。DAC1_OUT1
+通过片内模拟连接进入 OPAMP1，OPAMP1 工作于电压跟随器模式，最终从
+`PC4/OPAMP1_VOUT` 输出。开发环境为 STM32CubeIDE 1.19.0；系统使用 25 MHz
+外部晶振，PLL1 配置保持 480 MHz CPU 主频。
+
+CubeIDE/CubeMX 配置入口为 `Pinout & Configuration > Analog`：
+
+1. 在 `DAC1` 中启用 `OUT1 connected to on chip peripherals only`，保持无触发、
+   Sample and Hold Disabled、Connect to external peripheral Enabled。
+2. 在 `OPAMP1` 中选择 `Follower-DAC_OUT1-INP`，Power Mode 使用 Normal，
+   Trimming 使用 Factory。
+3. 在 Pinout 中确认 PC4 为 `OPAMP1_VOUT`，GPIO 模式为 Analog、No pull。
+4. 在 `Clock Configuration` 中确认 HSE 为 25 MHz，PLL1 参数为 M=5、N=192、
+   P=2，SYSCLK 为 480 MHz，HCLK 为 240 MHz。
+5. 在 `Project Manager > Code Generator` 勾选 `Keep User Code when re-generating`，
+   使用 `Alt+K` 或工具栏 `GENERATE CODE` 重新生成。生成后不要手工修改
+   `MX_DAC1_Init()`、`MX_OPAMP1_Init()` 或 `SystemClock_Config()`。
+
+用户驱动位于 `Core/User/dac_output.c` 和 `Core/User/dac_output.h`，由
+`system_init()` 自动启动 OPAMP1、设置安全的 0 档并启动 DAC1。六档标称输出为：
+
+| 档位 | DAC 标称电压/V | 默认 VG | 默认 VGA 差分增益 |
+|---:|---:|---:|---:|
+| 0 | 0.00 | -1.0 | 0.0 |
+| 1 | 0.66 | -0.6 | 0.4 |
+| 2 | 1.32 | -0.2 | 0.8 |
+| 3 | 1.98 | 0.2 | 1.2 |
+| 4 | 2.64 | 0.6 | 1.6 |
+| 5 | 3.30 | 1.0 | 2.0 |
+
+外部电路模型为：
+
+```text
+VG = (20 / 33) * VDAC - 1
+VOUT = ((+VIN) - (-VIN)) * (1 + VG) * RF / RG
+gain = (1 + VG) * RF / RG
+```
+
+`RF` 与 `RG` 默认均为 10 kohm。可在 `dac_output.h` 中修改以下宏：
+
+```c
+#define DAC_OUTPUT_RF_OHM                   10000.0f
+#define DAC_OUTPUT_RG_OHM                   10000.0f
+#define DAC_OUTPUT_GAIN_CALIBRATION         1.0f
+#define DAC_OUTPUT_OFFSET_CALIBRATION_V     0.0f
+```
+
+设置和查询示例：
+
+```c
+float gain;
+
+if (dac_output_set_level(3u) == dac_output_status_ok)
+{
+    (void)dac_output_get_vga_gain(3u, &gain);
+}
+```
+
+档位超出 `0..5`、查询输出指针为空或 HAL 操作失败时，函数返回错误；设置失败
+不会更新软件记录的当前档位。校准关系为
+`VDAC=标称电压*DAC_OUTPUT_GAIN_CALIBRATION+DAC_OUTPUT_OFFSET_CALIBRATION_V`，
+结果在换算 12 位 DAC 码值前限制到 0 V 至参考电压。
+
+烧录后应使用高输入阻抗万用表或示波器测量 PC4 六档电压，再调整比例和偏移
+校准宏。DAC 参考电压取决于实际 VDDA，片内 OPAMP 的输出摆幅和外部负载也会
+影响结果，因此 3.30 V 档不保证在真实硬件上精确达到 3.300 V。当前只完成理论
+换算、静态契约和目标构建验证，板上六档电压与外部 VGA 增益仍需实测确认。
+
+---

@@ -4,7 +4,7 @@
  *
  * 模块用途：管理 32 字节对齐的双 ADC DMA 缓冲区、Cortex-M7 D-Cache 一致性、
  * DMA 事件领取和同步样本对提交。
- * GPIO 引脚映射：PC4/ADC1_INP4 为 CH1，PB1/ADC2_INP5 为 CH2。
+ * GPIO 引脚映射：PA6/ADC1_INP3 为 CH1，PB1/ADC2_INP5 为 CH2。
  * 依赖的外设和 CubeIDE 配置：ADC1/ADC2 Dual Regular Simultaneous、TIM2 TRGO
  * 600 kHz、ADC1 DMA1 Stream0 Circular Word/Word；未生成 adc.h/tim.h 时编译为安全占位实现。
  * 初始化方法：system_init() 调用 adc_dual_init()。

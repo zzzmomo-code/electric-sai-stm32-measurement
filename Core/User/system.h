@@ -13,7 +13,10 @@
 #ifndef SYSTEM_H
 #define SYSTEM_H
 
+/* DAC1/OPAMP1 由 CubeMX 初始化，PC4 作为 OPAMP1_VOUT 输出。 */
 #include "main.h"
+#include "dac.h"
+#include "opamp.h"
 #include "math.h"
 #include "measurement_result.h"
 #include "hmi_tjc.h"
@@ -23,6 +26,7 @@
 #include "frequency_measure.h"
 #include "ad9834.h"
 #include "dds_control.h"
+#include "dac_output.h"
 
 /* ADC1/ADC2 与 TIM2 由用户完成 CubeMX 配置并生成后自动启用真实采集实现。 */
 #if defined(__has_include)

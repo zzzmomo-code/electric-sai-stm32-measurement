@@ -4,7 +4,7 @@
  *
  * 模块用途：保存 ADC1/ADC2 同步样本对，暂停 TIM2 后顺序完成两个通道的
  * 时域测量和自定义 F32 FFT，发布电压、Vpp、RMS、频率、THD、相位及波形类型。
- * GPIO 引脚映射：PC4/ADC1_INP4 为 CH1，PB1/ADC2_INP5 为 CH2；本模块不直接操作 GPIO。
+ * GPIO 引脚映射：PA6/ADC1_INP3 为 CH1，PB1/ADC2_INP5 为 CH2；本模块不直接操作 GPIO。
  * 依赖的外设和 CubeIDE 配置：ADC1/ADC2 Dual Regular Simultaneous、TIM2 TRGO
  * 600 kHz、DMA1 Stream0 Circular Word/Word；工作区分别映射到 D1/D2 SRAM。
  * 初始化方法：system_init() 调用 measurement_fft_init()。

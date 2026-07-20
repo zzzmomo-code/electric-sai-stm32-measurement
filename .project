@@ -57,6 +57,16 @@
 			<locationURI>PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_cortex.c</locationURI>
 		</link>
 		<link>
+			<name>Drivers/STM32H7xx_HAL_Driver/stm32h7xx_hal_dac.c</name>
+			<type>1</type>
+			<locationURI>PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_dac.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/STM32H7xx_HAL_Driver/stm32h7xx_hal_dac_ex.c</name>
+			<type>1</type>
+			<locationURI>PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_dac_ex.c</locationURI>
+		</link>
+		<link>
 			<name>Drivers/STM32H7xx_HAL_Driver/stm32h7xx_hal_dma.c</name>
 			<type>1</type>
 			<locationURI>PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_dma.c</locationURI>
@@ -105,6 +115,16 @@
 			<name>Drivers/STM32H7xx_HAL_Driver/stm32h7xx_hal_mdma.c</name>
 			<type>1</type>
 			<locationURI>PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_mdma.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/STM32H7xx_HAL_Driver/stm32h7xx_hal_opamp.c</name>
+			<type>1</type>
+			<locationURI>PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_opamp.c</locationURI>
+		</link>
+		<link>
+			<name>Drivers/STM32H7xx_HAL_Driver/stm32h7xx_hal_opamp_ex.c</name>
+			<type>1</type>
+			<locationURI>PROJECT_LOC/Drivers/STM32H7xx_HAL_Driver/Src/stm32h7xx_hal_opamp_ex.c</locationURI>
 		</link>
 		<link>
 			<name>Drivers/STM32H7xx_HAL_Driver/stm32h7xx_hal_pwr.c</name>
@@ -162,6 +182,11 @@
 			<locationURI>PROJECT_LOC/Core/Src/adc.c</locationURI>
 		</link>
 		<link>
+			<name>Application/User/Core/dac.c</name>
+			<type>1</type>
+			<locationURI>PROJECT_LOC/Core/Src/dac.c</locationURI>
+		</link>
+		<link>
 			<name>Application/User/Core/dma.c</name>
 			<type>1</type>
 			<locationURI>PROJECT_LOC/Core/Src/dma.c</locationURI>
@@ -175,6 +200,11 @@
 			<name>Application/User/Core/main.c</name>
 			<type>1</type>
 			<locationURI>PROJECT_LOC/Core/Src/main.c</locationURI>
+		</link>
+		<link>
+			<name>Application/User/Core/opamp.c</name>
+			<type>1</type>
+			<locationURI>PROJECT_LOC/Core/Src/opamp.c</locationURI>
 		</link>
 		<link>
 			<name>Application/User/Core/spi.c</name>
