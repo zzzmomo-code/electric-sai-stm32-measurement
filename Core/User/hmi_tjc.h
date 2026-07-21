@@ -124,7 +124,7 @@ void hmi_tjc_process(void);
  * @brief 处理串口屏按键命令并重新启动单字节中断接收。
  * @param 无。
  * @return 无。
- * @note 必须由主循环调用；'1' 至 '5' 选择 VGA 档位，'M' 立即请求一次 TIM5 测频。
+ * @note 必须由主循环调用；'0' 至 '5' 选择 VGA 档位，'M' 立即请求一次 TIM5 测频。
  */
 void hmi_tjc_process_input(void);
 

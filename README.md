@@ -249,9 +249,10 @@ if (vga_control_set_level(3u) == vga_control_status_ok)
 | `t_status` | WAIT、EST、LOCK、CLIP 或 ERROR |
 | `t_overflow` | ADC DMA 溢出计数 |
 
-五个 VGA 按键的松开事件发送 ASCII 字节 `1`～`5`：
+六个 VGA 按键的松开事件发送 ASCII 字节 `0`～`5`：
 
 ```text
+printh 30
 printh 31
 printh 32
 printh 33

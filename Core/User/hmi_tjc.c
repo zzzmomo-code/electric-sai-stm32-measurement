@@ -1125,7 +1125,7 @@ void hmi_tjc_process_input(void)
     hmi_tjc_diagnostics.receive_count++;
     hmi_tjc_diagnostics.last_command = command;
 
-    if ((command >= (uint8_t)'1') && (command <= (uint8_t)'5'))
+    if ((command >= (uint8_t)'0') && (command <= (uint8_t)'5'))
     {
         if (vga_control_set_level((uint8_t)(command - (uint8_t)'0'))
             == vga_control_status_ok)
