@@ -38,4 +38,12 @@ void frequency_measure_init(void);
  */
 void frequency_measure_process(void);
 
+/**
+ * @brief 请求主循环立即计算一次 TIM5 粗测频率。
+ * @param 无。
+ * @return 无。
+ * @note 只设置现有测量标志，不清零 TIM5，适合由串口屏按键在主循环上下文调用。
+ */
+void frequency_measure_request_now(void);
+
 #endif /* FREQUENCY_MEASURE_H */

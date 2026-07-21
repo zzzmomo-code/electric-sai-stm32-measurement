@@ -19,7 +19,7 @@
 #include "opamp.h"
 #include "math.h"
 #include "measurement_result.h"
-#include "hmi_tjc.h"
+#include "hmi_task2.h"
 #include "measurement_fft.h"
 #include "fft_f32_65536.h"
 #include "adc_dual.h"
@@ -27,6 +27,7 @@
 #include "ad9834.h"
 #include "dds_control.h"
 #include "dac_output.h"
+#include "measurement_conversion.h"
 
 /* ADC1/ADC2 与 TIM2 由用户完成 CubeMX 配置并生成后自动启用真实采集实现。 */
 #if defined(__has_include)

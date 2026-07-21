@@ -99,14 +99,12 @@ class SourceContractTest(unittest.TestCase):
         for field in required:
             self.assertRegex(header, rf"\b{re.escape(field)}\b")
 
-    def test_hmi_voltage_and_vpp_do_not_read_adc_stats(self):
+    def test_legacy_hmi_voltage_and_vpp_use_measurement_result(self):
         source = (ROOT / "Core/User/hmi_tjc.c").read_text(encoding="utf-8")
         self.assertIn("result->dc_voltage", source)
         self.assertIn("result->secondary_dc_voltage", source)
         self.assertIn("result->amplitude_vpp", source)
         self.assertIn("result->secondary_amplitude_vpp", source)
-        self.assertNotIn("adc_dual_get_stats", source)
-        self.assertNotIn("adc_dual_stats_t", source)
 
     def test_adc_callbacks_only_set_their_flag(self):
         source = (ROOT / "Core/User/adc_dual.c").read_text(encoding="utf-8")

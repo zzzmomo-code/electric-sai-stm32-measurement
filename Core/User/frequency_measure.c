@@ -92,6 +92,17 @@ void frequency_measure_process(void)
 }
 
 /**
+ * @brief 请求主循环立即计算一次 TIM5 粗测频率。
+ * @param 无。
+ * @return 无。
+ * @note 保留当前计数窗口，只复用 TIM3 中断使用的测量标志。
+ */
+void frequency_measure_request_now(void)
+{
+    frequency_measure_flag = 1u;
+}
+
+/**
  * @brief 处理 HAL 定时器周期完成回调。
  * @param htim 产生周期完成事件的定时器句柄。
  * @return 无。

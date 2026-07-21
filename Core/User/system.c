@@ -7,7 +7,7 @@
  * PB12/AD9834_FSYNC、PB13/SPI2_SCK、PB15/SPI2_MOSI、
  * PB14/AD9834_FSELECT、PD8/AD9834_PSELECT。
  * 依赖的外设和 CubeIDE 配置：依赖 ADC1/ADC2、TIM2、TIM3、TIM5、SPI2、DMA 和 NVIC；
- * 串口屏继续依赖 USART1，9600 8N1，轮询发送且不使用 USART DMA。
+ * 串口屏依赖 USART1，9600 8N1；接收使用全局中断，发送轮询且不使用 DMA。
  * 初始化方法：在 main.c 的 USER CODE BEGIN 2 区域调用 system_init()。
  * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
  */
@@ -81,9 +81,9 @@ void system_init(void)
     measurement_fft_init();
     frequency_measure_init();
     dds_control_init();
-    hmi_tjc_init();
+    hmi_task2_init();
 #if defined(SYSTEM_USART1_AVAILABLE)
-    hmi_tjc_bind_uart(&huart1);
+    hmi_task2_bind_uart(&huart1);
 #endif
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
     hmi_tjc_publish_self_test();
@@ -104,9 +104,6 @@ void system_process(void)
     adc_dual_process();
     measurement_fft_process();
     adc_dual_process();
-    if (measurement_fft_hmi_refresh_allowed() != 0u)
-    {
-        hmi_tjc_process();
-    }
+    hmi_task2_process();
     HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
 }
