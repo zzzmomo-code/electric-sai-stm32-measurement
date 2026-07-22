@@ -1,4 +1,8 @@
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import unittest
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -9,6 +13,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def read_text(relative_path: str) -> str:
     return (ROOT / relative_path).read_text(encoding="utf-8")
+
+
+def find_host_c_compiler() -> list[str] | None:
+    configured = os.environ.get("AD9834_HOST_CC")
+    if configured:
+        compiler = Path(configured)
+        if compiler.is_file():
+            return [str(compiler), "cc"] if compiler.name == "zig.exe" else [str(compiler)]
+
+    for name in ("clang", "gcc"):
+        compiler = shutil.which(name)
+        if compiler:
+            return [compiler]
+
+    zig = shutil.which("zig")
+    if zig:
+        return [zig, "cc"]
+    return None
 
 
 class DdsContractTest(unittest.TestCase):
@@ -125,6 +147,232 @@ class DdsContractTest(unittest.TestCase):
         self.assertGreaterEqual(source.count("ad9834_frequency_register_1"), 2)
         self.assertGreaterEqual(source.count("ad9834_phase_register_0"), 3)
         self.assertGreaterEqual(source.count("ad9834_phase_register_1"), 2)
+
+    def test_driver_runtime_with_mocked_hal(self) -> None:
+        compiler = find_host_c_compiler()
+        if compiler is None:
+            self.skipTest("host C compiler not available")
+
+        stub_system_header = r'''
+#ifndef SYSTEM_H
+#define SYSTEM_H
+
+#include <stdint.h>
+#include "ad9834.h"
+
+typedef enum
+{
+    HAL_OK = 0,
+    HAL_ERROR = 1
+} HAL_StatusTypeDef;
+
+typedef enum
+{
+    GPIO_PIN_RESET = 0,
+    GPIO_PIN_SET = 1
+} GPIO_PinState;
+
+typedef struct { uint8_t id; } GPIO_TypeDef;
+typedef struct { uint8_t id; } SPI_HandleTypeDef;
+
+extern SPI_HandleTypeDef hspi2;
+extern GPIO_TypeDef mock_fsync_gpio;
+extern GPIO_TypeDef mock_frequency_select_gpio;
+extern GPIO_TypeDef mock_phase_select_gpio;
+
+#define DDS_FSYNC_GPIO_Port (&mock_fsync_gpio)
+#define DDS_FSYNC_Pin 12u
+#define FS_GPIO_Port (&mock_frequency_select_gpio)
+#define FS_Pin 14u
+#define PS_GPIO_Port (&mock_phase_select_gpio)
+#define PS_Pin 8u
+
+void HAL_GPIO_WritePin(GPIO_TypeDef *gpio_port, uint16_t gpio_pin,
+                       GPIO_PinState pin_state);
+HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *spi,
+                                   const uint8_t *data,
+                                   uint16_t size,
+                                   uint32_t timeout);
+
+#endif
+'''
+        harness_source = r'''
+#include <assert.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "system.h"
+
+SPI_HandleTypeDef hspi2;
+GPIO_TypeDef mock_fsync_gpio;
+GPIO_TypeDef mock_frequency_select_gpio;
+GPIO_TypeDef mock_phase_select_gpio;
+
+static uint16_t spi_words[32];
+static uint32_t spi_attempt_count;
+static uint32_t fail_on_attempt;
+static uint32_t frequency_select_write_count;
+static uint32_t phase_select_write_count;
+static GPIO_PinState frequency_select_state;
+static GPIO_PinState phase_select_state;
+
+void HAL_GPIO_WritePin(GPIO_TypeDef *gpio_port, uint16_t gpio_pin,
+                       GPIO_PinState pin_state)
+{
+    (void)gpio_pin;
+    if (gpio_port == &mock_frequency_select_gpio)
+    {
+        frequency_select_write_count++;
+        frequency_select_state = pin_state;
+    }
+    else if (gpio_port == &mock_phase_select_gpio)
+    {
+        phase_select_write_count++;
+        phase_select_state = pin_state;
+    }
+}
+
+HAL_StatusTypeDef HAL_SPI_Transmit(SPI_HandleTypeDef *spi,
+                                   const uint8_t *data,
+                                   uint16_t size,
+                                   uint32_t timeout)
+{
+    uint16_t word;
+
+    (void)spi;
+    (void)timeout;
+    assert(size == 1u);
+    memcpy(&word, data, sizeof(word));
+    assert(spi_attempt_count < 32u);
+    spi_words[spi_attempt_count] = word;
+    spi_attempt_count++;
+    return (spi_attempt_count == fail_on_attempt) ? HAL_ERROR : HAL_OK;
+}
+
+int main(void)
+{
+    uint32_t tuning_word;
+    uint32_t attempts_before;
+    uint32_t frequency_select_writes_before;
+    uint32_t phase_select_writes_before;
+    uint32_t previous_frequency_hz;
+
+    assert(ad9834_init(1000000u) == ad9834_status_ok);
+    tuning_word = ad9834_calculate_tuning_word(1000000u);
+    assert(spi_attempt_count == 8u);
+    assert(spi_words[0] == 0x2300u);
+    assert(spi_words[1] == (uint16_t)(0x4000u | (tuning_word & 0x3FFFu)));
+    assert(spi_words[2] == (uint16_t)(0x4000u | ((tuning_word >> 14) & 0x3FFFu)));
+    assert(spi_words[3] == (uint16_t)(0x8000u | (tuning_word & 0x3FFFu)));
+    assert(spi_words[4] == (uint16_t)(0x8000u | ((tuning_word >> 14) & 0x3FFFu)));
+    assert(spi_words[5] == 0xC000u);
+    assert(spi_words[6] == 0xE000u);
+    assert(spi_words[7] == 0x2200u);
+    assert(frequency_select_state == GPIO_PIN_RESET);
+    assert(phase_select_state == GPIO_PIN_RESET);
+    assert(ad9834_diagnostics.selected_frequency_register == 0u);
+    assert(ad9834_diagnostics.selected_phase_register == 0u);
+    assert(ad9834_diagnostics.initialized == 1u);
+
+    assert(ad9834_set_frequency_register_hz(
+               ad9834_frequency_register_1, 2000000u) == ad9834_status_ok);
+    assert((spi_words[8] & 0xC000u) == 0x8000u);
+    assert((spi_words[9] & 0xC000u) == 0x8000u);
+    assert(ad9834_diagnostics.frequency_hz[1] == 2000000u);
+
+    assert(ad9834_set_phase_register_degrees(
+               ad9834_phase_register_0, 0u) == ad9834_status_ok);
+    assert(spi_words[10] == 0xC000u);
+    assert(ad9834_set_phase_register_degrees(
+               ad9834_phase_register_1, 359u) == ad9834_status_ok);
+    assert(spi_words[11] == (uint16_t)(0xE000u | 4085u));
+    assert(ad9834_diagnostics.phase_word[1] == 4085u);
+
+    assert(ad9834_set_frequency_hz(123456u) == ad9834_status_ok);
+    assert((spi_words[12] & 0xC000u) == 0x4000u);
+    assert((spi_words[13] & 0xC000u) == 0x4000u);
+
+    attempts_before = spi_attempt_count;
+    frequency_select_writes_before = frequency_select_write_count;
+    phase_select_writes_before = phase_select_write_count;
+    assert(ad9834_set_frequency_register_hz(
+               (ad9834_frequency_register_t)2, 1000u)
+           == ad9834_status_invalid_register);
+    assert(ad9834_set_frequency_register_hz(
+               ad9834_frequency_register_0, 0u)
+           == ad9834_status_invalid_frequency);
+    assert(ad9834_set_phase_register_degrees(
+               (ad9834_phase_register_t)2, 0u)
+           == ad9834_status_invalid_register);
+    assert(ad9834_set_phase_register_degrees(
+               ad9834_phase_register_0, 360u)
+           == ad9834_status_invalid_phase);
+    ad9834_select_frequency_register((ad9834_frequency_register_t)2);
+    ad9834_select_phase_register((ad9834_phase_register_t)2);
+    assert(spi_attempt_count == attempts_before);
+    assert(frequency_select_write_count == frequency_select_writes_before);
+    assert(phase_select_write_count == phase_select_writes_before);
+
+    previous_frequency_hz = ad9834_diagnostics.frequency_hz[0];
+    fail_on_attempt = spi_attempt_count + 2u;
+    assert(ad9834_set_frequency_register_hz(
+               ad9834_frequency_register_0, 3000000u)
+           == ad9834_status_spi_error);
+    assert(ad9834_diagnostics.frequency_hz[0] == previous_frequency_hz);
+    assert(ad9834_diagnostics.error_count == 1u);
+    return 0;
+}
+'''
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            build_directory = Path(temporary_directory)
+            (build_directory / "ad9834.h").write_text(
+                read_text("Core/User/ad9834.h"), encoding="utf-8"
+            )
+            (build_directory / "ad9834.c").write_text(
+                read_text("Core/User/ad9834.c"), encoding="utf-8"
+            )
+            (build_directory / "system.h").write_text(
+                stub_system_header, encoding="utf-8"
+            )
+            (build_directory / "harness.c").write_text(
+                harness_source, encoding="utf-8"
+            )
+            executable = build_directory / "ad9834_host_test.exe"
+            compile_result = subprocess.run(
+                compiler
+                + [
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "harness.c",
+                    "ad9834.c",
+                    "-o",
+                    str(executable),
+                ],
+                cwd=build_directory,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                compile_result.returncode,
+                compile_result.stdout + compile_result.stderr,
+            )
+            run_result = subprocess.run(
+                [str(executable)],
+                cwd=build_directory,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                run_result.returncode,
+                run_result.stdout + run_result.stderr,
+            )
 
     def test_readme_documents_dual_register_programming_and_selection(self) -> None:
         readme = read_text("README.md")
