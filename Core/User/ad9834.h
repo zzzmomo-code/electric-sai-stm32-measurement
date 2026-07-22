@@ -2,14 +2,14 @@
  * @file ad9834.h
  * @brief AD9834 DDS底层驱动接口。
  *
- * 模块用途：通过SPI2向AD9834写入16位控制字并设置正弦输出频率。
+ * 模块用途：通过SPI2向AD9834写入16位控制字，分别设置两组频率和相位寄存器。
  * GPIO引脚映射：PB12/FSYNC，PB13/SPI2_SCK，PB15/SPI2_MOSI，
  * PB14/FSELECT，PD8/PSELECT。
  * 依赖的外设和CubeIDE配置：SPI2主机只发送、16位、MSB优先、
  * CPOL=High、CPHA=1 Edge、8 Mbit/s；FSYNC空闲为高电平，FSELECT和
  * PSELECT默认为低电平；控制寄存器PIN/SW位置1，使选择引脚生效。
- * 初始化方法：由dds_control_init()调用ad9834_init()。
- * 调用方法：初始化后调用ad9834_set_frequency_hz()更新频率。
+ * 初始化方法：由dds_control_init()调用ad9834_init()，初始化两组频率和相位寄存器。
+ * 调用方法：主循环中先写入目标寄存器，再通过FSELECT/PSELECT选择当前输出组合。
  */
 
 #ifndef AD9834_H
@@ -28,7 +28,9 @@ typedef enum
 {
     ad9834_status_ok = 0,
     ad9834_status_invalid_frequency,
-    ad9834_status_spi_error
+    ad9834_status_spi_error,
+    ad9834_status_invalid_register,
+    ad9834_status_invalid_phase
 } ad9834_status_t;
 
 /** AD9834频率寄存器选择，对应PB14/FSELECT电平。 */
@@ -57,6 +59,12 @@ typedef struct
     uint8_t initialized;           /**< 初始化成功后为1。 */
     uint8_t selected_frequency_register; /**< 当前FSELECT选择，0为FREQ0。 */
     uint8_t selected_phase_register;     /**< 当前PSELECT选择，0为PHASE0。 */
+    uint32_t frequency_hz[2];      /**< FREQ0和FREQ1最近成功写入的频率。 */
+    uint32_t frequency_tuning_word[2]; /**< 两组频率寄存器的28位频率字。 */
+    uint16_t phase_degrees[2];     /**< PHASE0和PHASE1最近成功写入的整数角度。 */
+    uint16_t phase_word[2];        /**< 两组相位寄存器的12位相位字。 */
+    uint8_t last_frequency_register; /**< 最近成功写入的频率寄存器编号。 */
+    uint8_t last_phase_register;   /**< 最近成功写入的相位寄存器编号。 */
 } ad9834_diagnostics_t;
 
 /** AD9834运行诊断快照。 */
@@ -77,6 +85,28 @@ ad9834_status_t ad9834_init(uint32_t initial_frequency_hz);
  * @note 函数使用阻塞式SPI发送两个16位字，调用时间很短但不能放在中断中。
  */
 ad9834_status_t ad9834_set_frequency_hz(uint32_t frequency_hz);
+
+/**
+ * @brief 将指定频率写入AD9834的FREQ0或FREQ1。
+ * @param frequency_register 目标频率寄存器。
+ * @param frequency_hz 目标频率，单位Hz。
+ * @return 驱动状态。
+ * @note 阻塞发送低14位和高14位；不改变FSELECT引脚，禁止在中断中调用。
+ */
+ad9834_status_t ad9834_set_frequency_register_hz(
+    ad9834_frequency_register_t frequency_register,
+    uint32_t frequency_hz);
+
+/**
+ * @brief 将整数角度写入AD9834的PHASE0或PHASE1。
+ * @param phase_register 目标相位寄存器。
+ * @param phase_degrees 目标相位，范围0至359度。
+ * @return 驱动状态。
+ * @note 阻塞发送一个16位字；不改变PSELECT引脚，禁止在中断中调用。
+ */
+ad9834_status_t ad9834_set_phase_register_degrees(
+    ad9834_phase_register_t phase_register,
+    uint16_t phase_degrees);
 
 /**
  * @brief 通过PB14/FSELECT选择AD9834频率寄存器。
