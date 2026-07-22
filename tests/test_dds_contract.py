@@ -84,6 +84,43 @@ class DdsContractTest(unittest.TestCase):
             "ad9834_select_frequency_register(ad9834_frequency_register_0);",
             source,
         )
+
+    def test_driver_declares_dual_frequency_and_phase_writers(self) -> None:
+        header = read_text("Core/User/ad9834.h")
+
+        self.assertIn("ad9834_status_invalid_register", header)
+        self.assertIn("ad9834_status_invalid_phase", header)
+        self.assertIn("ad9834_set_frequency_register_hz", header)
+        self.assertIn("ad9834_set_phase_register_degrees", header)
+
+    def test_driver_uses_all_ad9834_register_addresses(self) -> None:
+        source = read_text("Core/User/ad9834.c")
+
+        for text in (
+            "AD9834_FREQ0_ADDRESS  0x4000u",
+            "AD9834_FREQ1_ADDRESS  0x8000u",
+            "AD9834_PHASE0_ADDRESS 0xC000u",
+            "AD9834_PHASE1_ADDRESS 0xE000u",
+            "phase_degrees > 359u",
+            "((uint32_t)phase_degrees * 4096u) + 180u",
+        ):
+            self.assertIn(text, source)
+
+    def test_driver_preserves_freq0_compatibility_and_initializes_both_banks(
+        self,
+    ) -> None:
+        source = read_text("Core/User/ad9834.c")
+
+        self.assertIn(
+            "ad9834_set_frequency_register_hz(\n"
+            "        ad9834_frequency_register_0,\n"
+            "        frequency_hz)",
+            source,
+        )
+        self.assertGreaterEqual(source.count("ad9834_frequency_register_0"), 3)
+        self.assertGreaterEqual(source.count("ad9834_frequency_register_1"), 2)
+        self.assertGreaterEqual(source.count("ad9834_phase_register_0"), 3)
+        self.assertGreaterEqual(source.count("ad9834_phase_register_1"), 2)
         self.assertIn(
             "ad9834_select_phase_register(ad9834_phase_register_0);",
             source,
@@ -107,7 +144,7 @@ class DdsContractTest(unittest.TestCase):
         header = read_text("Core/User/dds_control.h")
 
         required = (
-            "#define DDS_CONTROL_COMPENSATION_LIMIT 5u",
+            "#define DDS_CONTROL_COMPENSATION_LIMIT 10u",
             "dds_control_state_coarse",
             "dds_control_state_compensating",
             "dds_control_state_holding",
