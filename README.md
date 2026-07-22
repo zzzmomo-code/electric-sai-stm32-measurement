@@ -112,7 +112,22 @@ FTW = round(fLO * 2^28 / 75 MHz)
 
 默认 `DDS_CONTROL_FIXED_TEST_ENABLE=0u`，运行由串口屏立即测量按键触发的补偿
 模式。设置为 1 时使用固定测试输出。正式模式下 FSELECT 和 PSELECT 保持低电平，
-使用 FREQ0 和 PHASE0。
+使用 FREQ0 和 PHASE0。`ad9834_init()` 会将初始频率同时写入 FREQ0、FREQ1，
+并将 PHASE0、PHASE1 初始化为 0 度，最后选择 FREQ0 和 PHASE0。
+
+需要使用备用寄存器时，先写入目标寄存器，再切换对应选择引脚：
+
+```c
+ad9834_set_frequency_register_hz(ad9834_frequency_register_1, 2000000u);
+ad9834_set_phase_register_degrees(ad9834_phase_register_1, 90u);
+ad9834_select_frequency_register(ad9834_frequency_register_1);
+ad9834_select_phase_register(ad9834_phase_register_1);
+```
+
+频率写入范围为 1～`AD9834_MAX_OUTPUT_HZ` Hz，相位写入范围为 0～359 度。写寄存器
+不会自动切换 FSELECT 或 PSELECT；选择函数只改变引脚，不发送 SPI 数据。原有
+`ad9834_set_frequency_hz()` 保留并固定写入 FREQ0，当前 `dds_control` 自动本振补偿
+继续使用该接口，因此原有测量流程不受备用寄存器设置功能影响。
 
 收到 `M` 后，系统先请求 TIM5 立即测频，并按粗测结果设置一次 DDS 初值：
 
@@ -294,7 +309,7 @@ FFT 采集期间暂停低速串口屏发送，完成一帧后在显示空档刷�
 
 - `Core/User/system.c/.h`：用户模块统一入口。
 - `Core/User/frequency_measure.c/.h`：TIM5+DWT 外部频率测量。
-- `Core/User/ad9834.c/.h`：AD9834 SPI 驱动。
+- `Core/User/ad9834.c/.h`：AD9834 双频率、双相位寄存器 SPI 驱动。
 - `Core/User/dds_control.c/.h`：低侧本振规划和更新控制。
 - `Core/User/adc_dual.c/.h`：ADC1/ADC2 双重同步 DMA 采集。
 - `Core/User/fft_f32_65536.c/.h`：65536 点 F32 FFT 实现。
@@ -336,7 +351,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 - `frequency_measure_hz`：TIM5 粗测频率。
 - `dds_control_diagnostics`：DDS 目标、状态和更新次数。
-- `ad9834_diagnostics`：SPI 写入、输出频率和 HAL 状态。
+- `ad9834_diagnostics`：SPI 写入、两组频率/相位、当前选择和 HAL 状态。
 - `adc_dual_stats`：DMA、溢出、错误和近期原始码统计。
 - `measurement_fft_diagnostics`：双通道 raw/校准频率、电压、THD、相位和质量状态。
 - `vga_control_diagnostics`：档位、DAC 指令电压、PA4 实测模型电压、VG 和增益。

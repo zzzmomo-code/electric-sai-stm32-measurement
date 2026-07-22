@@ -84,6 +84,10 @@ class DdsContractTest(unittest.TestCase):
             "ad9834_select_frequency_register(ad9834_frequency_register_0);",
             source,
         )
+        self.assertIn(
+            "ad9834_select_phase_register(ad9834_phase_register_0);",
+            source,
+        )
 
     def test_driver_declares_dual_frequency_and_phase_writers(self) -> None:
         header = read_text("Core/User/ad9834.h")
@@ -121,10 +125,18 @@ class DdsContractTest(unittest.TestCase):
         self.assertGreaterEqual(source.count("ad9834_frequency_register_1"), 2)
         self.assertGreaterEqual(source.count("ad9834_phase_register_0"), 3)
         self.assertGreaterEqual(source.count("ad9834_phase_register_1"), 2)
-        self.assertIn(
-            "ad9834_select_phase_register(ad9834_phase_register_0);",
-            source,
-        )
+
+    def test_readme_documents_dual_register_programming_and_selection(self) -> None:
+        readme = read_text("README.md")
+
+        for text in (
+            "ad9834_set_frequency_register_hz(ad9834_frequency_register_1, 2000000u);",
+            "ad9834_set_phase_register_degrees(ad9834_phase_register_1, 90u);",
+            "ad9834_select_frequency_register(ad9834_frequency_register_1);",
+            "ad9834_select_phase_register(ad9834_phase_register_1);",
+            "ad9834_set_frequency_hz()",
+        ):
+            self.assertIn(text, readme)
 
     def test_formal_mode_tracks_input_minus_100khz(self) -> None:
         header = read_text("Core/User/dds_control.h")
