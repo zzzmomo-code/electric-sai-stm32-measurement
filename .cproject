@@ -83,7 +83,7 @@
 						</toolChain>
 					</folderInfo>
 					<sourceEntries>
-						<entry excluding="User/ads8688.c|User/ads8688_storage.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
 						<entry excluding="stm32h7xx_hal_msp_template.c|stm32h7xx_hal_timebase_rtc_alarm_template.c|stm32h7xx_hal_timebase_rtc_wakeup_template.c|stm32h7xx_hal_timebase_tim_template.c|stm32h7xx_ll_adc.c|stm32h7xx_ll_bdma.c|stm32h7xx_ll_comp.c|stm32h7xx_ll_cordic.c|stm32h7xx_ll_crc.c|stm32h7xx_ll_crs.c|stm32h7xx_ll_dac.c|stm32h7xx_ll_delayblock.c|stm32h7xx_ll_dma.c|stm32h7xx_ll_dma2d.c|stm32h7xx_ll_exti.c|stm32h7xx_ll_fmac.c|stm32h7xx_ll_fmc.c|stm32h7xx_ll_gpio.c|stm32h7xx_ll_hrtim.c|stm32h7xx_ll_i2c.c|stm32h7xx_ll_lptim.c|stm32h7xx_ll_lpuart.c|stm32h7xx_ll_mdma.c|stm32h7xx_ll_opamp.c|stm32h7xx_ll_pwr.c|stm32h7xx_ll_rcc.c|stm32h7xx_ll_rng.c|stm32h7xx_ll_rtc.c|stm32h7xx_ll_sdmmc.c|stm32h7xx_ll_spi.c|stm32h7xx_ll_swpmi.c|stm32h7xx_ll_tim.c|stm32h7xx_ll_usart.c|stm32h7xx_ll_usb.c|stm32h7xx_ll_utils.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers/STM32H7xx_HAL_Driver/Src"/>
 					</sourceEntries>
 				</configuration>
@@ -166,7 +166,7 @@
 						</toolChain>
 					</folderInfo>
 					<sourceEntries>
-						<entry excluding="User/ads8688.c|User/ads8688_storage.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
+						<entry flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Core"/>
 						<entry excluding="stm32h7xx_hal_msp_template.c|stm32h7xx_hal_timebase_rtc_alarm_template.c|stm32h7xx_hal_timebase_rtc_wakeup_template.c|stm32h7xx_hal_timebase_tim_template.c|stm32h7xx_ll_adc.c|stm32h7xx_ll_bdma.c|stm32h7xx_ll_comp.c|stm32h7xx_ll_cordic.c|stm32h7xx_ll_crc.c|stm32h7xx_ll_crs.c|stm32h7xx_ll_dac.c|stm32h7xx_ll_delayblock.c|stm32h7xx_ll_dma.c|stm32h7xx_ll_dma2d.c|stm32h7xx_ll_exti.c|stm32h7xx_ll_fmac.c|stm32h7xx_ll_fmc.c|stm32h7xx_ll_gpio.c|stm32h7xx_ll_hrtim.c|stm32h7xx_ll_i2c.c|stm32h7xx_ll_lptim.c|stm32h7xx_ll_lpuart.c|stm32h7xx_ll_mdma.c|stm32h7xx_ll_opamp.c|stm32h7xx_ll_pwr.c|stm32h7xx_ll_rcc.c|stm32h7xx_ll_rng.c|stm32h7xx_ll_rtc.c|stm32h7xx_ll_sdmmc.c|stm32h7xx_ll_spi.c|stm32h7xx_ll_swpmi.c|stm32h7xx_ll_tim.c|stm32h7xx_ll_usart.c|stm32h7xx_ll_usb.c|stm32h7xx_ll_utils.c" flags="VALUE_WORKSPACE_PATH|RESOLVED" kind="sourcePath" name="Drivers/STM32H7xx_HAL_Driver/Src"/>
 					</sourceEntries>
 				</configuration>
