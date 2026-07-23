@@ -734,11 +734,20 @@ ads8688_status_t ads8688_start(void)
  */
 ads8688_status_t ads8688_stop(void)
 {
+    ads8688_status_t status;
+
     if (ads8688_initialized == 0u)
     {
         return ADS8688_STATUS_NOT_INITIALIZED;
     }
-    return ads8688_stop_dma();
+    status = ads8688_stop_dma();
+    if (status != ADS8688_STATUS_OK)
+    {
+        ads8688_initialized = 0u;
+        ads8688_recovery_pending = 1u;
+        ads8688_diagnostics.spi_dma_errors++;
+    }
+    return status;
 }
 
 /**
@@ -780,6 +789,16 @@ void ads8688_process(void)
     }
 
     pending_flags = ads8688_snapshot_dma_flags();
+    if (pending_flags == 3u)
+    {
+        (void)ads8688_claim_flag(&ads8688_dma_half_flag);
+        (void)ads8688_claim_flag(&ads8688_dma_full_flag);
+        ads8688_diagnostics.lost_samples += ADS8688_DMA_WORD_COUNT;
+        measurement_fft_resynchronize();
+        ads8688_recovery_pending = 1u;
+        (void)ads8688_recover();
+        return;
+    }
     if (ads8688_expected_half == 0u)
     {
         if ((pending_flags & 1u) != 0u)
@@ -851,6 +870,9 @@ void ads8688_process(void)
 ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
 {
     ads8688_status_t status;
+    ads8688_mode_t previous_mode;
+    uint8_t previous_channel_mask;
+    uint8_t previous_channel;
     uint8_t was_running;
 
     if (ads8688_initialized == 0u)
@@ -862,6 +884,9 @@ ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
+    previous_mode = ads8688_mode;
+    previous_channel_mask = ads8688_channel_mask;
+    previous_channel = ads8688_current_channel;
     was_running = ads8688_running;
     ads8688_rollback_should_restart = was_running;
     status = ads8688_stop_dma();
@@ -895,6 +920,9 @@ ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
         status = ads8688_start_dma();
         if (status != ADS8688_STATUS_OK)
         {
+            ads8688_mode = previous_mode;
+            ads8688_channel_mask = previous_channel_mask;
+            ads8688_current_channel = previous_channel;
             return ads8688_rollback_after_failure(status);
         }
     }
@@ -910,7 +938,9 @@ ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
 ads8688_status_t ads8688_set_manual_mode(uint8_t channel)
 {
     ads8688_status_t status;
+    ads8688_mode_t previous_mode;
     uint16_t command;
+    uint8_t previous_channel;
     uint8_t was_running;
 
     if (ads8688_initialized == 0u)
@@ -922,6 +952,8 @@ ads8688_status_t ads8688_set_manual_mode(uint8_t channel)
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
+    previous_mode = ads8688_mode;
+    previous_channel = ads8688_current_channel;
     was_running = ads8688_running;
     ads8688_rollback_should_restart = was_running;
     status = ads8688_stop_dma();
@@ -947,6 +979,8 @@ ads8688_status_t ads8688_set_manual_mode(uint8_t channel)
         status = ads8688_start_dma();
         if (status != ADS8688_STATUS_OK)
         {
+            ads8688_mode = previous_mode;
+            ads8688_current_channel = previous_channel;
             return ads8688_rollback_after_failure(status);
         }
     }
@@ -985,6 +1019,8 @@ float ads8688_get_effective_sample_rate_hz(void)
 {
     uint32_t kernel_clock_hz;
     uint32_t prescaler;
+    uint8_t enabled_channel_count = 0u;
+    uint8_t channel;
     float frame_rate_hz;
 
     kernel_clock_hz = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_SPI3);
@@ -1020,9 +1056,20 @@ float ads8688_get_effective_sample_rate_hz(void)
 
     frame_rate_hz = ((float)kernel_clock_hz / (float)prescaler)
                     / ADS8688_SPI_FRAME_CYCLES;
-    return (ads8688_mode == ADS8688_MODE_AUTO)
-               ? frame_rate_hz * 0.5f
-               : frame_rate_hz;
+    if (ads8688_mode != ADS8688_MODE_AUTO)
+    {
+        return frame_rate_hz;
+    }
+    for (channel = 0u; channel < ADS8688_CHANNEL_COUNT; channel++)
+    {
+        if ((ads8688_channel_mask & (uint8_t)(1u << channel)) != 0u)
+        {
+            enabled_channel_count++;
+        }
+    }
+    return (enabled_channel_count != 0u)
+               ? frame_rate_hz / (float)enabled_channel_count
+               : 0.0f;
 }
 
 /**
@@ -1036,6 +1083,8 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
                                             ads8688_range_t range)
 {
     ads8688_status_t status;
+    ads8688_range_t previous_range;
+    uint8_t previous_channel;
     uint8_t was_running;
 
     if (ads8688_initialized == 0u)
@@ -1048,6 +1097,8 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
+    previous_range = ads8688_channel_ranges[channel];
+    previous_channel = ads8688_current_channel;
     was_running = ads8688_running;
     ads8688_rollback_should_restart = was_running;
     status = ads8688_stop_dma();
@@ -1084,6 +1135,8 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
         status = ads8688_start_dma();
         if (status != ADS8688_STATUS_OK)
         {
+            ads8688_channel_ranges[channel] = previous_range;
+            ads8688_current_channel = previous_channel;
             return ads8688_rollback_after_failure(status);
         }
     }

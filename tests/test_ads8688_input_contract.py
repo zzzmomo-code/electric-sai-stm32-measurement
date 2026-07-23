@@ -62,6 +62,30 @@ class Ads8688HardwareContract(unittest.TestCase):
         self.assertNotIn("GPIO_PIN_8", source)
         self.assertNotIn("GPIO_PIN_9", source)
 
+    def test_driver_recovers_backlog_and_uses_enabled_channel_count(self):
+        source = read("Core/User/ads8688.c")
+        self.assertIn("if (pending_flags == 3u)", source)
+        self.assertIn("measurement_fft_resynchronize();", source)
+        public_stop = source.split(
+            "ads8688_status_t ads8688_stop(void)", 1
+        )[1].split("\n}", 1)[0]
+        self.assertIn("ads8688_recovery_pending = 1u;", public_stop)
+        self.assertIn("ads8688_initialized = 0u;", public_stop)
+        self.assertIn("enabled_channel_count++", source)
+        self.assertIn(
+            "frame_rate_hz / (float)enabled_channel_count",
+            source,
+        )
+
+    def test_driver_restores_saved_state_if_dma_restart_fails(self):
+        source = read("Core/User/ads8688.c")
+        for assignment in (
+            "ads8688_mode = previous_mode;",
+            "ads8688_channel_mask = previous_channel_mask;",
+            "ads8688_channel_ranges[channel] = previous_range;",
+        ):
+            self.assertIn(assignment, source)
+
 
 class MeasurementInputContract(unittest.TestCase):
     def test_fft_profile_and_single_ingest_exist(self):
@@ -96,6 +120,7 @@ class MeasurementInputContract(unittest.TestCase):
 
     def test_manager_and_system_integration_exist(self):
         header = read("Core/User/measurement_input.h")
+        manager = read("Core/User/measurement_input.c")
         source = read("Core/User/system.c")
         for name in (
             "measurement_input_select",
@@ -107,6 +132,10 @@ class MeasurementInputContract(unittest.TestCase):
         self.assertIn("measurement_input_init();", source)
         self.assertIn("measurement_input_process();", source)
         self.assertNotIn("adc_dual_init();", source)
+        self.assertIn("measurement_input_restore_ads", manager)
+        self.assertIn("validation_calibration", manager)
+        self.assertIn("status == ADS8688_STATUS_NOT_INITIALIZED", manager)
+        self.assertIn("status = ads8688_init();", manager)
 
     def test_ads8688_is_in_unified_header_and_active_build(self):
         header = read("Core/User/system.h")
