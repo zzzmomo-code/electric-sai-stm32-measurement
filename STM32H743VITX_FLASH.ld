@@ -139,6 +139,18 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >RAM_D1 AT> FLASH
 
+  /*
+   * DMA1 cannot access DTCM on STM32H743. ADC/DAC circular buffers are placed
+   * in D2 SRAM and aligned to a complete Cortex-M7 D-Cache line.
+   */
+  .dma_buffer (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.dma_buffer)
+    *(.dma_buffer*)
+    . = ALIGN(32);
+  } >RAM_D2
+
   /* Uninitialized data section */
   . = ALIGN(4);
   .bss :
@@ -176,5 +188,4 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
-
 
