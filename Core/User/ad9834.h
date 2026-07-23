@@ -132,4 +132,12 @@ void ad9834_select_phase_register(ad9834_phase_register_t phase_register);
  */
 uint32_t ad9834_calculate_tuning_word(uint32_t frequency_hz);
 
+/**
+ * @brief 使用双频率寄存器无中断地更新第一块AD9834输出频率。
+ * @param frequency_hz 目标输出频率，单位Hz。
+ * @return 驱动状态。
+ * @note 先写入当前非活动频率寄存器，完整成功后才切换FSELECT；
+ * 参数或SPI写入失败时保持当前输出不变，禁止在中断中调用。
+ */
+ad9834_status_t dds_set_frequency(uint32_t frequency_hz);
 #endif /* AD9834_H */

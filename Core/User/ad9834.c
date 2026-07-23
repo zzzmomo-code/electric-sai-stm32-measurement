@@ -298,3 +298,41 @@ ad9834_status_t ad9834_init(uint32_t initial_frequency_hz)
     ad9834_diagnostics.initialized = 1u;
     return ad9834_status_ok;
 }
+
+
+static ad9834_frequency_register_t active_reg =
+    ad9834_frequency_register_0;
+
+
+/**
+ * @brief 使用双频率寄存器无中断地更新第一块AD9834输出频率。
+ * @param frequency_hz 目标输出频率，单位Hz。
+ * @return 驱动状态。
+ * @note 先写入当前非活动频率寄存器，完整成功后才切换FSELECT；
+ * 参数或SPI写入失败时保持当前输出不变，禁止在中断中调用。
+ */
+ad9834_status_t dds_set_frequency(uint32_t frequency_hz)
+{
+    ad9834_frequency_register_t inactive_reg;
+
+    inactive_reg =
+        (active_reg == ad9834_frequency_register_0)
+        ? ad9834_frequency_register_1
+        : ad9834_frequency_register_0;
+
+    ad9834_status_t status =
+        ad9834_set_frequency_register_hz(
+            inactive_reg,
+            frequency_hz);
+
+    if (status != ad9834_status_ok)
+    {
+        return status;
+    }
+
+    ad9834_select_frequency_register(inactive_reg);
+
+    active_reg = inactive_reg;
+
+    return ad9834_status_ok;
+}
