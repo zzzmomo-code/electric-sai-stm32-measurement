@@ -50,7 +50,7 @@
 #define DPLL_LOCK_CONFIRM_BLOCKS            (12u)
 #define DPLL_FREQUENCY_CORRECTION_LIMIT_HZ  (5000.0f)
 
-/* 上电先用波形直通验证模拟链路，串口命令 1 切换到 DPLL。 */
+/* 本项目以锁相为主目标，上电直接进入 DPLL；串口命令 0 可切换到直通。 */
 #define SIGNAL_DEFAULT_TARGET_PHASE_DEG     (0.0f)
 #define UART_DEBUG_TX_BUFFER_SIZE           (256u)
 

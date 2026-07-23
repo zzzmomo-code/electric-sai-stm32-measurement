@@ -24,7 +24,7 @@ __attribute__((section(".dma_buffer"), aligned(SIGNAL_DMA_CACHE_LINE_BYTES)))
 static uint16_t dac_dma_buffer[SIGNAL_DMA_BUFFER_SAMPLES];
 
 static dpll_t signal_dpll;
-static signal_mode_t current_mode = SIGNAL_MODE_DIRECT;
+static signal_mode_t current_mode = SIGNAL_MODE_DPLL;
 static float target_phase_deg = SIGNAL_DEFAULT_TARGET_PHASE_DEG;
 static uint32_t processed_half_blocks = 0u;
 static uint32_t adc_error_count = 0u;
@@ -150,7 +150,7 @@ void signal_chain_init(void)
     uint32_t index;
     HAL_StatusTypeDef status;
 
-    current_mode = SIGNAL_MODE_DIRECT;
+    current_mode = SIGNAL_MODE_DPLL;
     target_phase_deg = SIGNAL_DEFAULT_TARGET_PHASE_DEG;
     processed_half_blocks = 0u;
     adc_error_count = 0u;
