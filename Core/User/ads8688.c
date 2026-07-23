@@ -5,7 +5,7 @@
  * 模块用途：通过 SPI3 配置 ADS8688，并使用循环 DMA 连续采集、切换模式及故障恢复。
  * GPIO 引脚映射：PA15/CS、PC10/SCLK、PC11/SDO、PC12/SDI、PD0/DAISY、PD1/RST。
  * 依赖的外设和 CubeIDE 配置：SPI3 使用 32 位数据帧、第二边沿采样、硬件低有效 NSS、
- * 1 周期数据间空闲；RX/TX DMA 均为循环模式，RX 地址递增、TX 地址不递增。
+ * 2 周期数据间空闲；RX/TX DMA 均为循环模式，RX 地址递增、TX 地址不递增。
  * 初始化方法：CubeMX 完成 GPIO 与 SPI3 初始化后调用 ads8688_init()，该函数不启动 DMA。
  * 调用方法：选择 ADS 后调用 ads8688_start()，主循环持续调用 ads8688_process()。
  */
@@ -24,10 +24,7 @@
 #define ADS8688_SPI_TIMEOUT_MS            10u
 #define ADS8688_DMA_WORD_COUNT            1024u
 #define ADS8688_DMA_HALF_WORD_COUNT       (ADS8688_DMA_WORD_COUNT / 2u)
-#define ADS8688_SPI_FRAME_CYCLES           33.0f
-
-/** 复位低电平期间执行的有界空操作次数，保证持续时间安全超过 400 ns。 */
-#define ADS8688_RESET_HOLD_NOP_COUNT      256u
+#define ADS8688_SPI_FRAME_CYCLES           34.0f
 
 /** 模块是否已经完成器件配置及读回校验。 */
 static uint8_t ads8688_initialized;
@@ -115,11 +112,11 @@ static uint32_t ads8688_make_command(uint16_t command)
 }
 
 /**
- * @brief 使用 SPI2 交换一个完整的 32 位 ADS8688 数据单元。
+ * @brief 使用 SPI3 交换一个完整的 32 位 ADS8688 数据单元。
  * @param tx_word 待发送的 32 位帧。
  * @param received_word 用于接收 32 位返回帧的指针。
  * @return 传输成功返回 ADS8688_STATUS_OK，否则返回 ADS8688_STATUS_HAL_ERROR。
- * @note 阻塞占用 SPI2，最长等待 ADS8688_SPI_TIMEOUT_MS，不启动 DMA。
+ * @note 阻塞占用 SPI3，最长等待 ADS8688_SPI_TIMEOUT_MS，不启动 DMA。
  */
 static ads8688_status_t ads8688_transfer_word(uint32_t tx_word,
                                                uint32_t *received_word)
@@ -145,7 +142,7 @@ static ads8688_status_t ads8688_transfer_word(uint32_t tx_word,
  * @brief 发送一个无需解析返回数据的完整 ADS8688 命令帧。
  * @param command 十六位 ADS8688 命令。
  * @return 命令发送成功返回 ADS8688_STATUS_OK，否则返回 ADS8688_STATUS_HAL_ERROR。
- * @note 阻塞占用 SPI2 一次，接收数据会被丢弃。
+ * @note 阻塞占用 SPI3 一次，接收数据会被丢弃。
  */
 static ads8688_status_t ads8688_send_command(uint16_t command)
 {
@@ -160,7 +157,7 @@ static ads8688_status_t ads8688_send_command(uint16_t command)
  * @param address 程序寄存器地址。
  * @param register_value 用于接收八位寄存器值的指针。
  * @return 读取成功返回 ADS8688_STATUS_OK，否则返回 ADS8688_STATUS_HAL_ERROR。
- * @note 阻塞占用 SPI2 一次，并按返回帧 bits[15:8] 提取寄存器数据。
+ * @note 阻塞占用 SPI3 一次，并按返回帧 bits[15:8] 提取寄存器数据。
  */
 static ads8688_status_t ads8688_read_register(uint8_t address,
                                                uint8_t *register_value)
@@ -184,7 +181,7 @@ static ads8688_status_t ads8688_read_register(uint8_t address,
  * @param address 程序寄存器地址。
  * @param value 待写入并校验的八位值。
  * @return 成功返回 ADS8688_STATUS_OK；HAL 失败或读回不符时返回对应错误状态。
- * @note 阻塞占用 SPI2 两次，写帧与读回帧相互独立。
+ * @note 阻塞占用 SPI3 两次，写帧与读回帧相互独立。
  */
 static ads8688_status_t ads8688_write_and_verify_register(uint8_t address,
                                                            uint8_t value)
@@ -214,16 +211,15 @@ static ads8688_status_t ads8688_write_and_verify_register(uint8_t address,
 }
 
 /**
- * @brief 执行一次 ADS8688 硬件复位、寄存器配置和命令启动尝试。
+ * @brief 执行一次 ADS8688 掉电唤醒、寄存器配置和命令启动尝试。
  * @param 无。
  * @return 全部配置及校验成功返回 ADS8688_STATUS_OK，否则返回最终错误状态。
- * @note 改变 PD8、PD9 电平，延时至少 15 ms，并阻塞使用 SPI2；不启动 DMA。
+ * @note PD1 低电平保持 1 ms 进入掉电，AUTO_RST 唤醒后等待 15 ms；不启动 DMA。
  */
 static ads8688_status_t ads8688_initialize_attempt(void)
 {
     ads8688_status_t status;
     uint8_t address;
-    volatile uint32_t nop_index;
 
     HAL_GPIO_WritePin(ADS8688_DAISY_GPIO_Port,
                       ADS8688_DAISY_Pin,
@@ -231,15 +227,16 @@ static ads8688_status_t ads8688_initialize_attempt(void)
     HAL_GPIO_WritePin(ADS8688_RST_GPIO_Port,
                       ADS8688_RST_Pin,
                       GPIO_PIN_RESET);
-    for (nop_index = 0u;
-         nop_index < ADS8688_RESET_HOLD_NOP_COUNT;
-         nop_index++)
-    {
-        __NOP();
-    }
+    HAL_Delay(1u);
     HAL_GPIO_WritePin(ADS8688_RST_GPIO_Port,
                       ADS8688_RST_Pin,
                       GPIO_PIN_SET);
+
+    status = ads8688_send_command(ADS8688_COMMAND_AUTO_RST);
+    if (status != ADS8688_STATUS_OK)
+    {
+        return status;
+    }
     HAL_Delay(15u);
 
     status = ads8688_write_and_verify_register(
@@ -346,7 +343,7 @@ static void ads8688_advance_channel(void)
 }
 
 /**
- * @brief 清除事件状态并启动 SPI2 循环 DMA 采集。
+ * @brief 清除事件状态并启动 SPI3 循环 DMA 采集。
  * @param 无。
  * @return 启动成功返回 ADS8688_STATUS_OK，否则返回 ADS8688_STATUS_HAL_ERROR。
  * @note 重置 DMA 半区顺序，TX 端重复发送一个 32 位 NO_OP 帧。
@@ -385,7 +382,7 @@ static ads8688_status_t ads8688_start_dma(void)
 }
 
 /**
- * @brief 使用阻塞 Abort 停止 SPI2 DMA 采集。
+ * @brief 使用阻塞 Abort 停止 SPI3 DMA 采集。
  * @param 无。
  * @return 停止成功返回 ADS8688_STATUS_OK，否则返回 ADS8688_STATUS_HAL_ERROR。
  * @note 仅在返回成功后，调用者才可执行阻塞 SPI 传输或硬件复位。
@@ -1013,7 +1010,7 @@ ads8688_status_t ads8688_set_dual_channel(void)
  * @brief 根据 SPI3 内核时钟、预分频和通道模式计算每通道采样率。
  * @param 无。
  * @return 当前每个有效通道的标称采样率，计算失败返回 0。
- * @note 每个转换帧按 32 位数据和 1 个帧间时钟计算。
+ * @note 每个转换帧按 32 位数据和 2 个帧间时钟计算。
  */
 float ads8688_get_effective_sample_rate_hz(void)
 {
@@ -1230,7 +1227,7 @@ ads8688_status_t ads8688_get_diagnostics(
 }
 
 /**
- * @brief SPI2 DMA 前半区传输完成回调。
+ * @brief SPI3 DMA 前半区传输完成回调。
  * @param hspi 触发回调的 SPI 句柄，本回调不在中断中筛选实例。
  * @return 无。
  * @note 中断上下文仅置位前半区完成标志。
@@ -1244,7 +1241,7 @@ void HAL_SPI_TxRxHalfCpltCallback(SPI_HandleTypeDef *hspi)
 }
 
 /**
- * @brief SPI2 DMA 全缓冲区传输完成回调。
+ * @brief SPI3 DMA 全缓冲区传输完成回调。
  * @param hspi 触发回调的 SPI 句柄，本回调不在中断中筛选实例。
  * @return 无。
  * @note 中断上下文仅置位全缓冲区完成标志。

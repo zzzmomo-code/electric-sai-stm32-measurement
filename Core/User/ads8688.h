@@ -115,7 +115,7 @@ ads8688_status_t ads8688_set_dual_channel(void);
  * @brief 获取当前模式下每个有效通道的标称采样率。
  * @param 无。
  * @return 单通道为 SPI 帧率，双通道为 SPI 帧率的一半，单位 sample/s。
- * @note SPI3 每帧按 32 位数据加 1 个周期帧间隔计算。
+ * @note SPI3 每帧按 32 位数据加 2 个周期帧间隔计算。
  */
 float ads8688_get_effective_sample_rate_hz(void);
 

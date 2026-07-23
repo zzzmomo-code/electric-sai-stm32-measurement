@@ -12,7 +12,6 @@
 #include "system.h"
 
 #define MEASUREMENT_INPUT_INTERNAL_SAMPLE_RATE_HZ 600000.0f
-#define MEASUREMENT_INPUT_ADS_FRAME_CYCLES 33.0f
 
 /** 当前活动采集源与累计切换诊断。 */
 static measurement_input_diagnostics_t measurement_input_diagnostics;
