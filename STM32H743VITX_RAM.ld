@@ -138,6 +138,15 @@ SECTIONS
     _edata = .;        /* define a global symbol at data end */
   } >DTCMRAM AT> RAM_EXEC
 
+  /* ADC/DAC DMA 缓冲区：DMA1 可访问的 D2 SRAM，32 字节对齐。 */
+  .dma_buffer (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.dma_buffer)
+    *(.dma_buffer*)
+    . = ALIGN(32);
+  } >RAM_D2
+
   /* Uninitialized data section */
   . = ALIGN(4);
   .bss :

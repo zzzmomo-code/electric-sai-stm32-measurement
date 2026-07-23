@@ -21,7 +21,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "system.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -118,7 +118,7 @@ int main(void)
   MX_DAC1_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-
+  system_init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -128,6 +128,7 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    system_process();
   }
   /* USER CODE END 3 */
 }
