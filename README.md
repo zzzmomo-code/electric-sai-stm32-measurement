@@ -382,14 +382,19 @@ ADS8688 已接入 SPI3，系统上电仍默认启动内部 ADC1/ADC2。运行中
 
 SPI3 使用 Master Full-Duplex、Motorola、32 bit、MSB First、CPOL Low、
 CPHA 2 Edge、Prescaler 4、NSS Pulse Enabled、Master SS Idleness 0 Cycle、
-Master Inter Data Idleness 1 Cycle 和 Master Keep IO State Enabled。
+Master Inter Data Idleness 2 Cycles 和 Master Keep IO State Enabled。
 DMA1 Stream1 为 SPI3_RX，Circular、Word、内存递增；Stream2 为 SPI3_TX，
 Circular、Word、内存不递增；两个 DMA 中断抢占优先级均为 5。
 
-当前 SPI3 SCLK 为 16 MHz。按 32 位数据加 1 个 SCLK 帧间隔计算，ADS8688
-总帧率约为 484.85 kframe/s；AIN0/AIN1 双通道时每通道约 242.42 kSPS，
-单通道时约 484.85 kSPS。驱动使用实际 SPI123 内核时钟和预分频值动态计算
+当前 SPI3 SCLK 为 16 MHz。按 32 位数据加 2 个 SCLK 帧间隔计算，ADS8688
+总帧率约为 470.59 kframe/s；AIN0/AIN1 双通道时每通道约 235.29 kSPS，
+单通道时约 470.59 kSPS。驱动使用实际 SPI123 内核时钟和预分频值动态计算
 `ads8688_get_effective_sample_rate_hz()`，以后在 CubeMX 改 SPI3 时钟后无需修改常量。
+
+初始化和故障恢复时，驱动先将 PD1 拉低 1 ms，使 ADS8688 明确进入
+PWR_DN，再拉高并立即发送 `AUTO_RST` 命令退出 PWR_DN，等待 15 ms 后配置并
+校验寄存器，最后再次发送 `AUTO_RST` 进入连续采样。PD1 的低电平时间不能被
+误认为普通硬复位脉冲：ADS8688 的短复位脉冲窗口仅为 40～100 ns。
 
 ADS8688 所有通道默认配置为双极性 ±5.12 V，仍保留以下五种量程：
 
@@ -419,6 +424,6 @@ ADS8688 所有通道默认配置为双极性 ±5.12 V，仍保留以下五种量
 丢样、恢复及历史覆盖计数。
 
 实板验证时先观察 PA15：每个 32 位帧后 CS 高电平必须满足 ADS8688
-数据手册的最小时间。如果示波器测得高电平不足 30 ns，应在 CubeMX 将
-Master Inter Data Idleness 从 1 Cycle 增加到 2 Cycles，重新生成代码，
-并重新确认实际采样率与相位补偿。
+数据手册的最小时间。STM32H743 的硬件 NSS 帧间脉冲要求
+Master Inter Data Idleness 大于 1 Cycle，因此本工程固定使用 2 Cycles；
+CubeMX 重新生成代码后应复查该值，并重新确认实际采样率与相位补偿。
