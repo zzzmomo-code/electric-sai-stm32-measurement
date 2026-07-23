@@ -373,7 +373,7 @@ ADS8688 已接入 SPI3，系统上电仍默认启动内部 ADC1/ADC2。运行中
 
 | ADS8688 信号 | MCU 引脚 | CubeMX 功能 |
 |---|---|---|
-| FSYNC/NSS | PA15 | SPI3_NSS，硬件输出，低有效 |
+| CS | PA15 | SPI3_NSS，硬件输出，低有效 |
 | SCLK | PC10 | SPI3_SCK |
 | SDO | PC11 | SPI3_MISO |
 | SDI | PC12 | SPI3_MOSI |
@@ -418,7 +418,7 @@ ADS8688 所有通道默认配置为双极性 ±5.12 V，仍保留以下五种量
 切换次数和最近底层状态；`ads8688_get_diagnostics()` 保留 SPI/DMA 错误、
 丢样、恢复及历史覆盖计数。
 
-实板验证时先观察 PA15：每个 32 位帧后 FSYNC 高电平必须满足 ADS8688
+实板验证时先观察 PA15：每个 32 位帧后 CS 高电平必须满足 ADS8688
 数据手册的最小时间。如果示波器测得高电平不足 30 ns，应在 CubeMX 将
 Master Inter Data Idleness 从 1 Cycle 增加到 2 Cycles，重新生成代码，
 并重新确认实际采样率与相位补偿。

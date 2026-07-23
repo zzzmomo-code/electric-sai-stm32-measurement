@@ -3,7 +3,7 @@
  * @brief ADS8688 采集模块公共接口。
  *
  * 模块用途：提供 ADS8688 初始化、生命周期、单双通道、量程、采样率及数据读取接口。
- * GPIO 引脚映射：PA15/SPI3_NSS 连接 FSYNC，PC10/SPI3_SCK 连接 SCLK，
+ * GPIO 引脚映射：PA15/SPI3_NSS 连接低有效 CS，PC10/SPI3_SCK 连接 SCLK，
  * PC11/SPI3_MISO 连接 SDO，PC12/SPI3_MOSI 连接 SDI，PD0 连接 DAISY，PD1 连接 RST。
  * 依赖的外设和 CubeIDE 配置：SPI3 32 位、CPOL Low、CPHA 2 Edge、硬件 NSS，
  * DMA1 Stream1 RX Circular Word/递增、Stream2 TX Circular Word/不递增及优先级 5 中断。

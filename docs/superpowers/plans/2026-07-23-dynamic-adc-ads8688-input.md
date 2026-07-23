@@ -605,7 +605,7 @@ Document:
 - 600 kSPS, approximately 242.42 kSPS, and approximately 484.85 kSPS profiles;
 - sequential-channel phase correction;
 - DDS2-to-SPI6 migration remains pending;
-- oscilloscope checks for 32 SCLK and FSYNC high time.
+- oscilloscope checks for 32 SCLK and CS high time.
 
 - [ ] **Step 2: Complete Chinese comments**
 
@@ -653,7 +653,7 @@ git commit -m "docs: explain selectable ADS8688 measurement input"
 
 Report as not yet verified until measured on hardware:
 
-- PA15 FSYNC high time at current 1-cycle inter-data idleness;
+- PA15 CS high time at current 1-cycle inter-data idleness;
 - exactly 32 PC10 SCLK pulses per frame;
 - ADS8688 register read-back;
 - known DC/sine voltage accuracy;

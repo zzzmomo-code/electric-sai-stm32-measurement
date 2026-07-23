@@ -15,7 +15,7 @@ ADS8688 使用 SPI3：
 | 信号 | STM32H743 引脚 | CubeMX 功能 |
 |---|---|---|
 | SCK | PC10 | SPI3_SCK |
-| FSYNC | PA15 | SPI3_NSS |
+| CS | PA15 | SPI3_NSS |
 | MISO | PC11 | SPI3_MISO |
 | MOSI | PC12 | SPI3_MOSI |
 | DAISY | PD0 | GPIO_Output，初始低电平 |
@@ -317,10 +317,10 @@ ADS8688 诊断继续统计初始化失败、SPI/DMA 错误、丢失样本、历�
 
 硬件验证覆盖：
 
-- 示波器检查 PA15 FSYNC 与 PC10 SCLK；
+- 示波器检查 PA15 CS 与 PC10 SCLK；
 - 每个 ADS8688 帧包含 32 个 SCLK；
-- 相邻帧之间 FSYNC 确实回到高电平且高电平不少于 30 ns；
-- 若当前 1 周期帧间空闲不能满足 FSYNC 时序，硬件配置必须改为 2 周期并重新计算
+- 相邻帧之间 CS 确实回到高电平且高电平不少于 30 ns；
+- 若当前 1 周期帧间空闲不能满足 CS 时序，硬件配置必须改为 2 周期并重新计算
   实际采样率；
 - 通过寄存器读回确认 AIN0/AIN1 默认 ±5.12 V；
 - 通过已知直流和正弦输入验证电压、频率和 THD；

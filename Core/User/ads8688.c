@@ -3,7 +3,7 @@
  * @brief ADS8688 寄存器传输与器件初始化实现。
  *
  * 模块用途：通过 SPI3 配置 ADS8688，并使用循环 DMA 连续采集、切换模式及故障恢复。
- * GPIO 引脚映射：PA15/FSYNC、PC10/SCLK、PC11/SDO、PC12/SDI、PD0/DAISY、PD1/RST。
+ * GPIO 引脚映射：PA15/CS、PC10/SCLK、PC11/SDO、PC12/SDI、PD0/DAISY、PD1/RST。
  * 依赖的外设和 CubeIDE 配置：SPI3 使用 32 位数据帧、第二边沿采样、硬件低有效 NSS、
  * 1 周期数据间空闲；RX/TX DMA 均为循环模式，RX 地址递增、TX 地址不递增。
  * 初始化方法：CubeMX 完成 GPIO 与 SPI3 初始化后调用 ads8688_init()，该函数不启动 DMA。
