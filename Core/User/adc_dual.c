@@ -17,6 +17,9 @@ volatile uint8_t adc_dual_dma_half_flag;
 volatile uint8_t adc_dual_dma_full_flag;
 volatile uint8_t adc_dual_error_flag;
 
+/** 下一个可信 DMA 半区，0 表示前半区，1 表示后半区。 */
+static uint8_t adc_dual_expected_half;
+
 static adc_dual_stats_t adc_dual_stats;
 
 #if defined(SYSTEM_ADC_DUAL_AVAILABLE)
@@ -211,6 +214,29 @@ static void adc_dual_process_block(uint32_t start_index,
     }
 }
 
+/**
+ * @brief 处理一个已经确认完成的 DMA 半区并推进期望顺序。
+ * @param half_index 半区编号，0 为前半区，1 为后半区。
+ * @return 无。
+ * @note 只由主循环调用；调用前必须确认对应 DMA 标志已经被领取。
+ */
+static void adc_dual_process_completed_half(uint8_t half_index)
+{
+    if (half_index == 0u)
+    {
+        adc_dual_stats.dma_half_count++;
+        adc_dual_process_block(0u, ADC_DUAL_DMA_HALF_WORD_COUNT);
+        adc_dual_expected_half = 1u;
+    }
+    else
+    {
+        adc_dual_stats.dma_full_count++;
+        adc_dual_process_block(ADC_DUAL_DMA_HALF_WORD_COUNT,
+                               ADC_DUAL_DMA_HALF_WORD_COUNT);
+        adc_dual_expected_half = 0u;
+    }
+}
+
 #endif /* SYSTEM_ADC_DUAL_AVAILABLE */
 
 void adc_dual_unpack_word(uint32_t packed_word,
@@ -232,6 +258,7 @@ void adc_dual_init(void)
     adc_dual_dma_half_flag = 0u;
     adc_dual_dma_full_flag = 0u;
     adc_dual_error_flag = 0u;
+    adc_dual_expected_half = 0u;
     adc_dual_stats.dma_half_count = 0u;
     adc_dual_stats.dma_full_count = 0u;
     adc_dual_stats.error_count = 0u;
@@ -303,6 +330,7 @@ adc_dual_status_t adc_dual_start(void)
     adc_dual_dma_half_flag = 0u;
     adc_dual_dma_full_flag = 0u;
     adc_dual_error_flag = 0u;
+    adc_dual_expected_half = 0u;
     if (adc_dual_dcache_is_enabled() != 0u)
     {
         SCB_CleanInvalidateDCache_by_Addr(
@@ -364,6 +392,7 @@ adc_dual_status_t adc_dual_stop(void)
     adc_dual_dma_half_flag = 0u;
     adc_dual_dma_full_flag = 0u;
     adc_dual_error_flag = 0u;
+    adc_dual_expected_half = 0u;
     if ((timer_status != HAL_OK) || (adc_status != HAL_OK))
     {
         adc_dual_stats.error_count++;
@@ -401,24 +430,48 @@ void adc_dual_process(void)
     if ((half_flag != 0u) && (full_flag != 0u))
     {
         adc_dual_stats.backlog_count++;
-        adc_dual_stats.dropped_pair_count += ADC_DUAL_DMA_WORD_COUNT;
-        if (measurement_fft_sampling_required() != 0u)
+        if (adc_dual_expected_half == 0u)
         {
-            measurement_fft_resynchronize();
+            adc_dual_process_completed_half(0u);
+            adc_dual_process_completed_half(1u);
         }
-        adc_dual_update_trigger_state();
-        return;
+        else
+        {
+            adc_dual_process_completed_half(1u);
+            adc_dual_process_completed_half(0u);
+        }
     }
-    if (half_flag != 0u)
+    else if (adc_dual_expected_half == 0u)
     {
-        adc_dual_stats.dma_half_count++;
-        adc_dual_process_block(0u, ADC_DUAL_DMA_HALF_WORD_COUNT);
+        if (half_flag != 0u)
+        {
+            adc_dual_process_completed_half(0u);
+        }
+        else if (full_flag != 0u)
+        {
+            adc_dual_stats.dropped_pair_count +=
+                ADC_DUAL_DMA_HALF_WORD_COUNT;
+            if (measurement_fft_sampling_required() != 0u)
+            {
+                measurement_fft_resynchronize();
+            }
+        }
     }
-    if (full_flag != 0u)
+    else
     {
-        adc_dual_stats.dma_full_count++;
-        adc_dual_process_block(ADC_DUAL_DMA_HALF_WORD_COUNT,
-                               ADC_DUAL_DMA_HALF_WORD_COUNT);
+        if (full_flag != 0u)
+        {
+            adc_dual_process_completed_half(1u);
+        }
+        else if (half_flag != 0u)
+        {
+            adc_dual_stats.dropped_pair_count +=
+                ADC_DUAL_DMA_HALF_WORD_COUNT;
+            if (measurement_fft_sampling_required() != 0u)
+            {
+                measurement_fft_resynchronize();
+            }
+        }
     }
 
     adc_dual_update_trigger_state();
