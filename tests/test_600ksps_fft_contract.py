@@ -171,6 +171,43 @@ class SourceContractTest(unittest.TestCase):
         for text in required:
             self.assertIn(text, readme)
 
+    def test_adc_dual_orders_both_pending_halves_without_resync(self):
+        source = (ROOT / "Core/User/adc_dual.c").read_text(encoding="utf-8")
+        self.assertIn("static uint8_t adc_dual_expected_half;", source)
+        self.assertGreaterEqual(
+            source.count("adc_dual_expected_half = 0u;"),
+            3,
+        )
+        self.assertIn(
+            "static void adc_dual_process_completed_half(uint8_t half_index)",
+            source,
+        )
+
+        process_body = source.split(
+            "void adc_dual_process(void)", 1
+        )[1].split("\n}", 1)[0]
+        dual_branch = process_body.split(
+            "if ((half_flag != 0u) && (full_flag != 0u))", 1
+        )[1].split(
+            "else if (adc_dual_expected_half == 0u)", 1
+        )[0]
+        self.assertIn("adc_dual_stats.backlog_count++;", dual_branch)
+        self.assertNotIn(
+            "adc_dual_stats.dropped_pair_count += ADC_DUAL_DMA_WORD_COUNT;",
+            dual_branch,
+        )
+        self.assertNotIn("measurement_fft_resynchronize();", dual_branch)
+        self.assertGreaterEqual(
+            dual_branch.count("adc_dual_process_completed_half("),
+            4,
+        )
+        self.assertIn(
+            "adc_dual_stats.dropped_pair_count +=\n"
+            "                ADC_DUAL_DMA_HALF_WORD_COUNT;",
+            process_body,
+        )
+        self.assertIn("measurement_fft_resynchronize();", process_body)
+
     def test_adc_callbacks_only_set_their_flag(self):
         source = (ROOT / "Core/User/adc_dual.c").read_text(encoding="utf-8")
         expected = (
