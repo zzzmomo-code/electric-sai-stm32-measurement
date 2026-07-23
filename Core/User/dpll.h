@@ -1,9 +1,9 @@
 /**
  * @file dpll.h
- * @brief 低频数字锁相环、谐波判别和连续相位 DAC 输出接口。
+ * @brief FFT 基波捕获、数字锁相和连续相位 DAC 输出接口。
  *
- * 模块用途：用 32 个同向施密特过零周期测频，用五档相关能量排除多倍频误锁，
- *           再以跨 DMA 块 I/Q 检相和限速 PI 环路缓慢拉相。
+ * 模块用途：以 FFT 确定基波，用单频 I/Q 初始化和细化频率与相位，
+ *           再以限速 PI 环路缓慢拉相；施密特过零只保留为诊断量。
  * GPIO 引脚：无直接 GPIO 引脚。
  * 依赖外设：无；输入为 ADC 采样数组，输出交给 DAC DMA 缓冲区。
  * 初始化方法：先调用 nco_init()，再调用 dpll_init()。
@@ -40,10 +40,8 @@ typedef struct
     float previous_raw_sample;
     float period_estimate_samples;
     uint32_t period_count;
-    double acquisition_frequency_sum;
-    uint32_t acquisition_average_count;
 
-    /* 五档倍频候选相关验证器，仅保存累加量，不保存长窗样本。 */
+    /* FFT 频点的单频 I/Q 初始化器，仅保存累加量，不保存长窗样本。 */
     uint32_t validation_phase_q32[DPLL_VALIDATION_CANDIDATE_COUNT];
     uint32_t validation_increment_q32[DPLL_VALIDATION_CANDIDATE_COUNT];
     double validation_i[DPLL_VALIDATION_CANDIDATE_COUNT];
@@ -65,7 +63,9 @@ typedef struct
     float coarse_frequency_hz;
     float output_frequency_hz;
     float frequency_integrator_hz;
+    float fine_frequency_error_hz;
     float phase_error_rad;
+    float previous_phase_error_rad;
     float amplitude_adc_counts;
     float offset_adc_counts;
     float output_envelope;
@@ -80,6 +80,7 @@ typedef struct
     uint8_t frequency_valid;
     uint8_t validation_active;
     uint8_t output_started;
+    uint8_t phase_error_history_valid;
     dpll_lock_state_t lock_state;
 } dpll_t;
 

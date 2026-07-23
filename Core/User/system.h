@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "nco.h"
+#include "fft_analyzer.h"
 #include "dpll.h"
 #include "signal_chain.h"
 #include "uart_debug.h"

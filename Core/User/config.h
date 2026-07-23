@@ -14,7 +14,7 @@
 
 #define PHASE_PI_F                         (3.14159265358979323846f)
 #define PHASE_TWO_PI_F                     (6.28318530717958647692f)
-#define PHASE_LOCK_FIRMWARE_ID              "lfdpll_multioctave_v3"
+#define PHASE_LOCK_FIRMWARE_ID              "fft32768_dpll_v4"
 
 /* TIM2 以 240 MHz / 240 产生 1 MHz ADC/DAC 公共采样时钟。 */
 #define SIGNAL_SAMPLE_RATE_HZ               (1000000.0f)
@@ -32,8 +32,20 @@
 #define NCO_TABLE_BITS                      (11u)
 #define NCO_TABLE_SIZE                      (1u << NCO_TABLE_BITS)
 
-/* 默认覆盖 1 kHz～100 kHz 周期信号；更低频率需要增大分析块。 */
-/* 第一阶段验收范围：500 Hz～3 kHz；上限留到 5 kHz 便于调试。 */
+/*
+ * 1 MHz ADC 先按 64 点平均抽取到 15.625 kS/s，再做 32768 点 FFT。
+ * 捕获窗约 2.097 s，频点间隔约 0.477 Hz；三点插值提供亚频点初值。
+ * 两个 float 数组共占 256 KiB，适配 H743 的 512 KiB D1 SRAM。
+ */
+#define FFT_ANALYZER_BITS                         (15u)
+#define FFT_ANALYZER_SIZE                         (1u << FFT_ANALYZER_BITS)
+#define FFT_ANALYZER_DECIMATION                   (64u)
+#define FFT_ANALYZER_SAMPLE_RATE_HZ               \
+    (SIGNAL_SAMPLE_RATE_HZ / (float)FFT_ANALYZER_DECIMATION)
+#define FFT_ANALYZER_WORK_BUDGET                  (2048u)
+#define FFT_ANALYZER_FUNDAMENTAL_ENERGY_RATIO     (0.05f)
+
+/* 第一阶段验收范围：500 Hz～4 kHz；上限留到 5 kHz 便于调试。 */
 #define DPLL_DEFAULT_FREQUENCY_HZ                 (1000.0f)
 #define DPLL_MIN_FREQUENCY_HZ                     (500.0f)
 #define DPLL_MAX_FREQUENCY_HZ                     (5000.0f)
@@ -47,35 +59,37 @@
 #define DPLL_CROSSING_BLANKING_MIN_SAMPLES        (80.0f)
 #define DPLL_PERIOD_TOLERANCE_RATIO               (0.30f)
 
-/* 连续 16 个同方向且周期一致的完整周期后才形成一次粗频率候选。 */
+/* 过零诊断连续统计 32 个同方向且周期一致的完整周期。 */
 #define DPLL_ACQUISITION_PERIODS                  (32u)
-#define DPLL_ACQUISITION_AVERAGES                 (4u)
-#define DPLL_ACQUISITION_AVERAGE_TOLERANCE_RATIO  (0.10f)
 #define DPLL_REACQUIRE_THRESHOLD_RATIO            (0.02f)
 #define DPLL_REACQUIRE_THRESHOLD_MIN_HZ           (5.0f)
 #define DPLL_NOMINAL_SLEW_LIMIT_HZ_PER_S           (10000.0f)
 
-/* f/8、f/4、f/2、f、2f 相关比较使用抽取后的长窗，不保存样本数组。 */
-#define DPLL_VALIDATION_CANDIDATE_COUNT           (5u)
+/* FFT 得到频率后，用单频长窗 I/Q 初始化相位并继续细化。 */
+#define DPLL_VALIDATION_CANDIDATE_COUNT           (1u)
 #define DPLL_VALIDATION_DECIMATION                (16u)
 #define DPLL_VALIDATION_CYCLES                    (16u)
 #define DPLL_VALIDATION_MIN_RAW_SAMPLES           (8192u)
 #define DPLL_VALIDATION_MAX_RAW_SAMPLES           (65536u)
-/* 从低到高选择能量不低于最强候选 5% 的候选，优先保留真实基波。 */
-#define DPLL_FUNDAMENTAL_ENERGY_RATIO              (0.05f)
 
-/* I/Q 相位窗至少跨 4 个 DMA 半块、至少覆盖 8 个周期。 */
-#define DPLL_PHASE_WINDOW_CYCLES                  (8u)
-#define DPLL_PHASE_MIN_RAW_SAMPLES                (8192u)
+/*
+ * I/Q 相位窗优先覆盖 16 个完整周期，减少非整周期截断造成的二倍频
+ * 混频泄漏；只设置一个 DMA 半块的下限，不再强行改变窗口周期数。
+ */
+#define DPLL_PHASE_WINDOW_CYCLES                  (16u)
+#define DPLL_PHASE_MIN_RAW_SAMPLES                (2048u)
 #define DPLL_PHASE_MAX_RAW_SAMPLES                (32768u)
+#define DPLL_FINE_FREQUENCY_ALPHA                 (0.25f)
+#define DPLL_FINE_FREQUENCY_STEP_LIMIT_HZ         (0.005f)
+#define DPLL_LOCK_FREQUENCY_THRESHOLD_HZ          (0.02f)
 
 /* 捕获态慢拉相；锁定后进一步降低带宽，并限制最大拉相速度。 */
 #define DPLL_CAPTURE_KP_HZ_PER_RAD                (0.45f)
 #define DPLL_CAPTURE_KI_HZ_PER_RAD_S              (0.32f)
 #define DPLL_LOCKED_KP_HZ_PER_RAD                 (0.05f)
 #define DPLL_LOCKED_KI_HZ_PER_RAD_S               (0.004f)
-#define DPLL_CAPTURE_CORRECTION_LIMIT_HZ          (0.02f)
-#define DPLL_LOCKED_CORRECTION_LIMIT_HZ           (0.005f)
+#define DPLL_CAPTURE_CORRECTION_LIMIT_HZ          (0.10f)
+#define DPLL_LOCKED_CORRECTION_LIMIT_HZ           (0.10f)
 #define DPLL_LOCK_PHASE_THRESHOLD_DEG             (5.0f)
 #define DPLL_UNLOCK_PHASE_THRESHOLD_DEG           (20.0f)
 #define DPLL_LOCK_CONFIRM_WINDOWS                 (8u)

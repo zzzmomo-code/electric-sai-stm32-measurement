@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "config.h"
+#include "fft_analyzer.h"
 #include "nco.h"
 
 #define DPLL_QUARTER_TURN_Q32 (0x40000000u)
@@ -38,6 +39,25 @@ static float dpll_clamp(float value, float lower, float upper)
         return upper;
     }
     return value;
+}
+
+/**
+ * @brief 将相位角归一化到 -π～π。
+ * @param phase_rad 原始相位角。
+ * @return 归一化相位角。
+ * @note 无副作用。
+ */
+static float dpll_wrap_phase(float phase_rad)
+{
+    while (phase_rad > PHASE_PI_F)
+    {
+        phase_rad -= PHASE_TWO_PI_F;
+    }
+    while (phase_rad < -PHASE_PI_F)
+    {
+        phase_rad += PHASE_TWO_PI_F;
+    }
+    return phase_rad;
 }
 
 /**
@@ -115,12 +135,12 @@ static void dpll_reset_acquisition(dpll_t *dpll)
 
     dpll->period_count = 0u;
     dpll->period_estimate_samples = 0.0f;
-    dpll->acquisition_frequency_sum = 0.0;
-    dpll->acquisition_average_count = 0u;
     dpll->below_hysteresis_count = 0u;
     dpll->crossing_valid = 0u;
     dpll->crossing_armed = 0u;
     dpll->validation_active = 0u;
+    dpll->phase_error_history_valid = 0u;
+    dpll->fine_frequency_error_hz = 0.0f;
     dpll->validation_raw_count = 0u;
     dpll->validation_decimation_count = 0u;
 
@@ -134,24 +154,19 @@ static void dpll_reset_acquisition(dpll_t *dpll)
 }
 
 /**
- * @brief 启动 f/8、f/4、f/2、f、2f 五候选相关能量验证。
+ * @brief 对 FFT 基波结果启动单频长窗 I/Q 相位初始化。
  * @param dpll DPLL 状态对象。
- * @param measured_frequency_hz 32 周期过零得到的候选频率。
+ * @param measured_frequency_hz FFT 插值得到的基波频率。
  * @return 无。
  * @note 验证过程只累加 I/Q，不申请长窗数组。
  */
 static void dpll_start_validation(dpll_t *dpll, float measured_frequency_hz)
 {
     uint32_t candidate_index;
-    float minimum_valid_frequency_hz = DPLL_MAX_FREQUENCY_HZ;
     uint32_t target_samples;
 
     dpll->candidate_frequency_hz = measured_frequency_hz;
-    dpll->validation_frequency_hz[0] = measured_frequency_hz * 0.125f;
-    dpll->validation_frequency_hz[1] = measured_frequency_hz * 0.25f;
-    dpll->validation_frequency_hz[2] = measured_frequency_hz * 0.5f;
-    dpll->validation_frequency_hz[3] = measured_frequency_hz;
-    dpll->validation_frequency_hz[4] = measured_frequency_hz * 2.0f;
+    dpll->validation_frequency_hz[0] = measured_frequency_hz;
 
     for (candidate_index = 0u;
          candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
@@ -163,25 +178,13 @@ static void dpll_start_validation(dpll_t *dpll, float measured_frequency_hz)
         dpll->validation_i[candidate_index] = 0.0;
         dpll->validation_q[candidate_index] = 0.0;
 
-        if ((candidate_hz >= DPLL_MIN_FREQUENCY_HZ)
-            && (candidate_hz <= DPLL_MAX_FREQUENCY_HZ))
-        {
-            dpll->validation_increment_q32[candidate_index] =
-                nco_increment_from_hz(candidate_hz, SIGNAL_SAMPLE_RATE_HZ);
-            if (candidate_hz < minimum_valid_frequency_hz)
-            {
-                minimum_valid_frequency_hz = candidate_hz;
-            }
-        }
-        else
-        {
-            dpll->validation_increment_q32[candidate_index] = 0u;
-        }
+        dpll->validation_increment_q32[candidate_index] =
+            nco_increment_from_hz(candidate_hz, SIGNAL_SAMPLE_RATE_HZ);
     }
 
     target_samples =
         (uint32_t)(((float)DPLL_VALIDATION_CYCLES * SIGNAL_SAMPLE_RATE_HZ
-                    / minimum_valid_frequency_hz) + 0.5f);
+                    / measured_frequency_hz) + 0.5f);
     dpll->validation_target_raw_count =
         dpll_clamp_samples(target_samples,
                            DPLL_VALIDATION_MIN_RAW_SAMPLES,
@@ -233,6 +236,7 @@ static void dpll_accept_validation(dpll_t *dpll,
         dpll->nominal_frequency_hz = accepted_frequency_hz;
         dpll->output_frequency_hz = accepted_frequency_hz;
         dpll->frequency_integrator_hz = 0.0f;
+        dpll->phase_error_history_valid = 0u;
         dpll->frequency_valid = 1u;
         dpll->lock_state = DPLL_STATE_TRACKING;
         dpll_update_phase_increment(dpll);
@@ -246,6 +250,7 @@ static void dpll_accept_validation(dpll_t *dpll,
         dpll->lock_confirm_count = 0u;
         dpll->unlock_confirm_count = 0u;
         dpll->frequency_integrator_hz = 0.0f;
+        dpll->phase_error_history_valid = 0u;
         dpll_reset_phase_window(dpll);
     }
 
@@ -254,7 +259,7 @@ static void dpll_accept_validation(dpll_t *dpll,
 }
 
 /**
- * @brief 对一个采样点更新五候选相关器。
+ * @brief 对一个采样点更新 FFT 频点的单频 I/Q 初始化器。
  * @param dpll DPLL 状态对象。
  * @param centered_sample 已去直流的 ADC 采样值。
  * @param target_phase_deg 输出相对输入的目标相位。
@@ -298,53 +303,7 @@ static void dpll_process_validation_sample(dpll_t *dpll,
 
     if (dpll->validation_raw_count >= dpll->validation_target_raw_count)
     {
-        uint32_t winner_index = 0u;
-        double winner_energy = -1.0;
-
-        for (candidate_index = 0u;
-             candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
-             ++candidate_index)
-        {
-            const double energy =
-                (dpll->validation_i[candidate_index]
-                 * dpll->validation_i[candidate_index])
-                + (dpll->validation_q[candidate_index]
-                   * dpll->validation_q[candidate_index]);
-
-            if ((dpll->validation_increment_q32[candidate_index] != 0u)
-                && (energy > winner_energy))
-            {
-                winner_energy = energy;
-                winner_index = candidate_index;
-            }
-        }
-
-        /*
-         * 不能简单选择最强谱线：模拟链路失真可能使二次谐波暂时强于基波。
-         * 从 f/8 到 2f 由低到高选择达到可信能量门限的第一个候选，
-         * 只要真实基波仍有足够能量，就不会再次误锁到二倍频。
-         */
-        for (candidate_index = 0u;
-             candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
-             ++candidate_index)
-        {
-            const double energy =
-                (dpll->validation_i[candidate_index]
-                 * dpll->validation_i[candidate_index])
-                + (dpll->validation_q[candidate_index]
-                   * dpll->validation_q[candidate_index]);
-
-            if ((dpll->validation_increment_q32[candidate_index] != 0u)
-                && (energy
-                    >= (winner_energy
-                        * (double)DPLL_FUNDAMENTAL_ENERGY_RATIO)))
-            {
-                winner_index = candidate_index;
-                break;
-            }
-        }
-
-        dpll_accept_validation(dpll, winner_index, target_phase_deg);
+        dpll_accept_validation(dpll, 0u, target_phase_deg);
         return;
     }
 
@@ -358,58 +317,40 @@ static void dpll_process_validation_sample(dpll_t *dpll,
 }
 
 /**
- * @brief 处理一次 32 周期粗频率结果。
+ * @brief 处理一次 FFT 基波频率结果。
  * @param dpll DPLL 状态对象。
- * @param measured_frequency_hz 当前粗频率。
+ * @param measured_frequency_hz FFT 插值基波频率。
  * @return 无。
- * @note 大变化先经谐波验证，小漂移直接低通更新。
+ * @note 大变化重新做单频 I/Q 初始化，小漂移由相位斜率细调。
  */
-static void dpll_handle_coarse_frequency(dpll_t *dpll,
-                                         float measured_frequency_hz)
+static void dpll_handle_fft_frequency(dpll_t *dpll,
+                                      float measured_frequency_hz)
 {
+    const float fft_bin_width_hz =
+        FFT_ANALYZER_SAMPLE_RATE_HZ / (float)FFT_ANALYZER_SIZE;
     float reacquire_threshold_hz;
 
-    if ((measured_frequency_hz < (DPLL_MIN_FREQUENCY_HZ * 0.5f))
-        || (measured_frequency_hz > (DPLL_MAX_FREQUENCY_HZ * 2.0f)))
+    /*
+     * 边界频点经窗函数插值后可能略越过量程，例如 500 Hz 得到
+     * 499.94 Hz。允许一个 FFT 频点的数值余量，再钳位回有效范围。
+     */
+    if ((measured_frequency_hz
+         < (DPLL_MIN_FREQUENCY_HZ - fft_bin_width_hz))
+        || (measured_frequency_hz
+            > (DPLL_MAX_FREQUENCY_HZ + fft_bin_width_hz)))
     {
         return;
     }
+    measured_frequency_hz =
+        dpll_clamp(measured_frequency_hz,
+                   DPLL_MIN_FREQUENCY_HZ,
+                   DPLL_MAX_FREQUENCY_HZ);
 
     if (dpll->frequency_valid == 0u)
     {
         if (dpll->validation_active == 0u)
         {
-            if (dpll->acquisition_average_count != 0u)
-            {
-                const float running_average_hz =
-                    (float)(dpll->acquisition_frequency_sum
-                            / (double)dpll->acquisition_average_count);
-
-                if (fabsf(measured_frequency_hz - running_average_hz)
-                    > (running_average_hz
-                       * DPLL_ACQUISITION_AVERAGE_TOLERANCE_RATIO))
-                {
-                    dpll->acquisition_frequency_sum =
-                        (double)measured_frequency_hz;
-                    dpll->acquisition_average_count = 1u;
-                    return;
-                }
-            }
-
-            dpll->acquisition_frequency_sum +=
-                (double)measured_frequency_hz;
-            ++dpll->acquisition_average_count;
-            if (dpll->acquisition_average_count
-                >= DPLL_ACQUISITION_AVERAGES)
-            {
-                const float averaged_frequency_hz =
-                    (float)(dpll->acquisition_frequency_sum
-                            / (double)dpll->acquisition_average_count);
-
-                dpll->acquisition_frequency_sum = 0.0;
-                dpll->acquisition_average_count = 0u;
-                dpll_start_validation(dpll, averaged_frequency_hz);
-            }
+            dpll_start_validation(dpll, measured_frequency_hz);
         }
         return;
     }
@@ -422,13 +363,15 @@ static void dpll_handle_coarse_frequency(dpll_t *dpll,
     {
         if (dpll->validation_active == 0u)
         {
+            dpll->frequency_valid = 0u;
+            dpll->lock_state = DPLL_STATE_ACQUIRING;
+            dpll->frequency_integrator_hz = 0.0f;
+            dpll->lock_confirm_count = 0u;
+            dpll->unlock_confirm_count = 0u;
+            dpll->phase_error_history_valid = 0u;
+            dpll_reset_phase_window(dpll);
             dpll_start_validation(dpll, measured_frequency_hz);
         }
-    }
-    else
-    {
-        dpll->coarse_frequency_hz +=
-            0.25f * (measured_frequency_hz - dpll->coarse_frequency_hz);
     }
 }
 
@@ -517,7 +460,8 @@ static void dpll_record_rising_crossing(dpll_t *dpll, double crossing_sample)
                              * (double)SIGNAL_SAMPLE_RATE_HZ)
                             / measured_samples);
 
-                dpll_handle_coarse_frequency(dpll, measured_frequency_hz);
+                /* 过零结果只作诊断，绝不再驱动输出频率。 */
+                dpll->candidate_frequency_hz = measured_frequency_hz;
                 dpll->period_window_start_sample = crossing_sample;
                 dpll->period_count = 0u;
                 dpll->period_estimate_samples = 0.0f;
@@ -555,6 +499,43 @@ static void dpll_finish_phase_window(dpll_t *dpll)
     float correction_hz;
 
     dpll->phase_error_rad = phase_error_rad;
+    dpll->fine_frequency_error_hz = 0.0f;
+
+    /*
+     * 相邻长窗相位误差的斜率就是剩余频差。FFT 只给初值，这里每窗最多
+     * 修正 0.005 Hz，避免直接跳相或快速拉动输出频率。
+     */
+    if (absolute_error_rad > lock_threshold_rad)
+    {
+        /*
+         * 大相位误差通常来自目标相位改变。此时只让限速 PI 拉相，禁止
+         * 频率估计器把这段有意的相位运动误判成输入频率漂移。
+         */
+        dpll->phase_error_history_valid = 0u;
+    }
+    else if (dpll->phase_error_history_valid != 0u)
+    {
+        const float phase_delta_rad =
+            dpll_wrap_phase(phase_error_rad - dpll->previous_phase_error_rad);
+        const float observed_frequency_error_hz =
+            phase_delta_rad / (PHASE_TWO_PI_F * window_seconds);
+        const float fine_step_hz =
+            dpll_clamp(DPLL_FINE_FREQUENCY_ALPHA
+                       * observed_frequency_error_hz,
+                       -DPLL_FINE_FREQUENCY_STEP_LIMIT_HZ,
+                       DPLL_FINE_FREQUENCY_STEP_LIMIT_HZ);
+
+        dpll->fine_frequency_error_hz = observed_frequency_error_hz;
+        dpll->coarse_frequency_hz =
+            dpll_clamp(dpll->coarse_frequency_hz + fine_step_hz,
+                       DPLL_MIN_FREQUENCY_HZ,
+                       DPLL_MAX_FREQUENCY_HZ);
+    }
+    if (absolute_error_rad <= lock_threshold_rad)
+    {
+        dpll->previous_phase_error_rad = phase_error_rad;
+        dpll->phase_error_history_valid = 1u;
+    }
 
     nominal_step_limit_hz =
         DPLL_NOMINAL_SLEW_LIMIT_HZ_PER_S * window_seconds;
@@ -624,11 +605,23 @@ static void dpll_finish_phase_window(dpll_t *dpll)
             dpll->unlock_confirm_count = 0u;
         }
     }
-    else if (absolute_error_rad <= lock_threshold_rad)
+    else if ((absolute_error_rad <= lock_threshold_rad)
+             && (fabsf(dpll->fine_frequency_error_hz)
+                 <= DPLL_LOCK_FREQUENCY_THRESHOLD_HZ))
     {
         ++dpll->lock_confirm_count;
         if (dpll->lock_confirm_count >= DPLL_LOCK_CONFIRM_WINDOWS)
         {
+            /*
+             * 切换到低带宽参数时重配积分项，使总频率修正连续，避免
+             * Kp 变小的一瞬间产生新的频率台阶和相位漂移。
+             */
+            dpll->frequency_integrator_hz =
+                dpll_clamp(correction_hz
+                           - (DPLL_LOCKED_KP_HZ_PER_RAD
+                              * phase_error_rad),
+                           -DPLL_LOCKED_CORRECTION_LIMIT_HZ,
+                           DPLL_LOCKED_CORRECTION_LIMIT_HZ);
             dpll->lock_state = DPLL_STATE_LOCKED;
             dpll->lock_confirm_count = 0u;
             dpll->unlock_confirm_count = 0u;
@@ -667,6 +660,7 @@ void dpll_init(dpll_t *dpll, float initial_frequency_hz)
     dpll->output_frequency_hz = initial_frequency_hz;
     dpll->offset_adc_counts = 32768.0f;
     dpll->lock_state = DPLL_STATE_NO_SIGNAL;
+    fft_analyzer_init();
     dpll_update_phase_increment(dpll);
     dpll_reset_phase_window(dpll);
 }
@@ -701,6 +695,7 @@ void dpll_process_block(dpll_t *dpll,
     float block_mean;
     float block_amplitude;
     float hysteresis;
+    fft_analyzer_result_t fft_result;
     size_t index;
 
     if ((dpll == NULL) || (samples == NULL) || (sample_count == 0u))
@@ -747,6 +742,7 @@ void dpll_process_block(dpll_t *dpll,
             dpll->previous_sample_valid = 0u;
             dpll->lock_confirm_count = 0u;
             dpll->unlock_confirm_count = 0u;
+            fft_analyzer_reset();
             dpll_reset_acquisition(dpll);
             dpll_reset_phase_window(dpll);
         }
@@ -761,6 +757,14 @@ void dpll_process_block(dpll_t *dpll,
     if (dpll->lock_state == DPLL_STATE_NO_SIGNAL)
     {
         dpll->lock_state = DPLL_STATE_ACQUIRING;
+    }
+
+    if (fft_analyzer_process_block(samples,
+                                   sample_count,
+                                   dpll->offset_adc_counts,
+                                   &fft_result) != 0u)
+    {
+        dpll_handle_fft_frequency(dpll, fft_result.frequency_hz);
     }
 
     hysteresis =

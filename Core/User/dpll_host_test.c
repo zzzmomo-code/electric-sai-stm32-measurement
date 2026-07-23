@@ -2,7 +2,7 @@
  * @file dpll_host_test.c
  * @brief DPLL 的主机端确定性测试。
  *
- * 模块用途：验证 500 Hz～3 kHz 测频、二倍频抑制、跨块锁相、连续 DAC 相位和失信号处理。
+ * 模块用途：验证 500 Hz～4 kHz 测频、倍频抑制、跨块锁相、连续 DAC 相位和失信号处理。
  * GPIO 引脚：无直接 GPIO 引脚。
  * 依赖外设：无；仅在定义 PHASE_LOCK_HOST_TEST 时参与主机编译。
  * 初始化方法：测试入口中调用 nco_init() 和 dpll_init()。
@@ -17,6 +17,7 @@
 
 #include "config.h"
 #include "dpll.h"
+#include "fft_analyzer.h"
 #include "nco.h"
 
 static uint16_t test_adc_samples[SIGNAL_DMA_HALF_SAMPLES];
@@ -98,6 +99,56 @@ static void test_generate_input(double frequency_hz,
             test_noise_phase_rad -= 2.0 * (double)PHASE_PI_F;
         }
     }
+}
+
+/**
+ * @brief 单独验证 FFT 基波频率输出。
+ * @param frequency_hz 输入基波频率。
+ * @param second_harmonic_amplitude 二次谐波幅度。
+ * @param fourth_harmonic_amplitude 四次谐波幅度。
+ * @return 通过返回 1，否则返回 0。
+ * @note 直接检查 FFT 结果，不经过 DPLL。
+ */
+static int test_fft_frequency_point(double frequency_hz,
+                                    double second_harmonic_amplitude,
+                                    double fourth_harmonic_amplitude)
+{
+    fft_analyzer_result_t result = {0};
+    uint32_t block;
+    uint8_t result_valid = 0u;
+
+    test_input_phase_rad = 0.37;
+    test_noise_phase_rad = 0.11;
+    test_noise_amplitude = 0.0;
+    test_fourth_harmonic_amplitude = fourth_harmonic_amplitude;
+    fft_analyzer_init();
+
+    for (block = 0u; block < 2000u; ++block)
+    {
+        test_generate_input(frequency_hz,
+                            12000.0,
+                            second_harmonic_amplitude);
+        result_valid =
+            fft_analyzer_process_block(test_adc_samples,
+                                       SIGNAL_DMA_HALF_SAMPLES,
+                                       32768.0f,
+                                       &result);
+        if (result_valid != 0u)
+        {
+            break;
+        }
+    }
+    test_fourth_harmonic_amplitude = 0.0;
+
+    TEST_CHECK(result_valid != 0u, "FFT did not produce a result");
+    TEST_CHECK(fabs((double)result.frequency_hz - frequency_hz) < 0.50,
+               "FFT selected the wrong fundamental");
+    (void)printf("PASS FFT input=%7.1fHz result=%9.4fHz bin=%lu blocks=%lu\n",
+                 frequency_hz,
+                 (double)result.frequency_hz,
+                 (unsigned long)result.peak_bin,
+                 (unsigned long)(block + 1u));
+    return 1;
 }
 
 /**
@@ -250,6 +301,25 @@ static int test_frequency_point(double frequency_hz)
                                    0.0,
                                    0.0f,
                                    64u);
+
+    if ((dpll.lock_state != DPLL_STATE_LOCKED)
+        || (fabs((double)dpll_get_phase_error_deg(&dpll))
+            > DPLL_LOCK_PHASE_THRESHOLD_DEG))
+    {
+        (void)printf(
+            "DIAG frequency=%7.1fHz state=%u valid=%u coarse=%9.4fHz "
+            "nominal=%9.4fHz output=%9.4fHz fine=%8.4fHz "
+            "phase=%8.3fdeg blocks=%lu\n",
+            frequency_hz,
+            (unsigned int)dpll.lock_state,
+            (unsigned int)dpll.frequency_valid,
+            (double)dpll.coarse_frequency_hz,
+            (double)dpll.nominal_frequency_hz,
+            (double)dpll.output_frequency_hz,
+            (double)dpll.fine_frequency_error_hz,
+            (double)dpll_get_phase_error_deg(&dpll),
+            (unsigned long)used_blocks);
+    }
 
     TEST_CHECK(dpll.lock_state == DPLL_STATE_LOCKED,
                "frequency point did not lock");
@@ -514,11 +584,26 @@ int main(void)
 {
     nco_init();
 
+    TEST_CHECK(test_fft_frequency_point(500.0, 0.0, 0.0) != 0,
+               "500 Hz FFT test failed");
+    TEST_CHECK(test_fft_frequency_point(1000.0, 0.0, 0.0) != 0,
+               "1 kHz FFT test failed");
+    TEST_CHECK(test_fft_frequency_point(2000.0, 0.0, 0.0) != 0,
+               "2 kHz FFT test failed");
+    TEST_CHECK(test_fft_frequency_point(3000.0, 0.0, 0.0) != 0,
+               "3 kHz FFT test failed");
+    TEST_CHECK(test_fft_frequency_point(4000.0, 0.0, 0.0) != 0,
+               "4 kHz FFT test failed");
+    TEST_CHECK(test_fft_frequency_point(1000.0, 16000.0, 0.0) != 0,
+               "strong second harmonic FFT test failed");
+    TEST_CHECK(test_fft_frequency_point(1000.0, 0.0, 16000.0) != 0,
+               "strong fourth harmonic FFT test failed");
     TEST_CHECK(sizeof(dpll_t) <= 512u, "dpll_t exceeds 512-byte RAM budget");
     TEST_CHECK(test_frequency_point(500.0) != 0, "500 Hz test failed");
     TEST_CHECK(test_frequency_point(1000.0) != 0, "1 kHz test failed");
     TEST_CHECK(test_frequency_point(2000.0) != 0, "2 kHz test failed");
     TEST_CHECK(test_frequency_point(3000.0) != 0, "3 kHz test failed");
+    TEST_CHECK(test_frequency_point(4000.0) != 0, "4 kHz test failed");
     TEST_CHECK(test_second_harmonic_rejection() != 0,
                "second harmonic rejection test failed");
     TEST_CHECK(test_fourth_harmonic_rejection() != 0,
