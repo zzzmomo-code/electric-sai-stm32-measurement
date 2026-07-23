@@ -751,7 +751,7 @@ ads8688_status_t ads8688_stop(void)
  * @brief 处理 DMA 完成标志、采样顺序异常和 SPI/DMA 错误。
  * @param 无。
  * @return 无。
- * @note 由主循环调用；负责清除已处理标志、保存采样并执行阻塞恢复。
+ * @note 双半区同时待处理时按期望顺序连续消费；仅在单半区乱序或硬件错误时恢复。
  */
 void ads8688_process(void)
 {
@@ -786,16 +786,6 @@ void ads8688_process(void)
     }
 
     pending_flags = ads8688_snapshot_dma_flags();
-    if (pending_flags == 3u)
-    {
-        (void)ads8688_claim_flag(&ads8688_dma_half_flag);
-        (void)ads8688_claim_flag(&ads8688_dma_full_flag);
-        ads8688_diagnostics.lost_samples += ADS8688_DMA_WORD_COUNT;
-        measurement_fft_resynchronize();
-        ads8688_recovery_pending = 1u;
-        (void)ads8688_recover();
-        return;
-    }
     if (ads8688_expected_half == 0u)
     {
         if ((pending_flags & 1u) != 0u)
