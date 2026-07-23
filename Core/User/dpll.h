@@ -2,7 +2,7 @@
  * @file dpll.h
  * @brief 二阶数字锁相环、粗频率捕获和 I/Q 相位检测接口。
  *
- * 模块用途：用插值上升过零完成粗频率捕获，并用 I/Q 相关检测相位。
+ * 模块用途：用带迟滞的插值上升过零完成粗频率捕获，并用 I/Q 相关检测相位。
  * GPIO 引脚：无直接 GPIO 引脚。
  * 依赖外设：无；输入为 ADC 采样数组，输出交给 DAC 缓冲区。
  * 初始化方法：先调用 nco_init()，再调用 dpll_init()。
@@ -41,6 +41,7 @@ typedef struct
     float loop_ki_hz_per_rad_s;
     uint32_t lock_confirm_count;
     uint8_t previous_sample_valid;
+    uint8_t crossing_armed;
     uint8_t crossing_valid;
     uint8_t frequency_valid;
     dpll_lock_state_t lock_state;

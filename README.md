@@ -116,7 +116,7 @@ mode=dpll lock=locked run=1 f_mHz=10000000 phase_mdeg=800 target_mdeg=0 amp=1200
 
 ### DPLL 模式
 
-发送 `1`。程序先用插值上升过零估计粗频率，再用 I/Q 相关得到相位误差，二阶 PI 环路调整 NCO 频率，最后提前预测到 DAC 实际播放时刻并生成正弦波。
+发送 `1`。程序先用带迟滞的插值上升过零估计粗频率，再用 I/Q 相关得到相位误差，二阶 PI 环路调整 NCO 频率，最后提前预测到 DAC 实际播放时刻并生成正弦波。过零迟滞用于避免噪声在零点附近制造假过零。
 
 优点：
 
@@ -162,6 +162,7 @@ H743 开启了 D-Cache。DMA 缓冲区被固定放入 D2 RAM 的 `.dma_buffer` �
 
 - `DPLL_LOOP_BANDWIDTH_HZ`：增大后跟踪更快但抗噪变差；
 - `DPLL_MIN_AMPLITUDE_ADC_COUNTS`：无信号判断阈值；
+- `DPLL_CROSSING_HYSTERESIS_RATIO`：粗测频过零迟滞比例；
 - `DPLL_LOCK_PHASE_THRESHOLD_DEG`：锁定相位门限；
 - `SIGNAL_DIRECT_GAIN_Q15`：直接模式增益校准；
 - `SIGNAL_DIRECT_OFFSET_ADC_COUNTS`：直接模式偏置校准。
@@ -174,7 +175,8 @@ H743 开启了 D-Cache。DMA 缓冲区被固定放入 D2 RAM 的 `.dma_buffer` �
 - ELF 已生成；
 - DMA 缓冲区地址：DAC `0x30000000`，ADC `0x30002000`，均位于 D2 RAM；
 - 主机算法测试：10 kHz 捕获通过；
-- 输入跳变到 12.345 kHz 后重新锁定通过，结果为 12344.780 Hz、相位误差 0.635°；
+- 输入跳变到 12.345 kHz 后重新锁定通过，结果为 12345.149 Hz、相位误差 -0.331°；
+- 9973.25 Hz、约 8% 幅度噪声的最终 DAC 相位测试通过：相位 0.280°，约 2 秒累计漂移 -0.016°；
 - 无信号识别测试通过；
 - 用户模块最大静态栈占用 104 字节。
 

@@ -2,7 +2,7 @@
  * @file dpll.c
  * @brief 二阶数字锁相环和相位预测 DAC 波形生成实现。
  *
- * 模块用途：对 ADC 块做均值/幅值测量、插值上升过零捕获、I/Q 检相和 PI 环路控制。
+ * 模块用途：对 ADC 块做均值/幅值测量、迟滞过零捕获、I/Q 检相和 PI 环路控制。
  * GPIO 引脚：无直接 GPIO 引脚。
  * 依赖外设：无；算法可在主机端用 PHASE_LOCK_HOST_TEST 独立测试。
  * 初始化方法：nco_init() 后调用 dpll_init()。
@@ -95,6 +95,7 @@ void dpll_process_block(dpll_t *dpll, const uint16_t *samples, size_t sample_cou
     float block_amplitude;
     float correlation_i = 0.0f;
     float correlation_q = 0.0f;
+    float crossing_hysteresis;
     uint64_t phase_accumulator;
     size_t index;
 
@@ -115,6 +116,9 @@ void dpll_process_block(dpll_t *dpll, const uint16_t *samples, size_t sample_cou
         squared_sum += centered * centered;
     }
     block_amplitude = (float)sqrt((2.0 * squared_sum) / (double)sample_count);
+    crossing_hysteresis = fmaxf(
+        block_amplitude * DPLL_CROSSING_HYSTERESIS_RATIO,
+        DPLL_CROSSING_HYSTERESIS_MIN_COUNTS);
 
     if (dpll->total_samples == 0u)
     {
@@ -141,6 +145,9 @@ void dpll_process_block(dpll_t *dpll, const uint16_t *samples, size_t sample_cou
         dpll->previous_sample_valid = 1u;
         dpll->total_samples += sample_count;
         dpll->lock_confirm_count = 0u;
+        dpll->crossing_armed = 0u;
+        dpll->crossing_valid = 0u;
+        dpll->frequency_valid = 0u;
         dpll->lock_state = DPLL_STATE_NO_SIGNAL;
         return;
     }
@@ -157,7 +164,12 @@ void dpll_process_block(dpll_t *dpll, const uint16_t *samples, size_t sample_cou
         correlation_i += normalized_sample * sine_value;
         correlation_q += normalized_sample * cosine_value;
 
-        if (dpll->previous_sample_valid != 0u)
+        if (centered_sample <= -crossing_hysteresis)
+        {
+            dpll->crossing_armed = 1u;
+        }
+
+        if ((dpll->crossing_armed != 0u) && (dpll->previous_sample_valid != 0u))
         {
             const float previous_centered = dpll->previous_raw_sample - block_mean;
 
@@ -200,6 +212,7 @@ void dpll_process_block(dpll_t *dpll, const uint16_t *samples, size_t sample_cou
 
                 dpll->last_crossing_sample = crossing_sample;
                 dpll->crossing_valid = 1u;
+                dpll->crossing_armed = 0u;
             }
         }
 
@@ -220,8 +233,17 @@ void dpll_process_block(dpll_t *dpll, const uint16_t *samples, size_t sample_cou
         }
         else
         {
+            const float reacquire_threshold_hz = fmaxf(
+                dpll->nominal_frequency_hz * DPLL_REACQUIRE_THRESHOLD_RATIO,
+                DPLL_REACQUIRE_THRESHOLD_MIN_HZ);
+            const float coarse_alpha =
+                (fabsf(dpll->coarse_frequency_hz - dpll->output_frequency_hz)
+                 > reacquire_threshold_hz)
+                ? DPLL_COARSE_FILTER_ALPHA
+                : DPLL_TRACKING_COARSE_ALPHA;
+
             dpll->nominal_frequency_hz +=
-                DPLL_COARSE_FILTER_ALPHA
+                coarse_alpha
                 * (dpll->coarse_frequency_hz - dpll->nominal_frequency_hz);
         }
     }
