@@ -1,0 +1,27 @@
+# STM32CubeIDE 构建产物
+/Debug/
+/Release/
+/*.launch
+
+# GCC/链接器中间文件
+*.o
+*.d
+*.su
+*.cyclo
+*.elf
+*.map
+*.list
+*.hex
+*.bin
+
+# IDE 工作区和本机临时文件
+/.metadata/
+/RemoteSystemsTempFiles/
+*.bak
+*.tmp
+*~
+
+# 操作系统生成文件
+Thumbs.db
+Desktop.ini
+.DS_Store
