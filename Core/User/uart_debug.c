@@ -70,7 +70,12 @@ void uart_debug_process(void)
   {
     return;
   }
-  if ((status.identified == 0U) || (reported_identified_state != 0U))
+  if (status.identified == 0U)
+  {
+    reported_identified_state = 0U;
+    return;
+  }
+  if (reported_identified_state != 0U)
   {
     return;
   }

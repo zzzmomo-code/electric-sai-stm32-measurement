@@ -27,9 +27,9 @@ typedef struct
   signal_wave_type_t wave[2];     /* 两路识别出的波形类型。 */
   uint32_t amplitude_adc[2];      /* 两路 ADC 峰值估计，单位为 ADC 码。 */
   int32_t phase_error_mdeg[2];    /* 两路最近相位误差，单位 0.001°。 */
-  uint32_t adc_frame_count;       /* 主循环已接收的 ADC DMA 半帧数。 */
-  uint32_t adc_frame_overrun;     /* ADC 事件来不及处理的累计次数。 */
-  uint32_t dac_half_overrun;      /* DAC 半区来不及回填的累计次数。 */
+  uint32_t adc_frame_count;       /* 已安全复制并完成处理的 ADC DMA 半帧数。 */
+  uint32_t adc_frame_overrun;     /* 被跳过或复制期间遭 DMA 追上的 ADC 半帧数。 */
+  uint32_t dac_half_overrun;      /* 未能逐次回填而被跳过的 DAC 半区数。 */
 } signal_separation_status_t;
 
 /**

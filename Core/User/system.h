@@ -27,15 +27,13 @@ extern TIM_HandleTypeDef htim2;
 extern UART_HandleTypeDef huart1;
 
 /*
- * DMA 回调与主循环之间只用单一目的标志交接；回调中不做计算、打印或
- * 缓冲区处理。标志由 ISR 置 1，由 signal_separation_process() 清除。
+ * DMA 回调与主循环之间只用单一目的事件标志交接；每次半传输或全传输完成时，
+ * 对应 ISR 只递增一个 32 位单调计数。主循环不清零计数，而是比较已处理序号，
+ * 从而能够识别重复事件、丢帧和 DMA 绝对采样时间。
  */
-extern volatile uint8_t adc_half_ready_flag;
-extern volatile uint8_t adc_full_ready_flag;
-extern volatile uint8_t dac1_half_ready_flag;
-extern volatile uint8_t dac1_full_ready_flag;
-extern volatile uint8_t dac2_half_ready_flag;
-extern volatile uint8_t dac2_full_ready_flag;
+extern volatile uint32_t adc_dma_event_flag;
+extern volatile uint32_t dac1_dma_event_flag;
+extern volatile uint32_t dac2_dma_event_flag;
 
 /**
  * @brief 初始化全部用户模块。

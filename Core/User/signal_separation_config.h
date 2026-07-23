@@ -61,12 +61,16 @@
 #define SIGSEP_TRI_H3_RATIO                    0.060f
 #define SIGSEP_TRI_H5_RATIO                    0.025f
 
-/* Q32 NCO/PLL 参数，沿用 2023H 原工程的环路带宽设计。 */
+/*
+ * Q32 NCO/PLL 参数。
+ * H743 当前使用 HSI，器件初始频差和温漂明显大于原 HSE 工程，因此把最大步进修正
+ * 从 ±0.05% 扩大到 ±2%。积分限幅同时扩大，避免长期频差只能靠静态相位误差维持。
+ */
 #define SIGSEP_PLL_PHASE_KP_SHIFT              1U
 #define SIGSEP_PLL_STEP_KP_DIV                 20U
 #define SIGSEP_PLL_STEP_KI_DIV                 200U
-#define SIGSEP_PLL_MAX_CORR_DIV                2000U
-#define SIGSEP_PLL_INTEGRATOR_LIMIT            8589934592LL
+#define SIGSEP_PLL_MAX_CORR_DIV                50U
+#define SIGSEP_PLL_INTEGRATOR_LIMIT            1099511627776LL
 #define SIGSEP_PLL_INTEGRATOR_LEAK_NUM         65535U
 #define SIGSEP_AMP_SMOOTH_SHIFT                3U
 

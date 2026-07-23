@@ -16,8 +16,16 @@
 
 #define signal_two_pi_f                  6.28318530717958647692f
 #define signal_q32_scale_d               4294967296.0
-#define signal_dac_ready_half0_mask      0x03U
-#define signal_dac_ready_half1_mask      0x0CU
+
+_Static_assert(SIGSEP_ANALYSIS_FRAME_LEN <= SIGSEP_ADC_DMA_HALF_LEN,
+               "analysis frame must fit in one ADC DMA half");
+_Static_assert(((SIGSEP_ADC_DMA_HALF_LEN * sizeof(uint16_t)) % 32U) == 0U,
+               "ADC DMA half must contain complete D-Cache lines");
+_Static_assert(((SIGSEP_DAC_DMA_HALF_LEN * sizeof(uint16_t)) % 32U) == 0U,
+               "DAC DMA half must contain complete D-Cache lines");
+_Static_assert((SIGSEP_MAX_BIN * SIGSEP_FREQ_STEP_HZ) <=
+               (SIGSEP_SAMPLE_RATE_HZ / 2U),
+               "correlation table must not exceed Nyquist");
 
 typedef struct
 {
@@ -53,6 +61,12 @@ static uint16_t dac1_dma_buffer[SIGSEP_DAC_DMA_LEN]
 static uint16_t dac2_dma_buffer[SIGSEP_DAC_DMA_LEN]
   __attribute__((section(".dma_buffer"), aligned(32)));
 
+/*
+ * ADC DMA 完成后先把最新安全半区复制到 CPU 专用缓冲区，再执行耗时相关检测。
+ * 这样即使下一次 DMA 事件在算法计算期间到达，也不会改写正在分析的数据。
+ */
+static uint16_t adc_analysis_buffer[SIGSEP_ANALYSIS_FRAME_LEN];
+
 /* H743 用 FPU 只在启动阶段生成下列查找表，实时路径不调用 sinf/cosf。 */
 static int16_t sine_lut[SIGSEP_SINE_LUT_SIZE];
 static float step_sine[SIGSEP_MAX_BIN + 1U];
@@ -67,19 +81,19 @@ static uint8_t separation_identified;
 static int32_t output_phase_offset_deg = SIGSEP_PHASE_OFFSET_DEFAULT_DEG;
 static uint64_t adc_sample_count;
 static uint64_t dac_sample_count;
-static uint64_t dac_ready_play_sample[2];
-static uint32_t dac_ready_mask;
+static uint32_t adc_event_handled;
+static uint32_t dac_event_handled;
 static uint32_t adc_frame_count;
 static uint32_t adc_frame_overrun;
 static uint32_t dac_half_overrun;
 
-/* 每个 DMA 回调只给一个目的明确的标志赋值。 */
-volatile uint8_t adc_half_ready_flag;
-volatile uint8_t adc_full_ready_flag;
-volatile uint8_t dac1_half_ready_flag;
-volatile uint8_t dac1_full_ready_flag;
-volatile uint8_t dac2_half_ready_flag;
-volatile uint8_t dac2_full_ready_flag;
+/*
+ * 每个 DMA 回调只递增一个目的明确的事件标志。32 位读写在对齐的 Cortex-M7 上
+ * 是原子的；主循环短暂关闭中断后取得三个一致快照。
+ */
+volatile uint32_t adc_dma_event_flag;
+volatile uint32_t dac1_dma_event_flag;
+volatile uint32_t dac2_dma_event_flag;
 
 /**
  * @brief 将指定 DMA 地址范围对应的 D-Cache 行失效。
@@ -462,6 +476,16 @@ static uint8_t analyze_frame(const uint16_t *samples,
     best1 = temporary;
   }
 
+  /*
+   * 原参考代码即使只有直流、单音或噪声也会在四帧后强制宣布识别完成，并以
+   * 最小 700 码幅值输出。两个候选都达到有效幅度后才进入锁相状态。
+   */
+  if ((amplitude[best0] < SIGSEP_MIN_VALID_ADC_AMP) ||
+      (amplitude[best1] < SIGSEP_MIN_VALID_ADC_AMP))
+  {
+    return 0U;
+  }
+
   output[0].frequency_index = (uint8_t)best0;
   output[0].frequency_hz = SIGSEP_FREQ_MIN_HZ +
                            (best0 * SIGSEP_FREQ_STEP_HZ);
@@ -517,6 +541,46 @@ static void nco_init(uint32_t channel, const signal_component_t *component,
   nco_state[channel].phase_reference = component->phase_q32;
   nco_state[channel].sample_reference = sample_start;
   nco_state[channel].last_error = 0;
+}
+
+/**
+ * @brief 在整数倍频时把跟随通道锚定到主通道的统一输出时间原点。
+ * @param follower_channel 跟随通道索引。
+ * @param master_channel 主 PLL 通道索引。
+ * @return 无。
+ * @note 题目相位项定义 B'=sin(wB*t+phi)。因此 B' 的基础相位必须由 A' 的
+ *       相位乘频率整数比得到，用户 phi 仍在 DAC2 渲染时单独叠加。
+ */
+static void nco_align_integer_common_source(uint32_t follower_channel,
+                                            uint32_t master_channel)
+{
+  uint32_t source_hz = active_component[master_channel].frequency_hz;
+  uint32_t destination_hz =
+    active_component[follower_channel].frequency_hz;
+  uint32_t frequency_ratio;
+  uint64_t scaled_step;
+
+  if ((source_hz == 0U) || ((destination_hz % source_hz) != 0U))
+  {
+    return;
+  }
+
+  frequency_ratio = destination_hz / source_hz;
+  scaled_step =
+    (uint64_t)nco_state[master_channel].nominal_step * frequency_ratio;
+  if (scaled_step > UINT32_MAX)
+  {
+    return;
+  }
+
+  nco_state[follower_channel].nominal_step = (uint32_t)scaled_step;
+  nco_state[follower_channel].phase_reference =
+    nco_state[master_channel].phase_reference * frequency_ratio;
+  nco_state[follower_channel].sample_reference =
+    nco_state[master_channel].sample_reference;
+  nco_state[follower_channel].step_correction = 0;
+  nco_state[follower_channel].integrator = 0;
+  nco_state[follower_channel].last_error = 0;
 }
 
 /**
@@ -644,6 +708,34 @@ static int32_t scale_phase_error_by_frequency(int32_t phase_error,
 }
 
 /**
+ * @brief 先在宽整数域缩放主相位误差并施加环路增益，最后才折回 Q32。
+ * @param phase_error 主通道有符号 Q32 相位误差。
+ * @param destination_hz 跟随通道频率。
+ * @param source_hz 主通道频率。
+ * @return 跟随通道本帧应施加的有符号 Q32 相位修正。
+ * @note 不可先把倍频后的结果折回 int32_t 再除以 2，否则大相位误差在整数倍频
+ *       场景会产生 180° 分支错误。
+ */
+static int32_t scale_phase_adjustment_by_frequency(
+  int32_t phase_error, uint32_t destination_hz, uint32_t source_hz)
+{
+  int64_t scaled_adjustment;
+
+  if (source_hz == 0U)
+  {
+    return 0;
+  }
+
+  scaled_adjustment =
+    ((int64_t)phase_error * (int64_t)destination_hz) /
+    (int64_t)source_hz;
+  scaled_adjustment /=
+    (int64_t)(1UL << SIGSEP_PLL_PHASE_KP_SHIFT);
+
+  return (int32_t)((uint32_t)scaled_adjustment);
+}
+
+/**
  * @brief 把主通道频率步进修正按名义步进比例映射到跟随通道。
  * @param follower_channel 跟随通道索引。
  * @param master_channel 主通道索引。
@@ -699,14 +791,17 @@ static void nco_follow_common_source(uint32_t follower_channel,
       master_phase_error,
       active_component[follower_channel].frequency_hz,
       active_component[master_channel].frequency_hz);
+  int32_t follower_phase_adjust =
+    scale_phase_adjustment_by_frequency(
+      master_phase_error,
+      active_component[follower_channel].frequency_hz,
+      active_component[master_channel].frequency_hz);
 
   nco_state[follower_channel].integrator = 0;
   nco_state[follower_channel].step_correction =
     scale_step_correction(follower_channel, master_channel);
   nco_state[follower_channel].phase_reference =
-    predicted_phase +
-    (uint32_t)(follower_error /
-               (int32_t)(1UL << SIGSEP_PLL_PHASE_KP_SHIFT));
+    predicted_phase + (uint32_t)follower_phase_adjust;
   nco_state[follower_channel].sample_reference = frame_start_sample;
   nco_state[follower_channel].last_error = follower_error;
 }
@@ -835,17 +930,13 @@ static void reset_runtime_state(void)
 {
   uint32_t index;
 
-  adc_half_ready_flag = 0U;
-  adc_full_ready_flag = 0U;
-  dac1_half_ready_flag = 0U;
-  dac1_full_ready_flag = 0U;
-  dac2_half_ready_flag = 0U;
-  dac2_full_ready_flag = 0U;
+  adc_dma_event_flag = 0U;
+  dac1_dma_event_flag = 0U;
+  dac2_dma_event_flag = 0U;
   adc_sample_count = 0U;
   dac_sample_count = 0U;
-  dac_ready_play_sample[0] = 0U;
-  dac_ready_play_sample[1] = 0U;
-  dac_ready_mask = 0U;
+  adc_event_handled = 0U;
+  dac_event_handled = 0U;
   adc_frame_count = 0U;
   adc_frame_overrun = 0U;
   dac_half_overrun = 0U;
@@ -859,90 +950,54 @@ static void reset_runtime_state(void)
 }
 
 /**
- * @brief 把新到达的 DAC 回调事件登记为可安全回填的半区。
- * @param ch1_half DAC CH1 半传输事件。
- * @param ch1_full DAC CH1 全传输事件。
- * @param ch2_half DAC CH2 半传输事件。
- * @param ch2_full DAC CH2 全传输事件。
+ * @brief 根据两路 DAC 的单调事件序号回填当前确定安全的最新半区。
+ * @param dac1_event_count DAC CH1 已完成的半区事件总数。
+ * @param dac2_event_count DAC CH2 已完成的半区事件总数。
  * @return 无。
+ * @note 两个计数不相等时表示其中一路 IRQ 尚未到达，暂不触碰任何半区。若一次
+ *       积压多代，只回填当前最新安全半区，并把中间未及时回填的代次记为丢失。
  */
-static void register_dac_events(uint8_t ch1_half, uint8_t ch1_full,
-                                uint8_t ch2_half, uint8_t ch2_full)
+static void service_dac_halves(uint32_t dac1_event_count,
+                               uint32_t dac2_event_count)
 {
-  if (ch1_half != 0U)
+  uint32_t pending_event_count;
+  uint32_t half_index;
+  uint64_t play_sample;
+
+  if (dac1_event_count != dac2_event_count)
   {
-    dac_sample_count += SIGSEP_DAC_DMA_HALF_LEN;
-    dac_ready_play_sample[0] =
-      dac_sample_count + SIGSEP_DAC_DMA_HALF_LEN;
-    if ((dac_ready_mask & 0x01U) != 0U)
-    {
-      dac_half_overrun++;
-    }
-    dac_ready_mask |= 0x01U;
-  }
-  if (ch2_half != 0U)
-  {
-    if ((dac_ready_mask & 0x02U) != 0U)
-    {
-      dac_half_overrun++;
-    }
-    dac_ready_mask |= 0x02U;
+    return;
   }
 
-  if (ch1_full != 0U)
+  pending_event_count = dac1_event_count - dac_event_handled;
+  if (pending_event_count == 0U)
   {
-    dac_sample_count += SIGSEP_DAC_DMA_HALF_LEN;
-    dac_ready_play_sample[1] =
-      dac_sample_count + SIGSEP_DAC_DMA_HALF_LEN;
-    if ((dac_ready_mask & 0x04U) != 0U)
-    {
-      dac_half_overrun++;
-    }
-    dac_ready_mask |= 0x04U;
-  }
-  if (ch2_full != 0U)
-  {
-    if ((dac_ready_mask & 0x08U) != 0U)
-    {
-      dac_half_overrun++;
-    }
-    dac_ready_mask |= 0x08U;
-  }
-}
-
-/**
- * @brief 对已经被两路 DAC DMA 同时释放的半区执行回填。
- * @param 无。
- * @return 无。
- */
-static void service_dac_halves(void)
-{
-  if ((dac_ready_mask & signal_dac_ready_half0_mask) ==
-      signal_dac_ready_half0_mask)
-  {
-    dac_ready_mask &= ~signal_dac_ready_half0_mask;
-    if (separation_identified != 0U)
-    {
-      fill_dac_half_signal(0U, dac_ready_play_sample[0]);
-    }
-    else
-    {
-      fill_dac_half_midscale(0U);
-    }
+    return;
   }
 
-  if ((dac_ready_mask & signal_dac_ready_half1_mask) ==
-      signal_dac_ready_half1_mask)
+  if (pending_event_count > 1U)
   {
-    dac_ready_mask &= ~signal_dac_ready_half1_mask;
-    if (separation_identified != 0U)
-    {
-      fill_dac_half_signal(1U, dac_ready_play_sample[1]);
-    }
-    else
-    {
-      fill_dac_half_midscale(1U);
-    }
+    dac_half_overrun += pending_event_count - 1U;
+  }
+
+  dac_sample_count +=
+    (uint64_t)pending_event_count * SIGSEP_DAC_DMA_HALF_LEN;
+  dac_event_handled = dac1_event_count;
+
+  /*
+   * 第 1、3、5... 个事件是前半区释放，第 2、4、6... 个事件是后半区释放。
+   * 此刻安全半区将在再经过一个半区后重新播放。
+   */
+  half_index = ((dac1_event_count & 1U) != 0U) ? 0U : 1U;
+  play_sample = dac_sample_count + SIGSEP_DAC_DMA_HALF_LEN;
+
+  if (separation_identified != 0U)
+  {
+    fill_dac_half_signal(half_index, play_sample);
+  }
+  else
+  {
+    fill_dac_half_midscale(half_index);
   }
 }
 
@@ -979,18 +1034,42 @@ static void update_dac_amplitude(uint32_t channel, uint8_t smooth_output)
 }
 
 /**
- * @brief 处理一个已经由 DMA 完成的 ADC 半区。
+ * @brief 把一个刚完成的 ADC DMA 半区复制到 CPU 专用分析缓冲区。
  * @param offset 半区在 adc_dma_buffer 中的起始索引。
+ * @param expected_event_count 选择该半区时看到的 ADC 事件序号。
+ * @return 复制期间 DMA 未切换到下一半区返回 1，否则返回 0 并丢弃副本。
+ */
+static uint8_t copy_adc_frame(uint32_t offset,
+                              uint32_t expected_event_count)
+{
+  const uint16_t *source = &adc_dma_buffer[offset];
+  uint32_t byte_count =
+    SIGSEP_ADC_DMA_HALF_LEN * (uint32_t)sizeof(uint16_t);
+  uint32_t interrupt_state;
+  uint32_t event_count_after_copy;
+
+  dma_invalidate_from_cpu(source, byte_count);
+  memcpy(adc_analysis_buffer, source,
+         SIGSEP_ANALYSIS_FRAME_LEN * sizeof(uint16_t));
+  __DMB();
+
+  interrupt_state = __get_PRIMASK();
+  __disable_irq();
+  event_count_after_copy = adc_dma_event_flag;
+  __set_PRIMASK(interrupt_state);
+
+  return (event_count_after_copy == expected_event_count) ? 1U : 0U;
+}
+
+/**
+ * @brief 处理一个已经安全复制、不会再被 DMA 改写的 ADC 分析帧。
+ * @param samples CPU 专用的 500 点分析缓冲区。
  * @param frame_start_sample 此半区第一个样点的绝对采样点编号。
  * @return 无。
  */
-static void process_adc_frame(uint32_t offset, uint64_t frame_start_sample)
+static void process_adc_frame(const uint16_t *samples,
+                              uint64_t frame_start_sample)
 {
-  const uint16_t *samples = &adc_dma_buffer[offset];
-  uint32_t byte_count =
-    SIGSEP_ADC_DMA_HALF_LEN * (uint32_t)sizeof(uint16_t);
-
-  dma_invalidate_from_cpu(samples, byte_count);
   adc_frame_count++;
 
   if (separation_identified == 0U)
@@ -1006,6 +1085,15 @@ static void process_adc_frame(uint32_t offset, uint64_t frame_start_sample)
     active_component[1] = result[1];
     nco_init(0U, &active_component[0], frame_start_sample);
     nco_init(1U, &active_component[1], frame_start_sample);
+#if (SIGSEP_COMMON_SOURCE_LOCK != 0U)
+    {
+      uint32_t master_channel =
+        (SIGSEP_PHASE_MASTER_CH == 0U) ? 0U : 1U;
+      uint32_t follower_channel = master_channel ^ 1U;
+
+      nco_align_integer_common_source(follower_channel, master_channel);
+    }
+#endif
     separation_identified = 1U;
     update_dac_amplitude(0U, 0U);
     update_dac_amplitude(1U, 0U);
@@ -1122,50 +1210,53 @@ void signal_separation_start(void)
  */
 void signal_separation_process(void)
 {
-  uint8_t adc_half_event;
-  uint8_t adc_full_event;
-  uint8_t dac1_half_event;
-  uint8_t dac1_full_event;
-  uint8_t dac2_half_event;
-  uint8_t dac2_full_event;
-  uint32_t interrupt_state = __get_PRIMASK();
+  uint32_t adc_event_count;
+  uint32_t dac1_event_count;
+  uint32_t dac2_event_count;
+  uint32_t pending_adc_event_count;
+  uint32_t adc_offset;
+  uint32_t interrupt_state;
+  uint64_t frame_start_sample;
 
+  interrupt_state = __get_PRIMASK();
   __disable_irq();
-  adc_half_event = adc_half_ready_flag;
-  adc_full_event = adc_full_ready_flag;
-  dac1_half_event = dac1_half_ready_flag;
-  dac1_full_event = dac1_full_ready_flag;
-  dac2_half_event = dac2_half_ready_flag;
-  dac2_full_event = dac2_full_ready_flag;
-  adc_half_ready_flag = 0U;
-  adc_full_ready_flag = 0U;
-  dac1_half_ready_flag = 0U;
-  dac1_full_ready_flag = 0U;
-  dac2_half_ready_flag = 0U;
-  dac2_full_ready_flag = 0U;
-  if (interrupt_state == 0U)
+  adc_event_count = adc_dma_event_flag;
+  dac1_event_count = dac1_dma_event_flag;
+  dac2_event_count = dac2_dma_event_flag;
+  __set_PRIMASK(interrupt_state);
+
+  /* DAC 回填优先于耗时 ADC 分析，尽量扩大输出半区的时间裕量。 */
+  service_dac_halves(dac1_event_count, dac2_event_count);
+
+  pending_adc_event_count = adc_event_count - adc_event_handled;
+  if (pending_adc_event_count == 0U)
   {
-    __enable_irq();
+    return;
   }
 
-  if ((adc_half_event != 0U) && (adc_full_event != 0U))
+  if (pending_adc_event_count > 1U)
+  {
+    adc_frame_overrun += pending_adc_event_count - 1U;
+  }
+
+  /*
+   * 跳过已经过期的旧事件，只复制最新完成且此刻未被 DMA 写入的半区。绝对样点
+   * 时间仍按全部事件推进，因此一次主循环超时不会永久破坏 PLL 时间轴。
+   */
+  adc_sample_count +=
+    (uint64_t)pending_adc_event_count * SIGSEP_ADC_DMA_HALF_LEN;
+  adc_event_handled = adc_event_count;
+  adc_offset = ((adc_event_count & 1U) != 0U) ?
+               0U : SIGSEP_ADC_DMA_HALF_LEN;
+  frame_start_sample = adc_sample_count - SIGSEP_ADC_DMA_HALF_LEN;
+
+  if (copy_adc_frame(adc_offset, adc_event_count) == 0U)
   {
     adc_frame_overrun++;
+    return;
   }
-  register_dac_events(dac1_half_event, dac1_full_event,
-                      dac2_half_event, dac2_full_event);
-  service_dac_halves();
 
-  if (adc_half_event != 0U)
-  {
-    process_adc_frame(0U, adc_sample_count);
-    adc_sample_count += SIGSEP_ADC_DMA_HALF_LEN;
-  }
-  if (adc_full_event != 0U)
-  {
-    process_adc_frame(SIGSEP_ADC_DMA_HALF_LEN, adc_sample_count);
-    adc_sample_count += SIGSEP_ADC_DMA_HALF_LEN;
-  }
+  process_adc_frame(adc_analysis_buffer, frame_start_sample);
 }
 
 /**
@@ -1241,13 +1332,13 @@ uint8_t signal_separation_get_status(signal_separation_status_t *status)
  * @brief ADC1 DMA 前半区完成回调。
  * @param hadc ADC 句柄。
  * @return 无。
- * @note 中断中只设置一个标志，算法在主循环完成。
+ * @note 中断中只递增一个事件标志，算法在主循环完成。
  */
 void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
 {
   if (hadc->Instance == ADC1)
   {
-    adc_half_ready_flag = 1U;
+    adc_dma_event_flag++;
   }
 }
 
@@ -1255,13 +1346,13 @@ void HAL_ADC_ConvHalfCpltCallback(ADC_HandleTypeDef *hadc)
  * @brief ADC1 DMA 后半区完成回调。
  * @param hadc ADC 句柄。
  * @return 无。
- * @note 中断中只设置一个标志，算法在主循环完成。
+ * @note 与前半区共享同一单调事件序号；奇数代表前半区，偶数代表后半区。
  */
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef *hadc)
 {
   if (hadc->Instance == ADC1)
   {
-    adc_full_ready_flag = 1U;
+    adc_dma_event_flag++;
   }
 }
 
@@ -1274,7 +1365,7 @@ void HAL_DAC_ConvHalfCpltCallbackCh1(DAC_HandleTypeDef *hdac)
 {
   if (hdac->Instance == DAC1)
   {
-    dac1_half_ready_flag = 1U;
+    dac1_dma_event_flag++;
   }
 }
 
@@ -1287,7 +1378,7 @@ void HAL_DAC_ConvCpltCallbackCh1(DAC_HandleTypeDef *hdac)
 {
   if (hdac->Instance == DAC1)
   {
-    dac1_full_ready_flag = 1U;
+    dac1_dma_event_flag++;
   }
 }
 
@@ -1300,7 +1391,7 @@ void HAL_DACEx_ConvHalfCpltCallbackCh2(DAC_HandleTypeDef *hdac)
 {
   if (hdac->Instance == DAC1)
   {
-    dac2_half_ready_flag = 1U;
+    dac2_dma_event_flag++;
   }
 }
 
@@ -1313,6 +1404,6 @@ void HAL_DACEx_ConvCpltCallbackCh2(DAC_HandleTypeDef *hdac)
 {
   if (hdac->Instance == DAC1)
   {
-    dac2_full_ready_flag = 1U;
+    dac2_dma_event_flag++;
   }
 }
