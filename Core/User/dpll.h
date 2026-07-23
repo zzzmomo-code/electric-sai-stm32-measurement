@@ -2,7 +2,7 @@
  * @file dpll.h
  * @brief 低频数字锁相环、谐波判别和连续相位 DAC 输出接口。
  *
- * 模块用途：用 16 个同向施密特过零周期测频，用 f/2、f、2f 相关能量排除二倍频误锁，
+ * 模块用途：用 32 个同向施密特过零周期测频，用五档相关能量排除多倍频误锁，
  *           再以跨 DMA 块 I/Q 检相和限速 PI 环路缓慢拉相。
  * GPIO 引脚：无直接 GPIO 引脚。
  * 依赖外设：无；输入为 ADC 采样数组，输出交给 DAC DMA 缓冲区。
@@ -15,6 +15,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+
+#include "config.h"
 
 typedef enum
 {
@@ -32,19 +34,21 @@ typedef struct
     uint32_t phase_increment_q32;
     uint64_t total_samples;
 
-    /* 16 周期同向过零测量状态。 */
+    /* 32 周期同向过零测量状态。 */
     double period_window_start_sample;
     double last_crossing_sample;
     float previous_raw_sample;
     float period_estimate_samples;
     uint32_t period_count;
+    double acquisition_frequency_sum;
+    uint32_t acquisition_average_count;
 
-    /* f/2、f、2f 三候选相关能量验证器，仅保存累加量，不保存长窗样本。 */
-    uint32_t validation_phase_q32[3];
-    uint32_t validation_increment_q32[3];
-    double validation_i[3];
-    double validation_q[3];
-    float validation_frequency_hz[3];
+    /* 五档倍频候选相关验证器，仅保存累加量，不保存长窗样本。 */
+    uint32_t validation_phase_q32[DPLL_VALIDATION_CANDIDATE_COUNT];
+    uint32_t validation_increment_q32[DPLL_VALIDATION_CANDIDATE_COUNT];
+    double validation_i[DPLL_VALIDATION_CANDIDATE_COUNT];
+    double validation_q[DPLL_VALIDATION_CANDIDATE_COUNT];
+    float validation_frequency_hz[DPLL_VALIDATION_CANDIDATE_COUNT];
     uint32_t validation_raw_count;
     uint32_t validation_target_raw_count;
     uint32_t validation_decimation_count;

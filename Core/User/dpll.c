@@ -115,6 +115,8 @@ static void dpll_reset_acquisition(dpll_t *dpll)
 
     dpll->period_count = 0u;
     dpll->period_estimate_samples = 0.0f;
+    dpll->acquisition_frequency_sum = 0.0;
+    dpll->acquisition_average_count = 0u;
     dpll->below_hysteresis_count = 0u;
     dpll->crossing_valid = 0u;
     dpll->crossing_armed = 0u;
@@ -122,7 +124,9 @@ static void dpll_reset_acquisition(dpll_t *dpll)
     dpll->validation_raw_count = 0u;
     dpll->validation_decimation_count = 0u;
 
-    for (candidate_index = 0u; candidate_index < 3u; ++candidate_index)
+    for (candidate_index = 0u;
+         candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
+         ++candidate_index)
     {
         dpll->validation_i[candidate_index] = 0.0;
         dpll->validation_q[candidate_index] = 0.0;
@@ -130,9 +134,9 @@ static void dpll_reset_acquisition(dpll_t *dpll)
 }
 
 /**
- * @brief 启动 f/2、f、2f 三候选相关能量验证。
+ * @brief 启动 f/8、f/4、f/2、f、2f 五候选相关能量验证。
  * @param dpll DPLL 状态对象。
- * @param measured_frequency_hz 16 周期过零得到的候选频率。
+ * @param measured_frequency_hz 32 周期过零得到的候选频率。
  * @return 无。
  * @note 验证过程只累加 I/Q，不申请长窗数组。
  */
@@ -143,11 +147,15 @@ static void dpll_start_validation(dpll_t *dpll, float measured_frequency_hz)
     uint32_t target_samples;
 
     dpll->candidate_frequency_hz = measured_frequency_hz;
-    dpll->validation_frequency_hz[0] = measured_frequency_hz * 0.5f;
-    dpll->validation_frequency_hz[1] = measured_frequency_hz;
-    dpll->validation_frequency_hz[2] = measured_frequency_hz * 2.0f;
+    dpll->validation_frequency_hz[0] = measured_frequency_hz * 0.125f;
+    dpll->validation_frequency_hz[1] = measured_frequency_hz * 0.25f;
+    dpll->validation_frequency_hz[2] = measured_frequency_hz * 0.5f;
+    dpll->validation_frequency_hz[3] = measured_frequency_hz;
+    dpll->validation_frequency_hz[4] = measured_frequency_hz * 2.0f;
 
-    for (candidate_index = 0u; candidate_index < 3u; ++candidate_index)
+    for (candidate_index = 0u;
+         candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
+         ++candidate_index)
     {
         const float candidate_hz = dpll->validation_frequency_hz[candidate_index];
 
@@ -246,7 +254,7 @@ static void dpll_accept_validation(dpll_t *dpll,
 }
 
 /**
- * @brief 对一个采样点更新三候选相关器。
+ * @brief 对一个采样点更新五候选相关器。
  * @param dpll DPLL 状态对象。
  * @param centered_sample 已去直流的 ADC 采样值。
  * @param target_phase_deg 输出相对输入的目标相位。
@@ -261,7 +269,9 @@ static void dpll_process_validation_sample(dpll_t *dpll,
 
     if (dpll->validation_decimation_count == 0u)
     {
-        for (candidate_index = 0u; candidate_index < 3u; ++candidate_index)
+        for (candidate_index = 0u;
+             candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
+             ++candidate_index)
         {
             if (dpll->validation_increment_q32[candidate_index] != 0u)
             {
@@ -291,7 +301,9 @@ static void dpll_process_validation_sample(dpll_t *dpll,
         uint32_t winner_index = 0u;
         double winner_energy = -1.0;
 
-        for (candidate_index = 0u; candidate_index < 3u; ++candidate_index)
+        for (candidate_index = 0u;
+             candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
+             ++candidate_index)
         {
             const double energy =
                 (dpll->validation_i[candidate_index]
@@ -309,10 +321,12 @@ static void dpll_process_validation_sample(dpll_t *dpll,
 
         /*
          * 不能简单选择最强谱线：模拟链路失真可能使二次谐波暂时强于基波。
-         * 从 f/2、f、2f 由低到高选择达到可信能量门限的第一个候选，
+         * 从 f/8 到 2f 由低到高选择达到可信能量门限的第一个候选，
          * 只要真实基波仍有足够能量，就不会再次误锁到二倍频。
          */
-        for (candidate_index = 0u; candidate_index < 3u; ++candidate_index)
+        for (candidate_index = 0u;
+             candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
+             ++candidate_index)
         {
             const double energy =
                 (dpll->validation_i[candidate_index]
@@ -334,7 +348,9 @@ static void dpll_process_validation_sample(dpll_t *dpll,
         return;
     }
 
-    for (candidate_index = 0u; candidate_index < 3u; ++candidate_index)
+    for (candidate_index = 0u;
+         candidate_index < DPLL_VALIDATION_CANDIDATE_COUNT;
+         ++candidate_index)
     {
         dpll->validation_phase_q32[candidate_index] +=
             dpll->validation_increment_q32[candidate_index];
@@ -342,7 +358,7 @@ static void dpll_process_validation_sample(dpll_t *dpll,
 }
 
 /**
- * @brief 处理一次 16 周期粗频率结果。
+ * @brief 处理一次 32 周期粗频率结果。
  * @param dpll DPLL 状态对象。
  * @param measured_frequency_hz 当前粗频率。
  * @return 无。
@@ -363,7 +379,37 @@ static void dpll_handle_coarse_frequency(dpll_t *dpll,
     {
         if (dpll->validation_active == 0u)
         {
-            dpll_start_validation(dpll, measured_frequency_hz);
+            if (dpll->acquisition_average_count != 0u)
+            {
+                const float running_average_hz =
+                    (float)(dpll->acquisition_frequency_sum
+                            / (double)dpll->acquisition_average_count);
+
+                if (fabsf(measured_frequency_hz - running_average_hz)
+                    > (running_average_hz
+                       * DPLL_ACQUISITION_AVERAGE_TOLERANCE_RATIO))
+                {
+                    dpll->acquisition_frequency_sum =
+                        (double)measured_frequency_hz;
+                    dpll->acquisition_average_count = 1u;
+                    return;
+                }
+            }
+
+            dpll->acquisition_frequency_sum +=
+                (double)measured_frequency_hz;
+            ++dpll->acquisition_average_count;
+            if (dpll->acquisition_average_count
+                >= DPLL_ACQUISITION_AVERAGES)
+            {
+                const float averaged_frequency_hz =
+                    (float)(dpll->acquisition_frequency_sum
+                            / (double)dpll->acquisition_average_count);
+
+                dpll->acquisition_frequency_sum = 0.0;
+                dpll->acquisition_average_count = 0u;
+                dpll_start_validation(dpll, averaged_frequency_hz);
+            }
         }
         return;
     }
@@ -387,7 +433,7 @@ static void dpll_handle_coarse_frequency(dpll_t *dpll,
 }
 
 /**
- * @brief 用一个上升过零位置更新 16 周期测频器。
+ * @brief 用一个上升过零位置更新 32 周期测频器。
  * @param dpll DPLL 状态对象。
  * @param crossing_sample 带线性插值的小数采样位置。
  * @return 无。

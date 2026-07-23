@@ -36,11 +36,11 @@
 | --- | --- |
 | 输入 | 单路、0～3.3 V 单极性正弦 |
 | 验收频点 | 500 Hz、1 kHz、2 kHz、3 kHz |
-| 粗测频 | 连续 16 个同方向、周期一致的施密特上升过零 |
-| 防误锁 | 对粗测频候选的 f/2、f、2f 做长窗相关能量比较 |
+| 粗测频 | 连续 32 个同方向过零，并对连续 4 个测频窗口求平均 |
+| 防误锁 | 对 f/8、f/4、f/2、f、2f 做长窗相关能量比较 |
 | 相位 | DPLL 目标 0°，稳态软件误差不大于 5° |
 | 连续性 | DAC 64 位相位累加器跨 DMA 块连续，不允许块边界重置 |
-| 拉相 | 只用不超过 ±0.1 Hz 的频偏缓慢拉回，不直接改写运行中相位 |
+| 拉相 | 只用不超过 ±0.02 Hz 的等效相位细步进缓慢拉回 |
 | 锁定时间 | 软件仿真不大于 5 秒；实板重新测量 |
 | 波形还原 | 保留直接 ADC→DAC 同步流水模式 |
 
@@ -94,7 +94,7 @@
 6. 如需完整波形直通，通过 USART1 发送字符 `0`。
 
 当前已完成 CubeIDE 1.19.0 无界面 Debug 完整编译：`0 errors, 0 warnings`，生成
-`Debug/phase_locking_codex.elf`。Flash 使用 43,616 字节，静态 RAM 使用 27,960 字节。
+`Debug/phase_locking_codex.elf`。Flash 使用 43,792 字节，静态 RAM 使用 28,032 字节。
 实物输入范围、锁定时间、幅相误差和噪声上限仍需上板测量。
 
 ## 5. 串口命令
@@ -113,13 +113,13 @@
 状态示例：
 
 ```text
-fw=lfdpll_fundamental_v2 mode=dpll lock=locked run=1 f_mHz=1000000 coarse_mHz=1000000 phase_mdeg=800 target_mdeg=0 amp=12000 offset=32768 blocks=100 err=0/0/0
+fw=lfdpll_multioctave_v3 mode=dpll lock=locked run=1 f_mHz=1000000 coarse_mHz=1000000 phase_mdeg=800 target_mdeg=0 amp=12000 offset=32768 blocks=100 err=0/0/0
 ```
 
 主要字段：
 
 - `lock`：`no_signal`、`acquiring`、`tracking` 或 `locked`；
-- `fw`：当前固件标识，本版必须显示 `lfdpll_fundamental_v2`；
+- `fw`：当前固件标识，本版必须显示 `lfdpll_multioctave_v3`；
 - `f_mHz`：实际用于 DAC NCO 的频率，单位 mHz；
 - `coarse_mHz`：ADC 粗测频并经基波判决后的频率，单位 mHz；
 - `phase_mdeg`：当前相位误差，单位千分之一度；
@@ -152,12 +152,17 @@ fw=lfdpll_fundamental_v2 mode=dpll lock=locked run=1 f_mHz=1000000 coarse_mHz=10
 1. 计算 ADC 块的偏置和幅度，幅度太小时保持 `no_signal`；
 2. 输入连续低于负施密特阈值 16 点后才允许下一次上升过零；
 3. 每次有效过零后设置最短消隐时间，忽略噪声造成的短时间重复过零；
-4. 只有连续 16 个周期满足一致性才形成粗频率候选；
-5. 对候选的 f/2、f、2f 做最长 65,536 点的抽取相关，选择能量最大的真实基波；
+4. 连续 32 个周期形成一次测频值，再对连续 4 个窗口求平均；
+5. 对候选的 f/8、f/4、f/2、f、2f 做最长 65,536 点抽取相关，最低可信基波优先；
 6. I/Q 检相至少跨 4 个 DMA 半块、至少覆盖 8 个周期；
 7. 相位误差经过带限幅和抗积分饱和的 PI 环路，只产生很小的频率修正；
 8. 锁定后降低环路增益，并用连续 8 个窗口锁定、连续 3 个窗口失锁的滞回判定；
 9. DAC 每块都从上块结束的 64 位相位继续生成，上电起振采用 20 ms 幅度渐入。
+
+当前没有加入传统 FFT。1 MHz 采样率下，4096 点 FFT 的频点间隔约为 244 Hz，
+不适合直接给 500 Hz～3 kHz 的 NCO 提供精确初值。当前采用 32 周期插值测频、
+4 窗口平均和最长 65,536 点相关，内存开销更小，频率结果也更细。以后如需观察
+完整频谱，应先低通抽取，再把 FFT 作为辅助判决，而不是直接替换高精度测频。
 
 优点：
 
@@ -193,7 +198,7 @@ fw=lfdpll_fundamental_v2 mode=dpll lock=locked run=1 f_mHz=1000000 coarse_mHz=10
 | `config.h` | 采样率、DMA、DPLL、NCO 参数 |
 | `system.c/.h` | 统一初始化、主循环调度、串口命令 |
 | `signal_chain.c/.h` | ADC/DAC DMA、Cache、模式切换 |
-| `dpll.c/.h` | 抗噪粗测频、三候选相关、跨块 I/Q、限速 PI、连续输出相位 |
+| `dpll.c/.h` | 抗噪粗测频、五候选相关、跨块 I/Q、限速 PI、连续输出相位 |
 | `nco.c/.h` | 2048 点正弦表、线性插值、Q32 相位累加 |
 | `uart_debug.c/.h` | 简单的非阻塞串口收发 |
 | `dpll_host_test.c` | 可在电脑上运行的算法测试 |
@@ -218,10 +223,11 @@ H743 开启了 D-Cache。DMA 缓冲区被固定放入 D2 RAM 的 `.dma_buffer` �
 - `DPLL_CROSSING_HYSTERESIS_RATIO`：过零迟滞占估计幅度的比例；
 - `DPLL_CROSSING_ARM_SAMPLES`：负阈值连续确认点数，当前为 16；
 - `DPLL_CROSSING_BLANKING_MIN_SAMPLES`：过零后的最短消隐点数；
-- `DPLL_PERIOD_TOLERANCE_RATIO`：16 周期一致性容差；
+- `DPLL_ACQUISITION_AVERAGES`：初始测频平均窗口数，当前为 4；
+- `DPLL_PERIOD_TOLERANCE_RATIO`：32 周期一致性容差；
 - `DPLL_FUNDAMENTAL_ENERGY_RATIO`：最低可信基波门限，当前为最强候选能量的 5%；
-- `DPLL_CAPTURE_CORRECTION_LIMIT_HZ`：捕获态最大拉相频偏，当前 ±0.1 Hz；
-- `DPLL_LOCKED_CORRECTION_LIMIT_HZ`：锁定态最大修正频偏，当前 ±0.02 Hz；
+- `DPLL_CAPTURE_CORRECTION_LIMIT_HZ`：捕获态等效细步进上限，当前 ±0.02 Hz；
+- `DPLL_LOCKED_CORRECTION_LIMIT_HZ`：锁定态细步进上限，当前 ±0.005 Hz；
 - `DPLL_LOCK_PHASE_THRESHOLD_DEG`：锁定相位门限，当前 5°；
 - `SIGNAL_DIRECT_GAIN_Q15`、`SIGNAL_DIRECT_OFFSET_ADC_COUNTS`：直接模式增益和偏置校准。
 
@@ -231,17 +237,18 @@ H743 开启了 D-Cache。DMA 缓冲区被固定放入 D2 RAM 的 `.dma_buffer` �
 
 - CubeIDE 1.19.0 Debug 完整编译：通过，`0 errors, 0 warnings`；
 - 真实 ELF 已生成：`Debug/phase_locking_codex.elf`；
-- Flash：43,616 B / 2 MiB，约 2.1%；
-- 静态 RAM：27,960 B；其中 D2 RAM 的 ADC+DAC DMA 缓冲区共 16,384 B；
-- `dpll_t`：248 B；三候选相关和跨块 I/Q 都只保存累加量，没有长窗采样数组；
-- 主机测试 500 Hz：DAC 实测 500.004 Hz，0.195 s 锁定；
-- 主机测试 1 kHz：DAC 实测 1000.004 Hz，0.115 s 锁定；
-- 主机测试 2 kHz：DAC 实测 2000.002 Hz，0.090 s 锁定；
-- 主机测试 3 kHz：DAC 实测 2999.999 Hz，0.082 s 锁定；
-- 1 kHz + 16,000 码二次谐波（谐波强于基波）：选择 1000.012 Hz，DAC 实测 999.911 Hz；
-- 1 kHz + 70 kHz/5,000 码噪声：选择 999.999 Hz，短时多次过零测试通过；
+- Flash：43,792 B / 2 MiB，约 2.1%；
+- 静态 RAM：28,032 B；其中 D2 RAM 的 ADC+DAC DMA 缓冲区共 16,384 B；
+- `dpll_t`：320 B；五候选相关和跨块 I/Q 都只保存累加量；
+- 主机测试 500 Hz：DAC 实测 500.001 Hz，0.420 s 锁定；
+- 主机测试 1 kHz：DAC 实测 1000.003 Hz，0.227 s 锁定；
+- 主机测试 2 kHz：DAC 实测 2000.002 Hz，0.164 s 锁定；
+- 主机测试 3 kHz：DAC 实测 3000.001 Hz，0.131 s 锁定；
+- 强二次谐波输入：DAC 实测 999.990 Hz；
+- 强四次谐波输入：DAC 实测 999.987 Hz，没有误输出 2 kHz；
+- 1 kHz + 70 kHz/5,000 码噪声：选择 1000.000 Hz；
 - DAC 跨 DMA 块连续相位测试通过；
-- 目标相位从 0° 改为 90°：未直接改写 DAC 相位，3 秒后重新锁定，误差 1.044°；
+- 目标相位从 0° 改为 90°：未直接改写相位，18 秒缓慢重锁，误差 0.066°；
 - 无信号识别测试通过。
 
 以上是软件结果。最终的相位抖动、幅度误差、频率范围和长期稳定性必须接实板与示波器验证。

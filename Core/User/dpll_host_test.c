@@ -24,6 +24,7 @@ static uint16_t test_dac_samples[SIGNAL_DMA_HALF_SAMPLES];
 static double test_input_phase_rad;
 static double test_noise_phase_rad;
 static double test_noise_amplitude;
+static double test_fourth_harmonic_amplitude;
 
 #define TEST_CHECK(condition, message)                                      \
     do                                                                      \
@@ -81,6 +82,8 @@ static void test_generate_input(double frequency_hz,
             + (fundamental_amplitude * sin(test_input_phase_rad))
             + (second_harmonic_amplitude
                * sin((2.0 * test_input_phase_rad) + 0.35))
+            + (test_fourth_harmonic_amplitude
+               * sin((4.0 * test_input_phase_rad) + 0.21))
             + (test_noise_amplitude * sin(test_noise_phase_rad));
 
         test_adc_samples[index] = test_to_adc_code(value);
@@ -307,6 +310,45 @@ static int test_second_harmonic_rejection(void)
 }
 
 /**
+ * @brief 验证四次谐波制造多个过零时不会只回退一档而输出二倍频。
+ * @return 通过返回 1，否则返回 0。
+ * @note 四次谐波幅度高于基波，用来复现“粗测到 4f、旧候选最低为 2f”。
+ */
+static int test_fourth_harmonic_rejection(void)
+{
+    dpll_t dpll;
+    uint32_t used_blocks;
+    double measured_dac_frequency_hz;
+
+    test_input_phase_rad = 0.39;
+    test_noise_amplitude = 0.0;
+    test_fourth_harmonic_amplitude = 16000.0;
+    dpll_init(&dpll, DPLL_DEFAULT_FREQUENCY_HZ);
+    used_blocks =
+        test_run_until_locked(&dpll, 1000.0, 0.0, 0.0f, 2442u);
+    measured_dac_frequency_hz =
+        test_measure_dac_frequency(&dpll,
+                                   1000.0,
+                                   0.0,
+                                   0.0f,
+                                   64u);
+    test_fourth_harmonic_amplitude = 0.0;
+
+    TEST_CHECK(dpll.lock_state == DPLL_STATE_LOCKED,
+               "fourth harmonic input did not lock");
+    TEST_CHECK(fabsf(dpll.coarse_frequency_hz - 1000.0f) < 0.50f,
+               "fourth harmonic input selected 2f or 4f");
+    TEST_CHECK(fabs(measured_dac_frequency_hz - 1000.0) < 0.60,
+               "fourth harmonic input doubled the DAC frequency");
+    TEST_CHECK(used_blocks < 2442u,
+               "fourth harmonic rejection exceeded timeout");
+    (void)printf("PASS fourth harmonic selected=%7.3fHz dac=%9.3fHz\n",
+                 (double)dpll.coarse_frequency_hz,
+                 measured_dac_frequency_hz);
+    return 1;
+}
+
+/**
  * @brief 验证高频噪声造成短时多次过零时仍能捕获基波。
  * @return 通过返回 1，否则返回 0。
  * @note 70 kHz 噪声幅度约为基波的 42%。
@@ -406,7 +448,7 @@ static int test_slow_target_phase_pull(void)
                       test_dac_samples,
                       SIGNAL_DMA_HALF_SAMPLES,
                       SIGNAL_DMA_HALF_SAMPLES);
-    for (block = 0u; block < 1465u; ++block)
+    for (block = 0u; block < 8790u; ++block)
     {
         test_generate_input(1000.0, 12000.0, 0.0);
         dpll_process_block(&dpll,
@@ -427,7 +469,7 @@ static int test_slow_target_phase_pull(void)
                "90 degree target did not relock");
     TEST_CHECK(fabsf(dpll_get_phase_error_deg(&dpll)) <= 5.0f,
                "90 degree target phase error exceeds 5 degrees");
-    (void)printf("PASS slow target pull duration=3.0s phase=%7.3fdeg\n",
+    (void)printf("PASS slow target pull duration=18.0s phase=%7.3fdeg\n",
                  (double)dpll_get_phase_error_deg(&dpll));
     return 1;
 }
@@ -479,6 +521,8 @@ int main(void)
     TEST_CHECK(test_frequency_point(3000.0) != 0, "3 kHz test failed");
     TEST_CHECK(test_second_harmonic_rejection() != 0,
                "second harmonic rejection test failed");
+    TEST_CHECK(test_fourth_harmonic_rejection() != 0,
+               "fourth harmonic rejection test failed");
     TEST_CHECK(test_noisy_crossing_rejection() != 0,
                "noisy crossing rejection test failed");
     TEST_CHECK(test_persistent_output_phase() != 0,
