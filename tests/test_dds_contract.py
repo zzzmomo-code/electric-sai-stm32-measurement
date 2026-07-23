@@ -557,6 +557,15 @@ int main(void)
             init_body.group("body").index("dds_control_init();"),
         )
 
+    def test_system_initializes_second_ad9834_after_spi6(self) -> None:
+        main = read_text("Core/Src/main.c")
+        system_header = read_text("Core/User/system.h")
+        system_source = read_text("Core/User/system.c")
+
+        self.assertLess(main.index("MX_SPI6_Init();"), main.index("system_init();"))
+        self.assertIn('#include "ad9834_2.h"', system_header)
+        self.assertIn("(void)ad9834_2_init(900000u);", system_source)
+
 
 if __name__ == "__main__":
     unittest.main()

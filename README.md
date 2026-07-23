@@ -28,6 +28,12 @@ STM32CubeIDE 1.19.0、STM32Cube FW_H7 V1.12.1。当前工程组合了以下功�
 | PB15 | SPI2_MOSI | AD9834 SDATA |
 | PB14 | GPIO_Output | AD9834 FSELECT，低电平选择 FREQ0 |
 | PD8 | GPIO_Output | AD9834 PSELECT，低电平选择 PHASE0 |
+| PB3 | SPI6_SCK | 第二块 AD9834 SCLK |
+| PB5 | SPI6_MOSI | 第二块 AD9834 SDATA |
+| PB4 | GPIO_Output | 第二块 AD9834 RESET，正常运行时为低电平 |
+| PD5 | GPIO_Output | 第二块 AD9834 FSYNC，空闲为高电平 |
+| PD6 | GPIO_Output | 第二块 AD9834 FSELECT，低电平选择 FREQ0 |
+| PD7 | GPIO_Output | 第二块 AD9834 PSELECT，低电平选择 PHASE0 |
 | PA9 | USART1_TX | 接淘晶驰串口屏 RX |
 | PA10 | USART1_RX | 接淘晶驰串口屏 TX |
 
@@ -72,6 +78,14 @@ PC4 与 PB1 的模拟电压必须保持在 VSSA～VDDA 允许范围内。
 - SPI123 内核时钟为 64 MHz，Prescaler=8，SCLK=8 MHz。
 - AD9834 MCLK 为 75 MHz，FSYNC 由 PB12 手动控制。
 - 不使用 SPI DMA 和 SPI 中断。
+
+### SPI6 与第二块 AD9834
+
+- SPI6：Master、Transmit Only、Motorola、16 bit、MSB First。
+- CPOL High，CPHA 1 Edge，软件 NSS；FSYNC 由 PD5 手动控制。
+- SPI6 内核时钟为 120 MHz，Prescaler=4，SCLK=30 MHz，不超过 AD9834 的 40 MHz 上限。
+- 第二块 AD9834 MCLK 为 75 MHz；PB4/RESET 在初始化完成后拉低。
+- 不使用 SPI DMA 和 SPI 中断；每个 FSYNC 低电平窗口发送一个 16 位字。
 
 ### DAC1 与 VGA
 
@@ -128,6 +142,35 @@ ad9834_select_phase_register(ad9834_phase_register_1);
 不会自动切换 FSELECT 或 PSELECT；选择函数只改变引脚，不发送 SPI 数据。原有
 `ad9834_set_frequency_hz()` 保留并固定写入 FREQ0，当前 `dds_control` 自动本振补偿
 继续使用该接口，因此原有测量流程不受备用寄存器设置功能影响。
+
+`dds_set_frequency()` 用于第一块 AD9834 的无中断交替更新：先写入非活动频率寄存器，
+两个 16 位字均成功后才切换 FSELECT；参数或 SPI 写入失败时保持当前输出。
+
+第二块 AD9834 使用独立的 `ad9834_2.c/.h` 和 SPI6。`system_init()` 将其 FREQ0、
+FREQ1 都初始化为 900 kHz，将 PHASE0、PHASE1 初始化为 0°，最后解除 PB4/RESET
+并选择 FREQ0 和 PHASE0。初始化失败时 RESET 保持高电平，可通过
+`ad9834_2_diagnostics` 查看错误。
+
+第二块寄存器可独立设置：
+
+```c
+ad9834_2_set_frequency_register_hz(
+    ad9834_2_frequency_register_1,
+    2000000u);
+ad9834_2_set_phase_register_degrees(
+    ad9834_2_phase_register_1,
+    90u);
+ad9834_2_select_frequency_register(ad9834_2_frequency_register_1);
+ad9834_2_select_phase_register(ad9834_2_phase_register_1);
+```
+
+需要连续无中断更新第二块输出时调用：
+
+```c
+dds2_set_frequency(1000000u);
+```
+
+该函数同样先写非活动频率寄存器，完整成功后才切换 PD6/FSELECT。
 
 收到 `M` 后，系统先请求 TIM5 立即测频，并按粗测结果设置一次 DDS 初值：
 
@@ -297,9 +340,9 @@ CubeMX 完成时钟和 `MX_*` 初始化后，`system_init()` 按当前顺序调�
 3. `measurement_fft_init()`；
 4. `frequency_measure_init()`；
 5. `dds_control_init()`；
-6. `hmi_tjc_init()` 并绑定 USART1；
-7. `adc_dual_init()`；
-8. 设置 CH1、CH2 ADC 电压校准参数。
+6. `ad9834_2_init(900000u)`；
+7. `hmi_tjc_init()` 并绑定 USART1；
+8. 初始化当前选择的 ADC 输入模块。
 
 `system_process()` 持续处理 HMI 输入、TIM5 测频、DDS、ADC DMA、FFT 和 HMI 刷新。
 FFT 采集期间暂停低速串口屏发送，完成一帧后在显示空档刷新，避免 9600 波特率发送
@@ -310,6 +353,7 @@ FFT 采集期间暂停低速串口屏发送，完成一帧后在显示空档刷�
 - `Core/User/system.c/.h`：用户模块统一入口。
 - `Core/User/frequency_measure.c/.h`：TIM5+DWT 外部频率测量。
 - `Core/User/ad9834.c/.h`：AD9834 双频率、双相位寄存器 SPI 驱动。
+- `Core/User/ad9834_2.c/.h`：第二块 AD9834 的 SPI6 独立驱动和硬件复位控制。
 - `Core/User/dds_control.c/.h`：低侧本振规划和更新控制。
 - `Core/User/adc_dual.c/.h`：ADC1/ADC2 双重同步 DMA 采集。
 - `Core/User/fft_f32_65536.c/.h`：65536 点 F32 FFT 实现。
@@ -340,18 +384,21 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 ## 实板验证建议
 
 1. 向 PA0 输入已知频率的整形方波，检查 `frequency_measure_hz`。
-2. 测量 AD9834 输出，确认 `fDDS = fin - 100 kHz`。
-3. 向 PC4 和 PB1 输入安全范围内的同步信号，检查 DMA 半满/满计数持续增加且错误计数不增长。
-4. 对比 `raw_peak_frequency_hz`、`peak_frequency_hz` 以及第二通道对应字段。
-5. 用高精度直流源和万用表重新确认两个 ADC 通道的 `volts_per_code` 与 `offset_v`。
-6. 对地测量 PA4 六档电压，硬件或 VDDA 改变时更新六个实测电压宏。
-7. 核对串口屏十个控件、五个档位按键和立即测量命令。
+2. 测量第一块 AD9834 输出，确认 `fDDS = fin - 100 kHz`。
+3. 检查第二块 AD9834 上电输出为 900 kHz；用逻辑分析仪确认 PD5 每次拉低期间
+   PB3 恰有 16 个时钟，并验证连续调用 `dds2_set_frequency()` 时 PD6 交替切换。
+4. 向 PC4 和 PB1 输入安全范围内的同步信号，检查 DMA 半满/满计数持续增加且错误计数不增长。
+5. 对比 `raw_peak_frequency_hz`、`peak_frequency_hz` 以及第二通道对应字段。
+6. 用高精度直流源和万用表重新确认两个 ADC 通道的 `volts_per_code` 与 `offset_v`。
+7. 对地测量 PA4 六档电压，硬件或 VDDA 改变时更新六个实测电压宏。
+8. 核对串口屏十个控件、五个档位按键和立即测量命令。
 
 ## 常用调试变量
 
 - `frequency_measure_hz`：TIM5 粗测频率。
 - `dds_control_diagnostics`：DDS 目标、状态和更新次数。
 - `ad9834_diagnostics`：SPI 写入、两组频率/相位、当前选择和 HAL 状态。
+- `ad9834_2_diagnostics`：第二块 DDS 的 SPI6 写入、RESET、寄存器和 HAL 状态。
 - `adc_dual_stats`：DMA、溢出、错误和近期原始码统计。
 - `measurement_fft_diagnostics`：双通道 raw/校准频率、电压、THD、相位和质量状态。
 - `vga_control_diagnostics`：档位、DAC 指令电压、PA4 实测模型电压、VG 和增益。
