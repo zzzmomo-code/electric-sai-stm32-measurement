@@ -23,6 +23,7 @@ class Ads8688HardwareContract(unittest.TestCase):
             "SPI3.DataSize=SPI_DATASIZE_32BIT",
             "SPI3.CLKPhase=SPI_PHASE_2EDGE",
             "SPI3.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_4",
+            "SPI3.MasterInterDataIdleness=SPI_MASTER_INTERDATA_IDLENESS_02CYCLE",
             "Dma.SPI3_RX.1.MemInc=DMA_MINC_ENABLE",
             "Dma.SPI3_TX.2.MemInc=DMA_MINC_DISABLE",
         )
@@ -86,6 +87,31 @@ class Ads8688HardwareContract(unittest.TestCase):
         ):
             self.assertIn(assignment, source)
 
+    def test_power_down_wakeup_precedes_configuration(self):
+        source = read("Core/User/ads8688.c")
+        self.assertIn(
+            "#define ADS8688_SPI_FRAME_CYCLES           34.0f",
+            source,
+        )
+        body = source.split(
+            "static ads8688_status_t ads8688_initialize_attempt(void)", 1
+        )[1].split("\n}", 1)[0]
+        power_down_delay = body.index("HAL_Delay(1u);")
+        wake_command = body.index(
+            "status = ads8688_send_command(ADS8688_COMMAND_AUTO_RST);"
+        )
+        reference_delay = body.index("HAL_Delay(15u);")
+        first_configuration = body.index(
+            "status = ads8688_write_and_verify_register("
+        )
+        final_auto_reset = body.rindex(
+            "ads8688_send_command(ADS8688_COMMAND_AUTO_RST)"
+        )
+        self.assertLess(power_down_delay, wake_command)
+        self.assertLess(wake_command, reference_delay)
+        self.assertLess(reference_delay, first_configuration)
+        self.assertLess(first_configuration, final_auto_reset)
+
 
 class MeasurementInputContract(unittest.TestCase):
     def test_fft_profile_and_single_ingest_exist(self):
@@ -98,9 +124,9 @@ class MeasurementInputContract(unittest.TestCase):
             self.assertIn(name, header)
 
     def test_runtime_rate_math(self):
-        self.assertAlmostEqual(16_000_000.0 / 33.0, 484_848.4848, places=3)
-        self.assertAlmostEqual(16_000_000.0 / 66.0, 242_424.2424, places=3)
-        self.assertAlmostEqual(33.0 / 16_000_000.0, 2.0625e-6, places=12)
+        self.assertAlmostEqual(16_000_000.0 / 34.0, 470_588.2353, places=3)
+        self.assertAlmostEqual(16_000_000.0 / 68.0, 235_294.1176, places=3)
+        self.assertAlmostEqual(34.0 / 16_000_000.0, 2.125e-6, places=12)
 
     def test_fft_uses_runtime_rate_and_phase_delay(self):
         source = read("Core/User/measurement_fft.c")
