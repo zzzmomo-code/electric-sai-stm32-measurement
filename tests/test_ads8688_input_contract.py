@@ -63,10 +63,23 @@ class Ads8688HardwareContract(unittest.TestCase):
         self.assertNotIn("GPIO_PIN_8", source)
         self.assertNotIn("GPIO_PIN_9", source)
 
-    def test_driver_recovers_backlog_and_uses_enabled_channel_count(self):
+    def test_driver_processes_both_pending_halves_without_resync(self):
         source = read("Core/User/ads8688.c")
-        self.assertIn("if (pending_flags == 3u)", source)
-        self.assertIn("measurement_fft_resynchronize();", source)
+        process_body = source.split(
+            "void ads8688_process(void)", 1
+        )[1].split("\n}", 1)[0]
+        self.assertNotIn("if (pending_flags == 3u)", process_body)
+        self.assertNotIn(
+            "ads8688_diagnostics.lost_samples += ADS8688_DMA_WORD_COUNT;",
+            process_body,
+        )
+        self.assertNotIn("measurement_fft_resynchronize();", process_body)
+        self.assertIn("ads8688_expected_half == 0u", process_body)
+        self.assertIn("ads8688_process_dma_half(0u);", process_body)
+        self.assertIn("ads8688_process_dma_half(1u);", process_body)
+        self.assertIn("ADS8688_DMA_HALF_WORD_COUNT;", process_body)
+        self.assertIn("ads8688_recovery_pending = 1u;", process_body)
+
         public_stop = source.split(
             "ads8688_status_t ads8688_stop(void)", 1
         )[1].split("\n}", 1)[0]
