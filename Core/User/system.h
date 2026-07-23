@@ -6,7 +6,7 @@
  * GPIO 引脚映射：统一入口无直接 GPIO；VGA 模块使用 PA4/DAC1_OUT1，其他映射见对应模块说明。
  * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h、dac.h、adc.h、tim.h、spi.h，
  * 启用串口屏时还依赖 usart.h。DAC1_OUT1 配置为无触发并开启输出缓冲。
- * 旧 ADS8688 模块已从片上 ADC 工程的活动构建中排除。
+ * ADS8688 与片上双 ADC 均参加构建，由 measurement_input 在运行时选择。
  * 初始化方法：HAL 与 MX_* 初始化完成后调用 system_init()。
  * 调用方法：main.c 及其他用户 .c 文件仅包含本头文件。
  */
@@ -27,6 +27,9 @@
 #include "dds_control.h"
 #include "vga_control.h"
 #include "measurement_conversion.h"
+#include "ads8688.h"
+#include "ads8688_storage.h"
+#include "measurement_input.h"
 
 /* ADC1/ADC2 与 TIM2 由用户完成 CubeMX 配置并生成后自动启用真实采集实现。 */
 #if defined(__has_include)
@@ -37,11 +40,11 @@
 #endif
 #endif
 
-/* SPI2由CubeMX生成后，统一头文件自动纳入其句柄声明。 */
+/* SPI 外设由 CubeMX 生成后，统一头文件自动纳入其句柄声明。 */
 #if defined(__has_include)
 #if __has_include("spi.h")
 #include "spi.h"
-#define SYSTEM_SPI2_AVAILABLE 1
+#define SYSTEM_SPI_AVAILABLE 1
 #endif
 #endif
 
@@ -61,6 +64,15 @@ extern volatile uint8_t adc_dual_dma_full_flag;
 
 /** 双 ADC 错误标志，由 ADC 错误回调与主循环共享。 */
 extern volatile uint8_t adc_dual_error_flag;
+
+/** ADS8688 SPI3 DMA 前半区完成标志，由 SPI3 回调与主循环共享。 */
+extern volatile uint8_t ads8688_dma_half_flag;
+
+/** ADS8688 SPI3 DMA 后半区完成标志，由 SPI3 回调与主循环共享。 */
+extern volatile uint8_t ads8688_dma_full_flag;
+
+/** ADS8688 SPI3/DMA 错误标志，由 SPI3 回调与主循环共享。 */
+extern volatile uint8_t ads8688_error_flag;
 
 /** FFT 运行诊断快照，仅供主循环和调试器读取最近一帧分析结果。 */
 extern measurement_fft_diagnostics_t measurement_fft_diagnostics;

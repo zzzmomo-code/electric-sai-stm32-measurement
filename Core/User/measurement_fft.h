@@ -1,15 +1,15 @@
 /**
  * @file measurement_fft.h
- * @brief 双通道 600 kSPS、65536 点 F32 FFT 测量公共接口。
+ * @brief 运行时单双通道采样率、65536 点 F32 FFT 测量公共接口。
  *
  * 模块用途：接收 CH1 与 CH2 的同步样本对，计算直流、峰峰值、有效值、主频率、
  * 失真度、频谱和波形类型，并计算 CH2 相对 CH1 的相位差。
- * GPIO 引脚映射：无直接 GPIO 引脚；输入数据由 adc_dual 模块提交。
- * 依赖的外设和 CubeIDE 配置：依赖片上 ADC1/ADC2 同步采样；
+ * GPIO 引脚映射：无直接 GPIO 引脚；输入数据由 adc_dual 或 ads8688 模块提交。
+ * 依赖的外设和 CubeIDE 配置：依赖当前所选采集源；
  * 自定义 FFT 顺序复用 D1 SRAM 工作区；同步样本对保存在 D2 SRAM；
  * 本模块不直接访问 ADC 或 DMA 缓冲区。
  * 初始化方法：系统启动时调用 measurement_fft_init()。
- * 调用方法：采集模块调用 measurement_fft_ingest_pair()；主循环调用
+ * 调用方法：采集模块调用成对或单通道输入接口；主循环调用
  * measurement_fft_process()，并仅在 measurement_fft_hmi_refresh_allowed() 允许时刷新 HMI。
  */
 
@@ -25,6 +25,21 @@
 
 /** ADC1/ADC2 每通道同步原始采样率，单位为 sample/s。 */
 #define MEASUREMENT_FFT_SAMPLE_RATE_HZ 600000.0f
+
+/** FFT 输入通道模式。 */
+typedef enum
+{
+    MEASUREMENT_FFT_INPUT_DUAL_CHANNEL = 0,
+    MEASUREMENT_FFT_INPUT_SINGLE_CHANNEL
+} measurement_fft_input_mode_t;
+
+/** 由当前采集源提供的 FFT 运行时输入参数。 */
+typedef struct
+{
+    float sample_rate_hz;              /**< 每个有效通道的采样率，单位为 sample/s。 */
+    float ch2_delay_seconds;           /**< CH2 相对 CH1 的采样延迟，单位为秒。 */
+    measurement_fft_input_mode_t mode; /**< 双通道或单通道输入模式。 */
+} measurement_fft_input_profile_t;
 
 /** F32 实数 FFT packed 输出及原地工作区元素数量。 */
 #define MEASUREMENT_FFT_OUTPUT_LENGTH MEASUREMENT_FFT_LENGTH
@@ -150,6 +165,15 @@ float measurement_fft_calibrate_frequency(float raw_frequency_hz);
 void measurement_fft_init(void);
 
 /**
+ * @brief 配置当前采集源对应的 FFT 采样参数。
+ * @param profile 采样率、CH2 延迟和通道模式。
+ * @return 参数有效并完成切换返回 1，否则返回 0。
+ * @note 调用后放弃未完成窗口并重新同步；只能在主循环上下文调用。
+ */
+uint8_t measurement_fft_configure_input(
+    const measurement_fft_input_profile_t *profile);
+
+/**
  * @brief 接收同一触发时刻的双通道原始采样对。
  * @param ch1_raw_code ADC1/CH1 的 16 位原始码。
  * @param ch2_raw_code ADC2/CH2 的 16 位原始码。
@@ -158,6 +182,14 @@ void measurement_fft_init(void);
  */
 uint8_t measurement_fft_ingest_pair(uint16_t ch1_raw_code,
                                     uint16_t ch2_raw_code);
+
+/**
+ * @brief 接收单通道原始采样。
+ * @param raw_code 当前所选物理通道的 16 位原始码。
+ * @return 接受并写入样本帧返回 1，当前不是单通道模式或忙碌时返回 0。
+ * @note 单通道样本统一写入主结果通道，第二路和相位结果不会被发布为有效。
+ */
+uint8_t measurement_fft_ingest_single(uint16_t raw_code);
 
 /**
  * @brief 迁移期间接收一条旧 ADS8688 顺序采样记录。

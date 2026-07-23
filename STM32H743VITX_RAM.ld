@@ -146,6 +146,14 @@ SECTIONS
     . = ALIGN(32);
   } >RAM_D2
 
+  /* ADS8688 SPI3 循环 DMA 缓冲区，固定放入 DMA 可访问的 D2 SRAM。 */
+  .ads8688_dma (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.ads8688_dma)
+    . = ALIGN(32);
+  } >RAM_D2
+
   /* RAM 调试配置中 D1 SRAM 名为 RAM_EXEC。 */
   .fft_f32_work (NOLOAD) :
   {

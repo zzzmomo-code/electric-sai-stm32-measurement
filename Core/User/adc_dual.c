@@ -7,8 +7,8 @@
  * GPIO 引脚映射：PC4/ADC1_INP4 为 CH1，PB1/ADC2_INP5 为 CH2。
  * 依赖的外设和 CubeIDE 配置：ADC1/ADC2 Dual Regular Simultaneous、TIM2 TRGO
  * 600 kHz、ADC1 DMA1 Stream0 Circular Word/Word；未生成 adc.h/tim.h 时编译为安全占位实现。
- * 初始化方法：system_init() 调用 adc_dual_init()。
- * 调用方法：system_process() 周期调用 adc_dual_process()。
+ * 初始化方法：measurement_input_init() 调用 adc_dual_init() 并按默认源启动。
+ * 调用方法：measurement_input 管理 start/stop，并周期调用 adc_dual_process()。
  */
 
 #include "system.h"
@@ -274,27 +274,106 @@ void adc_dual_init(void)
         return;
     }
 
+#else
+    adc_dual_stats.cubemx_ready = 0u;
+    adc_dual_stats.state = ADC_DUAL_STATE_CUBEMX_NOT_READY;
+#endif
+}
+
+/**
+ * @brief 启动双 ADC 多模式 DMA 与 TIM2 触发。
+ * @param 无。
+ * @return 启动状态。
+ * @note 重复启动不产生副作用。
+ */
+adc_dual_status_t adc_dual_start(void)
+{
+#if defined(SYSTEM_ADC_DUAL_AVAILABLE)
+    HAL_StatusTypeDef status;
+
+    if (adc_dual_stats.cubemx_ready == 0u)
+    {
+        return ADC_DUAL_STATUS_NOT_READY;
+    }
+    if (adc_dual_stats.state == ADC_DUAL_STATE_RUNNING)
+    {
+        return ADC_DUAL_STATUS_OK;
+    }
+
+    adc_dual_dma_half_flag = 0u;
+    adc_dual_dma_full_flag = 0u;
+    adc_dual_error_flag = 0u;
     if (adc_dual_dcache_is_enabled() != 0u)
     {
         SCB_CleanInvalidateDCache_by_Addr(
             adc_dual_dma_buffer,
             (int32_t)sizeof(adc_dual_dma_buffer));
     }
-    adc_dual_stats.last_hal_status = (int32_t)HAL_ADCEx_MultiModeStart_DMA(
-        &hadc1,
-        adc_dual_dma_buffer,
-        ADC_DUAL_DMA_WORD_COUNT);
-    if (adc_dual_stats.last_hal_status != (int32_t)HAL_OK)
+    status = HAL_ADCEx_MultiModeStart_DMA(
+        &hadc1, adc_dual_dma_buffer, ADC_DUAL_DMA_WORD_COUNT);
+    adc_dual_stats.last_hal_status = (int32_t)status;
+    if (status != HAL_OK)
     {
         adc_dual_stats.error_count++;
         adc_dual_stats.state = ADC_DUAL_STATE_ERROR;
-        return;
+        return ADC_DUAL_STATUS_HAL_ERROR;
     }
 
-    adc_dual_update_trigger_state();
+    status = HAL_TIM_Base_Start(&htim2);
+    adc_dual_stats.last_hal_status = (int32_t)status;
+    if (status != HAL_OK)
+    {
+        (void)HAL_ADCEx_MultiModeStop_DMA(&hadc1);
+        adc_dual_stats.error_count++;
+        adc_dual_stats.state = ADC_DUAL_STATE_ERROR;
+        return ADC_DUAL_STATUS_HAL_ERROR;
+    }
+    adc_dual_stats.timer_running = 1u;
+    adc_dual_stats.state = ADC_DUAL_STATE_RUNNING;
+    return ADC_DUAL_STATUS_OK;
 #else
-    adc_dual_stats.cubemx_ready = 0u;
-    adc_dual_stats.state = ADC_DUAL_STATE_CUBEMX_NOT_READY;
+    return ADC_DUAL_STATUS_NOT_READY;
+#endif
+}
+
+/**
+ * @brief 停止 TIM2 触发与双 ADC 多模式 DMA。
+ * @param 无。
+ * @return 停止状态。
+ * @note 清除尚未领取的 DMA 标志，保留统计数据。
+ */
+adc_dual_status_t adc_dual_stop(void)
+{
+#if defined(SYSTEM_ADC_DUAL_AVAILABLE)
+    HAL_StatusTypeDef timer_status;
+    HAL_StatusTypeDef adc_status;
+
+    if (adc_dual_stats.cubemx_ready == 0u)
+    {
+        return ADC_DUAL_STATUS_NOT_READY;
+    }
+    if (adc_dual_stats.state == ADC_DUAL_STATE_STOPPED)
+    {
+        return ADC_DUAL_STATUS_OK;
+    }
+    timer_status = HAL_TIM_Base_Stop(&htim2);
+    adc_status = HAL_ADCEx_MultiModeStop_DMA(&hadc1);
+    adc_dual_stats.last_hal_status =
+        (timer_status != HAL_OK) ? (int32_t)timer_status : (int32_t)adc_status;
+    adc_dual_stats.timer_running = 0u;
+    adc_dual_dma_half_flag = 0u;
+    adc_dual_dma_full_flag = 0u;
+    adc_dual_error_flag = 0u;
+    if ((timer_status != HAL_OK) || (adc_status != HAL_OK))
+    {
+        adc_dual_stats.error_count++;
+        adc_dual_stats.state = ADC_DUAL_STATE_ERROR;
+        return ADC_DUAL_STATUS_HAL_ERROR;
+    }
+    adc_dual_stats.state = ADC_DUAL_STATE_STOPPED;
+    return ADC_DUAL_STATUS_OK;
+#else
+    return ADC_DUAL_STATUS_NOT_READY;
 #endif
 }
 

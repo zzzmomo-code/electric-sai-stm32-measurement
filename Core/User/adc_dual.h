@@ -8,8 +8,8 @@
  * 在 CubeMX 尚未生成 ADC 配置前，本模块保持“未配置”状态且不访问硬件。
  * 依赖的外设和 CubeIDE 配置：ADC1/ADC2 Dual Regular Simultaneous、TIM2 TRGO
  * 600 kHz、ADC1 DMA1 Stream0 Circular Word/Word，以及 DMA1 Stream0 中断。
- * 初始化方法：由 system_init() 调用 adc_dual_init()。
- * 调用方法：主循环只调用 system_process()，由其间接调用 adc_dual_process()。
+ * 初始化方法：measurement_input_init() 调用 adc_dual_init()，默认随后启动。
+ * 调用方法：measurement_input 管理 start/stop，主循环间接调用 adc_dual_process()。
  */
 
 #ifndef ADC_DUAL_H
@@ -38,6 +38,14 @@ typedef enum
     ADC_DUAL_STATE_RUNNING,
     ADC_DUAL_STATE_ERROR
 } adc_dual_state_t;
+
+/** 双 ADC 生命周期操作结果。 */
+typedef enum
+{
+    ADC_DUAL_STATUS_OK = 0,
+    ADC_DUAL_STATUS_NOT_READY,
+    ADC_DUAL_STATUS_HAL_ERROR
+} adc_dual_status_t;
 
 /** 片上双 ADC 运行统计，供调试器和后续诊断页面读取。 */
 typedef struct
@@ -69,9 +77,25 @@ typedef struct
  * @brief 初始化双 ADC 采集模块。
  * @param 无。
  * @return 无。
- * @note CubeMX 配置就绪后按 ADC2、ADC1 的顺序校准，再启动多模式 DMA 与 TIM2。
+ * @note CubeMX 配置就绪后按 ADC2、ADC1 的顺序校准；采样由 adc_dual_start() 启动。
  */
 void adc_dual_init(void);
+
+/**
+ * @brief 启动双 ADC DMA 与 TIM2 采样触发。
+ * @param 无。
+ * @return 生命周期操作结果。
+ * @note 重复启动安全；只能在主循环上下文调用。
+ */
+adc_dual_status_t adc_dual_start(void);
+
+/**
+ * @brief 停止 TIM2 采样触发与双 ADC DMA。
+ * @param 无。
+ * @return 生命周期操作结果。
+ * @note 动态切换采集源时先调用本函数，停止后可再次启动。
+ */
+adc_dual_status_t adc_dual_stop(void);
 
 /**
  * @brief 在主循环领取 DMA 标志、维护缓存并提交同步样本对。

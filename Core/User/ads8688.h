@@ -2,12 +2,13 @@
  * @file ads8688.h
  * @brief ADS8688 采集模块公共接口。
  *
- * 模块用途：提供 ADS8688 初始化、采集模式、量程、最新数据及历史数据接口。
- * GPIO 引脚映射：PB12/SPI2_NSS 连接 CS，PB13/SPI2_SCK 连接 SCLK，PB14/SPI2_MISO
- * 连接 SDO，PB15/SPI2_MOSI 连接 SDI，PD8 连接 RST/PD，PD9 连接 DAISY。
- * 依赖的外设和 CubeIDE 配置：依赖 SPI2、DMA1 Stream0/1、PD8/PD9 GPIO 输出和 SPI2/DMA 中断。
- * 初始化方法：CubeMX 外设初始化完成后调用 ads8688_init()。
- * 调用方法：主循环调用 ads8688_process()，其他接口用于配置和读取采样结果。
+ * 模块用途：提供 ADS8688 初始化、生命周期、单双通道、量程、采样率及数据读取接口。
+ * GPIO 引脚映射：PA15/SPI3_NSS 连接 FSYNC，PC10/SPI3_SCK 连接 SCLK，
+ * PC11/SPI3_MISO 连接 SDO，PC12/SPI3_MOSI 连接 SDI，PD0 连接 DAISY，PD1 连接 RST。
+ * 依赖的外设和 CubeIDE 配置：SPI3 32 位、CPOL Low、CPHA 2 Edge、硬件 NSS，
+ * DMA1 Stream1 RX Circular Word/递增、Stream2 TX Circular Word/不递增及优先级 5 中断。
+ * 初始化方法：CubeMX 外设初始化后调用 ads8688_init()，需要采样时再调用 ads8688_start()。
+ * 调用方法：主循环调用 ads8688_process()；配置通过本头文件的公共接口完成。
  */
 
 #ifndef ADS8688_H
@@ -77,6 +78,46 @@ typedef struct
  * @note 会配置器件工作状态并清空模块内部采集状态。
  */
 ads8688_status_t ads8688_init(void);
+
+/**
+ * @brief 按当前通道配置启动 SPI3 循环 DMA 采样。
+ * @param 无。
+ * @return 启动结果。
+ * @note 重复启动安全；初始化本身不会启动采样。
+ */
+ads8688_status_t ads8688_start(void);
+
+/**
+ * @brief 停止 SPI3 DMA 采样。
+ * @param 无。
+ * @return 停止结果。
+ * @note 重复停止安全，已保存的量程和通道配置保持不变。
+ */
+ads8688_status_t ads8688_stop(void);
+
+/**
+ * @brief 设置单通道连续采样。
+ * @param channel 物理输入通道，范围为 0 至 7。
+ * @return 配置结果。
+ * @note 运行中调用会安全停止并恢复 DMA；FFT 只发布主通道结果。
+ */
+ads8688_status_t ads8688_set_single_channel(uint8_t channel);
+
+/**
+ * @brief 设置 AIN0/AIN1 双通道自动轮询采样。
+ * @param 无。
+ * @return 配置结果。
+ * @note 双通道结果按 AIN0、AIN1 顺序提交给 FFT，并补偿轮询时差。
+ */
+ads8688_status_t ads8688_set_dual_channel(void);
+
+/**
+ * @brief 获取当前模式下每个有效通道的标称采样率。
+ * @param 无。
+ * @return 单通道为 SPI 帧率，双通道为 SPI 帧率的一半，单位 sample/s。
+ * @note SPI3 每帧按 32 位数据加 1 个周期帧间隔计算。
+ */
+float ads8688_get_effective_sample_rate_hz(void);
 
 /**
  * @brief 处理 ADS8688 采集状态与待处理事件。

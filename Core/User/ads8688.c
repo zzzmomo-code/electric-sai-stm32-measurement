@@ -2,13 +2,12 @@
  * @file ads8688.c
  * @brief ADS8688 寄存器传输与器件初始化实现。
  *
- * 模块用途：通过 SPI2 配置 ADS8688，并使用循环 DMA 连续采集、切换模式及故障恢复。
- * GPIO 引脚映射：PD8 连接 ADS8688 RST/PD，PD9 连接 ADS8688 DAISY。
- * 依赖的外设和 CubeIDE 配置：依赖 SPI2 的 32 位数据帧、第二边沿采样、硬件 NSS
- * 和 9 周期数据间空闲配置；SPI2 RX/TX DMA 均使用循环模式，RX 存储地址递增，
- * TX 存储地址不递增；依赖 PD8、PD9 推挽输出；本模块不修改 CubeIDE 配置。
- * 初始化方法：CubeMX 完成 GPIO 与 SPI2 初始化后调用 ads8688_init()。
- * 调用方法：初始化成功后在主循环持续调用 ads8688_process()。
+ * 模块用途：通过 SPI3 配置 ADS8688，并使用循环 DMA 连续采集、切换模式及故障恢复。
+ * GPIO 引脚映射：PA15/FSYNC、PC10/SCLK、PC11/SDO、PC12/SDI、PD0/DAISY、PD1/RST。
+ * 依赖的外设和 CubeIDE 配置：SPI3 使用 32 位数据帧、第二边沿采样、硬件低有效 NSS、
+ * 1 周期数据间空闲；RX/TX DMA 均为循环模式，RX 地址递增、TX 地址不递增。
+ * 初始化方法：CubeMX 完成 GPIO 与 SPI3 初始化后调用 ads8688_init()，该函数不启动 DMA。
+ * 调用方法：选择 ADS 后调用 ads8688_start()，主循环持续调用 ads8688_process()。
  */
 
 #include "system.h"
@@ -25,18 +24,15 @@
 #define ADS8688_SPI_TIMEOUT_MS            10u
 #define ADS8688_DMA_WORD_COUNT            1024u
 #define ADS8688_DMA_HALF_WORD_COUNT       (ADS8688_DMA_WORD_COUNT / 2u)
-
-/** PD8 上的 ADS8688 复位及掉电控制信号。 */
-#define ADS8688_RESET_PIN                 GPIO_PIN_8
-
-/** PD9 上的 ADS8688 菊花链模式选择信号。 */
-#define ADS8688_DAISY_PIN                 GPIO_PIN_9
+#define ADS8688_SPI_FRAME_CYCLES           33.0f
 
 /** 复位低电平期间执行的有界空操作次数，保证持续时间安全超过 400 ns。 */
 #define ADS8688_RESET_HOLD_NOP_COUNT      256u
 
 /** 模块是否已经完成器件配置及读回校验。 */
 static uint8_t ads8688_initialized;
+/** 非零表示 SPI3 循环 DMA 当前正在采样。 */
+static uint8_t ads8688_running;
 
 /** 当前采集模式，初始化成功后默认为自动扫描。 */
 static ads8688_mode_t ads8688_mode;
@@ -58,10 +54,11 @@ static ads8688_diagnostics_t ads8688_diagnostics;
 
 /** DMA 接收缓冲区，32 字节对齐以满足 STM32H7 数据缓存行边界要求。 */
 static uint32_t ads8688_dma_rx[ADS8688_DMA_WORD_COUNT]
-    __attribute__((aligned(32)));
+    __attribute__((section(".ads8688_dma"), aligned(32)));
 
 /** DMA 重复发送的 32 位 NO_OP 帧，TX DMA 禁止存储器地址递增。 */
-static uint32_t ads8688_dma_tx_word __attribute__((aligned(32)));
+static uint32_t ads8688_dma_tx_word
+    __attribute__((section(".ads8688_dma"), aligned(32)));
 
 /** DMA 半缓冲区完成标志，由中断置位并由主循环处理及清除。 */
 volatile uint8_t ads8688_dma_half_flag;
@@ -77,6 +74,8 @@ static uint8_t ads8688_expected_half;
 
 /** 恢复待处理标志，恢复失败后保留并由后续主循环再次尝试。 */
 static uint8_t ads8688_recovery_pending;
+/** 配置回滚成功后是否需要恢复 DMA 运行。 */
+static uint8_t ads8688_rollback_should_restart;
 
 /**
  * @brief 构造 ADS8688 程序寄存器写帧。
@@ -128,7 +127,7 @@ static ads8688_status_t ads8688_transfer_word(uint32_t tx_word,
     HAL_StatusTypeDef hal_status;
     uint32_t rx_word = 0u;
 
-    hal_status = HAL_SPI_TransmitReceive(&hspi2,
+    hal_status = HAL_SPI_TransmitReceive(&hspi3,
                                          (uint8_t *)&tx_word,
                                          (uint8_t *)&rx_word,
                                          1u,
@@ -226,15 +225,21 @@ static ads8688_status_t ads8688_initialize_attempt(void)
     uint8_t address;
     volatile uint32_t nop_index;
 
-    HAL_GPIO_WritePin(GPIOD, ADS8688_DAISY_PIN, GPIO_PIN_RESET);
-    HAL_GPIO_WritePin(GPIOD, ADS8688_RESET_PIN, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(ADS8688_DAISY_GPIO_Port,
+                      ADS8688_DAISY_Pin,
+                      GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(ADS8688_RST_GPIO_Port,
+                      ADS8688_RST_Pin,
+                      GPIO_PIN_RESET);
     for (nop_index = 0u;
          nop_index < ADS8688_RESET_HOLD_NOP_COUNT;
          nop_index++)
     {
         __NOP();
     }
-    HAL_GPIO_WritePin(GPIOD, ADS8688_RESET_PIN, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(ADS8688_RST_GPIO_Port,
+                      ADS8688_RST_Pin,
+                      GPIO_PIN_SET);
     HAL_Delay(15u);
 
     status = ads8688_write_and_verify_register(
@@ -259,7 +264,7 @@ static ads8688_status_t ads8688_initialize_attempt(void)
     {
         status = ads8688_write_and_verify_register(
             address,
-            (uint8_t)ADS8688_RANGE_BIPOLAR_10V24);
+            (uint8_t)ADS8688_RANGE_BIPOLAR_5V12);
         if (status != ADS8688_STATUS_OK)
         {
             return status;
@@ -348,13 +353,26 @@ static void ads8688_advance_channel(void)
  */
 static ads8688_status_t ads8688_start_dma(void)
 {
+    if (ads8688_running != 0u)
+    {
+        return ADS8688_STATUS_OK;
+    }
     ads8688_dma_half_flag = 0u;
     ads8688_dma_full_flag = 0u;
     ads8688_error_flag = 0u;
     ads8688_expected_half = 0u;
     ads8688_dma_tx_word = ADS8688_COMMAND_NO_OP;
+    if ((SCB->CCR & SCB_CCR_DC_Msk) != 0u)
+    {
+        SCB_CleanInvalidateDCache_by_Addr(
+            ads8688_dma_rx,
+            (int32_t)sizeof(ads8688_dma_rx));
+        SCB_CleanDCache_by_Addr(
+            &ads8688_dma_tx_word,
+            32);
+    }
 
-    if (HAL_SPI_TransmitReceive_DMA(&hspi2,
+    if (HAL_SPI_TransmitReceive_DMA(&hspi3,
                                     (uint8_t *)&ads8688_dma_tx_word,
                                     (uint8_t *)ads8688_dma_rx,
                                     ADS8688_DMA_WORD_COUNT) != HAL_OK)
@@ -362,6 +380,7 @@ static ads8688_status_t ads8688_start_dma(void)
         return ADS8688_STATUS_HAL_ERROR;
     }
 
+    ads8688_running = 1u;
     return ADS8688_STATUS_OK;
 }
 
@@ -373,11 +392,19 @@ static ads8688_status_t ads8688_start_dma(void)
  */
 static ads8688_status_t ads8688_stop_dma(void)
 {
-    if (HAL_SPI_Abort(&hspi2) != HAL_OK)
+    if (ads8688_running == 0u)
+    {
+        return ADS8688_STATUS_OK;
+    }
+    if (HAL_SPI_Abort(&hspi3) != HAL_OK)
     {
         return ADS8688_STATUS_HAL_ERROR;
     }
 
+    ads8688_running = 0u;
+    ads8688_dma_half_flag = 0u;
+    ads8688_dma_full_flag = 0u;
+    ads8688_error_flag = 0u;
     return ADS8688_STATUS_OK;
 }
 
@@ -508,6 +535,10 @@ static ads8688_status_t ads8688_restore_active_acquisition(void)
         (ads8688_mode == ADS8688_MODE_AUTO)
             ? ads8688_find_first_channel(ads8688_channel_mask)
             : ads8688_current_channel;
+    if (ads8688_rollback_should_restart == 0u)
+    {
+        return ADS8688_STATUS_OK;
+    }
     status = ads8688_start_dma();
     if (status != ADS8688_STATUS_OK)
     {
@@ -561,6 +592,7 @@ static ads8688_status_t ads8688_recover(void)
         return status;
     }
 
+    ads8688_rollback_should_restart = 1u;
     status = ads8688_restore_active_acquisition();
     if (status != ADS8688_STATUS_OK)
     {
@@ -588,6 +620,13 @@ static void ads8688_process_dma_half(uint8_t half_index)
         (uint32_t)half_index * ADS8688_DMA_HALF_WORD_COUNT;
     uint32_t end_index = start_index + ADS8688_DMA_HALF_WORD_COUNT;
 
+    if ((SCB->CCR & SCB_CCR_DC_Msk) != 0u)
+    {
+        SCB_InvalidateDCache_by_Addr(
+            &ads8688_dma_rx[start_index],
+            (int32_t)(ADS8688_DMA_HALF_WORD_COUNT
+                      * sizeof(ads8688_dma_rx[0])));
+    }
     for (index = start_index; index < end_index; index++)
     {
         ads8688_storage_push(
@@ -595,9 +634,17 @@ static void ads8688_process_dma_half(uint8_t half_index)
             (uint16_t)(ads8688_dma_rx[index] & 0xffffu),
             ads8688_channel_ranges[ads8688_current_channel],
             ads8688_sample_index);
-        measurement_fft_ingest_sample(
-            ads8688_current_channel,
-            (uint16_t)(ads8688_dma_rx[index] & 0xffffu));
+        if (ads8688_mode == ADS8688_MODE_MANUAL)
+        {
+            (void)measurement_fft_ingest_single(
+                (uint16_t)(ads8688_dma_rx[index] & 0xffffu));
+        }
+        else
+        {
+            measurement_fft_ingest_sample(
+                ads8688_current_channel,
+                (uint16_t)(ads8688_dma_rx[index] & 0xffffu));
+        }
         ads8688_sample_index++;
         ads8688_advance_channel();
     }
@@ -631,7 +678,9 @@ ads8688_status_t ads8688_init(void)
     }
 
     ads8688_initialized = 0u;
+    ads8688_running = 0u;
     ads8688_recovery_pending = 0u;
+    ads8688_rollback_should_restart = 0u;
 
     for (attempt = 0u; attempt < ADS8688_INITIALIZATION_RETRIES; attempt++)
     {
@@ -645,17 +694,10 @@ ads8688_status_t ads8688_init(void)
             for (channel = 0u; channel < ADS8688_CHANNEL_COUNT; channel++)
             {
                 ads8688_channel_ranges[channel] =
-                    ADS8688_RANGE_BIPOLAR_10V24;
+                    ADS8688_RANGE_BIPOLAR_5V12;
             }
             ads8688_sample_index = 0u;
             ads8688_diagnostics.history_overwrites = 0u;
-
-            status = ads8688_start_dma();
-            if (status != ADS8688_STATUS_OK)
-            {
-                ads8688_initialized = 0u;
-                return ADS8688_STATUS_HAL_ERROR;
-            }
 
             ads8688_initialized = 1u;
             ads8688_recovery_pending = 0u;
@@ -667,6 +709,36 @@ ads8688_status_t ads8688_init(void)
 
     ads8688_initialized = 0u;
     return status;
+}
+
+/**
+ * @brief 启动 ADS8688 SPI3 循环 DMA。
+ * @param 无。
+ * @return 启动状态。
+ * @note 使用当前已保存的单双通道和量程配置。
+ */
+ads8688_status_t ads8688_start(void)
+{
+    if (ads8688_initialized == 0u)
+    {
+        return ADS8688_STATUS_NOT_INITIALIZED;
+    }
+    return ads8688_start_dma();
+}
+
+/**
+ * @brief 停止 ADS8688 SPI3 循环 DMA。
+ * @param 无。
+ * @return 停止状态。
+ * @note 重复停止安全，配置和历史数据保持不变。
+ */
+ads8688_status_t ads8688_stop(void)
+{
+    if (ads8688_initialized == 0u)
+    {
+        return ADS8688_STATUS_NOT_INITIALIZED;
+    }
+    return ads8688_stop_dma();
 }
 
 /**
@@ -779,6 +851,7 @@ void ads8688_process(void)
 ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
 {
     ads8688_status_t status;
+    uint8_t was_running;
 
     if (ads8688_initialized == 0u)
     {
@@ -789,6 +862,8 @@ ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
+    was_running = ads8688_running;
+    ads8688_rollback_should_restart = was_running;
     status = ads8688_stop_dma();
     if (status != ADS8688_STATUS_OK)
     {
@@ -812,15 +887,17 @@ ads8688_status_t ads8688_set_auto_mode(uint8_t channel_mask)
         return ads8688_rollback_after_failure(status);
     }
 
-    status = ads8688_start_dma();
-    if (status != ADS8688_STATUS_OK)
-    {
-        return ads8688_rollback_after_failure(status);
-    }
-
     ads8688_mode = ADS8688_MODE_AUTO;
     ads8688_channel_mask = channel_mask;
     ads8688_current_channel = ads8688_find_first_channel(channel_mask);
+    if (was_running != 0u)
+    {
+        status = ads8688_start_dma();
+        if (status != ADS8688_STATUS_OK)
+        {
+            return ads8688_rollback_after_failure(status);
+        }
+    }
     return ADS8688_STATUS_OK;
 }
 
@@ -834,6 +911,7 @@ ads8688_status_t ads8688_set_manual_mode(uint8_t channel)
 {
     ads8688_status_t status;
     uint16_t command;
+    uint8_t was_running;
 
     if (ads8688_initialized == 0u)
     {
@@ -844,6 +922,8 @@ ads8688_status_t ads8688_set_manual_mode(uint8_t channel)
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
+    was_running = ads8688_running;
+    ads8688_rollback_should_restart = was_running;
     status = ads8688_stop_dma();
     if (status != ADS8688_STATUS_OK)
     {
@@ -860,15 +940,89 @@ ads8688_status_t ads8688_set_manual_mode(uint8_t channel)
         return ads8688_rollback_after_failure(status);
     }
 
-    status = ads8688_start_dma();
-    if (status != ADS8688_STATUS_OK)
-    {
-        return ads8688_rollback_after_failure(status);
-    }
-
     ads8688_mode = ADS8688_MODE_MANUAL;
     ads8688_current_channel = channel;
+    if (was_running != 0u)
+    {
+        status = ads8688_start_dma();
+        if (status != ADS8688_STATUS_OK)
+        {
+            return ads8688_rollback_after_failure(status);
+        }
+    }
     return ADS8688_STATUS_OK;
+}
+
+/**
+ * @brief 将 ADS8688 配置为指定单通道手动采样。
+ * @param channel 物理输入通道。
+ * @return 配置状态。
+ * @note 复用手动模式实现。
+ */
+ads8688_status_t ads8688_set_single_channel(uint8_t channel)
+{
+    return ads8688_set_manual_mode(channel);
+}
+
+/**
+ * @brief 将 ADS8688 配置为 AIN0/AIN1 自动轮询。
+ * @param 无。
+ * @return 配置状态。
+ * @note 复用自动序列模式实现。
+ */
+ads8688_status_t ads8688_set_dual_channel(void)
+{
+    return ads8688_set_auto_mode(ADS8688_DEFAULT_CHANNEL_MASK);
+}
+
+/**
+ * @brief 根据 SPI3 内核时钟、预分频和通道模式计算每通道采样率。
+ * @param 无。
+ * @return 当前每个有效通道的标称采样率，计算失败返回 0。
+ * @note 每个转换帧按 32 位数据和 1 个帧间时钟计算。
+ */
+float ads8688_get_effective_sample_rate_hz(void)
+{
+    uint32_t kernel_clock_hz;
+    uint32_t prescaler;
+    float frame_rate_hz;
+
+    kernel_clock_hz = HAL_RCCEx_GetPeriphCLKFreq(RCC_PERIPHCLK_SPI3);
+    switch (hspi3.Init.BaudRatePrescaler)
+    {
+        case SPI_BAUDRATEPRESCALER_2:
+            prescaler = 2u;
+            break;
+        case SPI_BAUDRATEPRESCALER_4:
+            prescaler = 4u;
+            break;
+        case SPI_BAUDRATEPRESCALER_8:
+            prescaler = 8u;
+            break;
+        case SPI_BAUDRATEPRESCALER_16:
+            prescaler = 16u;
+            break;
+        case SPI_BAUDRATEPRESCALER_32:
+            prescaler = 32u;
+            break;
+        case SPI_BAUDRATEPRESCALER_64:
+            prescaler = 64u;
+            break;
+        case SPI_BAUDRATEPRESCALER_128:
+            prescaler = 128u;
+            break;
+        case SPI_BAUDRATEPRESCALER_256:
+            prescaler = 256u;
+            break;
+        default:
+            return 0.0f;
+    }
+
+    frame_rate_hz = ((float)kernel_clock_hz / (float)prescaler)
+                    / ADS8688_SPI_FRAME_CYCLES;
+    return (ads8688_mode == ADS8688_MODE_AUTO)
+               ? frame_rate_hz * 0.5f
+               : frame_rate_hz;
 }
 
 /**
@@ -882,6 +1036,7 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
                                             ads8688_range_t range)
 {
     ads8688_status_t status;
+    uint8_t was_running;
 
     if (ads8688_initialized == 0u)
     {
@@ -893,6 +1048,8 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
         return ADS8688_STATUS_INVALID_ARGUMENT;
     }
 
+    was_running = ads8688_running;
+    ads8688_rollback_should_restart = was_running;
     status = ads8688_stop_dma();
     if (status != ADS8688_STATUS_OK)
     {
@@ -916,17 +1073,19 @@ ads8688_status_t ads8688_set_channel_range(uint8_t channel,
         return ads8688_rollback_after_failure(status);
     }
 
-    status = ads8688_start_dma();
-    if (status != ADS8688_STATUS_OK)
-    {
-        return ads8688_rollback_after_failure(status);
-    }
-
     ads8688_channel_ranges[channel] = range;
     if (ads8688_mode == ADS8688_MODE_AUTO)
     {
         ads8688_current_channel =
             ads8688_find_first_channel(ads8688_channel_mask);
+    }
+    if (was_running != 0u)
+    {
+        status = ads8688_start_dma();
+        if (status != ADS8688_STATUS_OK)
+        {
+            return ads8688_rollback_after_failure(status);
+        }
     }
     return ADS8688_STATUS_OK;
 }
@@ -1025,8 +1184,10 @@ ads8688_status_t ads8688_get_diagnostics(
  */
 void HAL_SPI_TxRxHalfCpltCallback(SPI_HandleTypeDef *hspi)
 {
-    (void)hspi;
-    ads8688_dma_half_flag = 1u;
+    if (hspi == &hspi3)
+    {
+        ads8688_dma_half_flag = 1u;
+    }
 }
 
 /**
@@ -1037,8 +1198,10 @@ void HAL_SPI_TxRxHalfCpltCallback(SPI_HandleTypeDef *hspi)
  */
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
-    (void)hspi;
-    ads8688_dma_full_flag = 1u;
+    if (hspi == &hspi3)
+    {
+        ads8688_dma_full_flag = 1u;
+    }
 }
 
 /**
@@ -1049,6 +1212,8 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
  */
 void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
 {
-    (void)hspi;
-    ads8688_error_flag = 1u;
+    if (hspi == &hspi3)
+    {
+        ads8688_error_flag = 1u;
+    }
 }

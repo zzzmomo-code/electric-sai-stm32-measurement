@@ -365,3 +365,60 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - 当前 VGA 增益使用 PA4 实测控制电压和理论 Rf/RG 模型，不能替代 VGA 器件的整机增益标定。
 - USART1 为 9600 bit/s，刷新被安排在 FFT 显示空档；增加控件或频谱发送量时需重新评估时序。
 - Debug 目录是当前工程交付的一部分；重新构建后其中的 ELF、MAP、LIST 和对象文件会变化。
+
+## ADS8688 与动态采集源
+
+ADS8688 已接入 SPI3，系统上电仍默认启动内部 ADC1/ADC2。运行中通过
+`measurement_input` 公共接口切换采集源，不需要重新初始化整个系统。
+
+| ADS8688 信号 | MCU 引脚 | CubeMX 功能 |
+|---|---|---|
+| FSYNC/NSS | PA15 | SPI3_NSS，硬件输出，低有效 |
+| SCLK | PC10 | SPI3_SCK |
+| SDO | PC11 | SPI3_MISO |
+| SDI | PC12 | SPI3_MOSI |
+| DAISY | PD0 | GPIO Output，正常工作保持低 |
+| RST | PD1 | GPIO Output，正常工作保持高 |
+
+SPI3 使用 Master Full-Duplex、Motorola、32 bit、MSB First、CPOL Low、
+CPHA 2 Edge、Prescaler 4、NSS Pulse Enabled、Master SS Idleness 0 Cycle、
+Master Inter Data Idleness 1 Cycle 和 Master Keep IO State Enabled。
+DMA1 Stream1 为 SPI3_RX，Circular、Word、内存递增；Stream2 为 SPI3_TX，
+Circular、Word、内存不递增；两个 DMA 中断抢占优先级均为 5。
+
+当前 SPI3 SCLK 为 16 MHz。按 32 位数据加 1 个 SCLK 帧间隔计算，ADS8688
+总帧率约为 484.85 kframe/s；AIN0/AIN1 双通道时每通道约 242.42 kSPS，
+单通道时约 484.85 kSPS。驱动使用实际 SPI123 内核时钟和预分频值动态计算
+`ads8688_get_effective_sample_rate_hz()`，以后在 CubeMX 改 SPI3 时钟后无需修改常量。
+
+ADS8688 所有通道默认配置为双极性 ±5.12 V，仍保留以下五种量程：
+
+- 双极性 ±10.24 V、±5.12 V、±2.56 V；
+- 单极性 0～10.24 V、0～5.12 V。
+
+常用调用示例：
+
+```c
+/* 默认已经是内部 ADC。 */
+(void)measurement_input_select(MEASUREMENT_INPUT_SOURCE_INTERNAL_ADC);
+
+/* ADS8688 AIN0/AIN1 双通道，第二路和相位均有效时正常发布。 */
+(void)measurement_input_set_ads8688_dual_channel();
+(void)measurement_input_select(MEASUREMENT_INPUT_SOURCE_ADS8688);
+
+/* ADS8688 单独分析 AIN3；结果映射到主通道，第二路和相位有效位清零。 */
+(void)measurement_input_set_ads8688_single_channel(3u);
+
+/* 修改 AIN3 为双极性 ±2.56 V，并同步 FFT 电压换算。 */
+(void)measurement_input_set_ads8688_channel_range(
+    3u, ADS8688_RANGE_BIPOLAR_2V56);
+```
+
+`measurement_input_get_diagnostics()` 可读取当前源、采样率、单双通道设置、
+切换次数和最近底层状态；`ads8688_get_diagnostics()` 保留 SPI/DMA 错误、
+丢样、恢复及历史覆盖计数。
+
+实板验证时先观察 PA15：每个 32 位帧后 FSYNC 高电平必须满足 ADS8688
+数据手册的最小时间。如果示波器测得高电平不足 30 ns，应在 CubeMX 将
+Master Inter Data Idleness 从 1 Cycle 增加到 2 Cycles，重新生成代码，
+并重新确认实际采样率与相位补偿。

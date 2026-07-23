@@ -1,6 +1,8 @@
 /**
  * @file system.c
  * @brief 用户自定义模块统一初始化入口。
+ * 当前动态采集映射：内部 ADC 为 PC4/PB1；ADS8688 为 PA15、PC10/PC11/PC12、
+ * PD0/DAISY 和 PD1/RST；依赖 SPI3、DMA1 Stream1/2 及其优先级 5 中断。
  *
  * 模块用途：集中调用用户模块初始化函数，避免在 main.c 中堆放业务逻辑。
  * GPIO 引脚映射：PA4/DAC1_OUT1、PC4/ADC1_INP4、PB1/ADC2_INP5、PA0/TIM5_CH1，
@@ -83,40 +85,21 @@ void system_init(void)
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
     hmi_tjc_publish_self_test();
 #endif
-    adc_dual_init();
-//    校准ADC
-    measurement_fft_calibration_t ch1_calibration =
-    {
-        .volts_per_code = 0.00005035400390625f,
-        .offset_v = 0.0f,
-        .valid = 1u
-    };
-
-    measurement_fft_set_calibration(0u, &ch1_calibration);
-    measurement_fft_calibration_t ch2_calibration =
-    {
-        .volts_per_code = 0.00005035400390625f,
-        .offset_v = 0.0f,
-        .valid = 1u
-    };
-
-    measurement_fft_set_calibration(1u, &ch2_calibration);
+    (void)measurement_input_init();
 }
 
 /**
- * @brief 执行外部频率、双 ADC、FFT 和串口屏主循环处理。
+ * @brief 执行外部频率、动态采集源、FFT 和串口屏主循环处理。
  * @param 无。
  * @return 无。
- * @note 第二次 adc_dual_process() 只同步 TIM2 启停状态，不重复处理已领取的 DMA 标志。
+ * @note measurement_input_process() 根据当前采集源处理 DMA，并统一推进 FFT。
  */
 void system_process(void)
 {
 	hmi_tjc_process_input();
     frequency_measure_process();
     dds_control_process();
-    adc_dual_process();
-    measurement_fft_process();
-    adc_dual_process();
+    measurement_input_process();
     if (measurement_fft_hmi_refresh_allowed() != 0u)
     {
         hmi_tjc_process();

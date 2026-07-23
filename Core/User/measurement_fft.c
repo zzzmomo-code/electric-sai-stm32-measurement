@@ -1,14 +1,13 @@
 /**
  * @file measurement_fft.c
- * @brief 双通道 600 kSPS、65536 点 F32 FFT 测量与诊断实现。
+ * @brief 运行时单双通道采样率、65536 点 F32 FFT 测量与诊断实现。
  *
  * 模块用途：保存 ADC1/ADC2 同步样本对，暂停 TIM2 后顺序完成两个通道的
  * 时域测量和自定义 F32 FFT，发布电压、Vpp、RMS、频率、THD、相位及波形类型。
- * GPIO 引脚映射：PC4/ADC1_INP4 为 CH1，PB1/ADC2_INP5 为 CH2；本模块不直接操作 GPIO。
- * 依赖的外设和 CubeIDE 配置：ADC1/ADC2 Dual Regular Simultaneous、TIM2 TRGO
- * 600 kHz、DMA1 Stream0 Circular Word/Word；工作区分别映射到 D1/D2 SRAM。
+ * GPIO 引脚映射：无直接 GPIO；样本由内部双 ADC 或 ADS8688 驱动提交。
+ * 依赖的外设和 CubeIDE 配置：依赖当前采集源；工作区分别映射到 D1/D2 SRAM。
  * 初始化方法：system_init() 调用 measurement_fft_init()。
- * 调用方法：adc_dual_process() 提交样本对，主循环调用 measurement_fft_process()。
+ * 调用方法：采集驱动提交成对或单路样本，主循环调用 measurement_fft_process()。
  */
 
 #include "system.h"
@@ -112,6 +111,12 @@ static measurement_fft_spectrum_t measurement_fft_spectrum;
 /** 两个通道的软件电压校准参数。 */
 static measurement_fft_calibration_t
     measurement_fft_calibration[MEASUREMENT_FFT_CHANNEL_COUNT];
+/** 当前采集源提供的运行时采样率、通道数和轮询延迟。 */
+static measurement_fft_input_profile_t measurement_fft_input_profile = {
+    MEASUREMENT_FFT_SAMPLE_RATE_HZ,
+    0.0f,
+    MEASUREMENT_FFT_INPUT_DUAL_CHANNEL
+};
 /** 兼容旧 ADS8688 顺序提交接口的一对临时样本。 */
 static uint16_t measurement_fft_legacy_pair[MEASUREMENT_FFT_CHANNEL_COUNT];
 static uint8_t measurement_fft_legacy_pair_mask;
@@ -321,7 +326,7 @@ static uint16_t measurement_fft_find_peak_bin(const float32_t *spectrum,
 {
     uint32_t maximum_bin =
         (uint32_t)ceilf(MEASUREMENT_FFT_SPECTRUM_MAX_HZ
-                        / (MEASUREMENT_FFT_SAMPLE_RATE_HZ
+                        / (measurement_fft_input_profile.sample_rate_hz
                            / (float)MEASUREMENT_FFT_LENGTH));
     uint32_t bin;
     uint16_t peak_bin = 0u;
@@ -582,12 +587,13 @@ static void measurement_fft_build_spectrum(const float32_t *spectrum,
 {
     const float point_width = MEASUREMENT_FFT_SPECTRUM_MAX_HZ
                               / (float)MEASUREMENT_FFT_SPECTRUM_POINT_COUNT;
-    const float bin_width = MEASUREMENT_FFT_SAMPLE_RATE_HZ
+    const float bin_width = measurement_fft_input_profile.sample_rate_hz
                             / (float)MEASUREMENT_FFT_LENGTH;
     uint32_t point;
 
     measurement_fft_spectrum.point_width_hz = point_width;
-    measurement_fft_spectrum.nyquist_hz = MEASUREMENT_FFT_SAMPLE_RATE_HZ * 0.5f;
+    measurement_fft_spectrum.nyquist_hz =
+        measurement_fft_input_profile.sample_rate_hz * 0.5f;
     measurement_fft_spectrum.sequence++;
     measurement_fft_spectrum.valid = (reference_power > 0.0f) ? 1u : 0u;
     for (point = 0u; point < MEASUREMENT_FFT_SPECTRUM_POINT_COUNT; point++)
@@ -703,11 +709,12 @@ static fft_f32_65536_status_t measurement_fft_analyze_channel(
 static void measurement_fft_update_timing_diagnostics(void)
 {
     measurement_fft_diagnostics.raw_sample_rate_hz =
-        MEASUREMENT_FFT_SAMPLE_RATE_HZ;
+        measurement_fft_input_profile.sample_rate_hz;
     measurement_fft_diagnostics.effective_sample_rate_hz =
-        MEASUREMENT_FFT_SAMPLE_RATE_HZ;
+        measurement_fft_input_profile.sample_rate_hz;
     measurement_fft_diagnostics.bin_width_hz =
-        MEASUREMENT_FFT_SAMPLE_RATE_HZ / (float)MEASUREMENT_FFT_LENGTH;
+        measurement_fft_input_profile.sample_rate_hz
+        / (float)MEASUREMENT_FFT_LENGTH;
     measurement_fft_diagnostics.decimation_factor =
         MEASUREMENT_FFT_DECIMATION_FACTOR;
 }
@@ -785,6 +792,11 @@ void measurement_fft_init(void)
     measurement_fft_display_start_ms = 0u;
     measurement_fft_result_sequence = 0u;
     measurement_fft_legacy_pair_mask = 0u;
+    measurement_fft_input_profile.sample_rate_hz =
+        MEASUREMENT_FFT_SAMPLE_RATE_HZ;
+    measurement_fft_input_profile.ch2_delay_seconds = 0.0f;
+    measurement_fft_input_profile.mode =
+        MEASUREMENT_FFT_INPUT_DUAL_CHANNEL;
     measurement_fft_diagnostics.init_status =
         ((MEASUREMENT_FFT_LENGTH == FFT_F32_65536_LENGTH)
          && ((MEASUREMENT_FFT_LENGTH & (MEASUREMENT_FFT_LENGTH - 1u)) == 0u))
@@ -799,7 +811,7 @@ void measurement_fft_init(void)
         MEASUREMENT_FFT_SPECTRUM_MAX_HZ
         / (float)MEASUREMENT_FFT_SPECTRUM_POINT_COUNT;
     measurement_fft_spectrum.nyquist_hz =
-        MEASUREMENT_FFT_SAMPLE_RATE_HZ * 0.5f;
+        measurement_fft_input_profile.sample_rate_hz * 0.5f;
     for (index = 0u; index < MEASUREMENT_FFT_SPECTRUM_POINT_COUNT; index++)
     {
         measurement_fft_spectrum.relative_db_x10[index] =
@@ -808,9 +820,47 @@ void measurement_fft_init(void)
     measurement_fft_enable_cycle_counter();
 }
 
+/**
+ * @brief 装载当前采集源的运行时 FFT 参数并重新同步窗口。
+ * @param profile 采样率、通道模式和 CH2 延迟。
+ * @return 配置有效返回 1，否则返回 0。
+ * @note 放弃尚未完成的窗口，不访问采集外设。
+ */
+uint8_t measurement_fft_configure_input(
+    const measurement_fft_input_profile_t *profile)
+{
+    if ((profile == 0) || (!isfinite(profile->sample_rate_hz))
+        || (profile->sample_rate_hz <= 0.0f)
+        || (!isfinite(profile->ch2_delay_seconds))
+        || (profile->ch2_delay_seconds < 0.0f)
+        || ((profile->mode != MEASUREMENT_FFT_INPUT_DUAL_CHANNEL)
+            && (profile->mode != MEASUREMENT_FFT_INPUT_SINGLE_CHANNEL)))
+    {
+        return 0u;
+    }
+
+    measurement_fft_input_profile = *profile;
+    measurement_fft_capture_index = 0u;
+    measurement_fft_frame_ready = 0u;
+    measurement_fft_processing = 0u;
+    measurement_fft_settle_count = 0u;
+    measurement_fft_legacy_pair_mask = 0u;
+    measurement_fft_state = MEASUREMENT_FFT_STATE_SETTLING;
+    measurement_fft_spectrum.valid = 0u;
+    measurement_fft_update_timing_diagnostics();
+    measurement_fft_spectrum.nyquist_hz =
+        measurement_fft_input_profile.sample_rate_hz * 0.5f;
+    return 1u;
+}
+
 uint8_t measurement_fft_ingest_pair(uint16_t ch1_raw_code,
                                     uint16_t ch2_raw_code)
 {
+    if (measurement_fft_input_profile.mode
+        != MEASUREMENT_FFT_INPUT_DUAL_CHANNEL)
+    {
+        return 0u;
+    }
     if (measurement_fft_diagnostics.init_status != 0)
     {
         return 0u;
@@ -840,6 +890,57 @@ uint8_t measurement_fft_ingest_pair(uint16_t ch1_raw_code,
         ch1_raw_code;
     measurement_fft_sample_pairs[measurement_fft_capture_index].ch2_code =
         ch2_raw_code;
+    measurement_fft_capture_index++;
+    if (measurement_fft_capture_index == MEASUREMENT_FFT_LENGTH)
+    {
+        measurement_fft_frame_ready = 1u;
+        measurement_fft_state = MEASUREMENT_FFT_STATE_READY;
+        measurement_fft_diagnostics.window_count++;
+    }
+    return 1u;
+}
+
+/**
+ * @brief 将一个单通道原始码写入 FFT 主通道窗口。
+ * @param raw_code 当前 ADS8688 单通道原始码。
+ * @return 接受样本返回 1，状态不允许时返回 0。
+ * @note 第二通道存储清零，发布阶段会把第二路和相位标为无效。
+ */
+uint8_t measurement_fft_ingest_single(uint16_t raw_code)
+{
+    if (measurement_fft_input_profile.mode
+        != MEASUREMENT_FFT_INPUT_SINGLE_CHANNEL)
+    {
+        return 0u;
+    }
+    if (measurement_fft_diagnostics.init_status != 0)
+    {
+        return 0u;
+    }
+    if (measurement_fft_state == MEASUREMENT_FFT_STATE_SETTLING)
+    {
+        measurement_fft_diagnostics.discarded_sample_count++;
+        measurement_fft_settle_count++;
+        if (measurement_fft_settle_count >= MEASUREMENT_FFT_SETTLE_SAMPLE_COUNT)
+        {
+            measurement_fft_capture_index = 0u;
+            measurement_fft_settle_count = 0u;
+            measurement_fft_state = MEASUREMENT_FFT_STATE_CAPTURE;
+        }
+        return 0u;
+    }
+    if ((measurement_fft_state != MEASUREMENT_FFT_STATE_CAPTURE)
+        || (measurement_fft_frame_ready != 0u)
+        || (measurement_fft_processing != 0u)
+        || (measurement_fft_capture_index >= MEASUREMENT_FFT_LENGTH))
+    {
+        measurement_fft_diagnostics.discarded_sample_count++;
+        return 0u;
+    }
+
+    measurement_fft_sample_pairs[measurement_fft_capture_index].ch1_code =
+        raw_code;
+    measurement_fft_sample_pairs[measurement_fft_capture_index].ch2_code = 0u;
     measurement_fft_capture_index++;
     if (measurement_fft_capture_index == MEASUREMENT_FFT_LENGTH)
     {
@@ -903,6 +1004,7 @@ void measurement_fft_process(void)
     uint8_t fault_mask;
     uint8_t valid;
     uint8_t channel;
+    uint8_t active_channel_count;
     uint32_t cycle_start;
 
     if ((measurement_fft_state == MEASUREMENT_FFT_STATE_READY)
@@ -910,7 +1012,18 @@ void measurement_fft_process(void)
     {
         HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);//反转开发板LED
         measurement_fft_processing = 1u;
-        for (channel = 0u; channel < MEASUREMENT_FFT_CHANNEL_COUNT; channel++)
+        active_channel_count =
+            (measurement_fft_input_profile.mode
+             == MEASUREMENT_FFT_INPUT_SINGLE_CHANNEL)
+                ? 1u
+                : MEASUREMENT_FFT_CHANNEL_COUNT;
+        memset(time_metrics, 0, sizeof(time_metrics));
+        memset(analysis, 0, sizeof(analysis));
+        memset(voltage_status, 0, sizeof(voltage_status));
+        memset(span_vpp, 0, sizeof(span_vpp));
+        memset(span_code, 0, sizeof(span_code));
+        memset(fft_status, 0, sizeof(fft_status));
+        for (channel = 0u; channel < active_channel_count; channel++)
         {
             time_metrics[channel] = measurement_fft_analyze_time_domain(channel);
             span_code[channel] =
@@ -926,15 +1039,26 @@ void measurement_fft_process(void)
             (uint16_t)(time_metrics[1].mean_raw_code + 0.5f);
         measurement_fft_diagnostics.clipping_mask =
             (uint8_t)((measurement_fft_is_clipped(time_metrics[0]) != 0u ? 0x01u : 0u)
-                      | (measurement_fft_is_clipped(time_metrics[1]) != 0u ? 0x02u : 0u));
+                      | ((active_channel_count > 1u)
+                         && (measurement_fft_is_clipped(time_metrics[1]) != 0u)
+                             ? 0x02u
+                             : 0u));
         voltage_status[0] = measurement_fft_convert_time_metrics(
             time_metrics[0], 0u, &span_vpp[0],
             &measurement_fft_diagnostics.dc_voltage,
             &measurement_fft_diagnostics.rms_voltage);
-        voltage_status[1] = measurement_fft_convert_time_metrics(
-            time_metrics[1], 1u, &span_vpp[1],
-            &measurement_fft_diagnostics.secondary_dc_voltage,
-            &measurement_fft_diagnostics.secondary_rms_voltage);
+        if (active_channel_count > 1u)
+        {
+            voltage_status[1] = measurement_fft_convert_time_metrics(
+                time_metrics[1], 1u, &span_vpp[1],
+                &measurement_fft_diagnostics.secondary_dc_voltage,
+                &measurement_fft_diagnostics.secondary_rms_voltage);
+        }
+        else
+        {
+            measurement_fft_diagnostics.secondary_dc_voltage = 0.0f;
+            measurement_fft_diagnostics.secondary_rms_voltage = 0.0f;
+        }
         measurement_fft_diagnostics.voltage_calibrated_mask =
             (uint8_t)((voltage_status[0] == MEASUREMENT_FFT_VOLTAGE_CALIBRATED ? 0x01u : 0u)
                       | (voltage_status[1] == MEASUREMENT_FFT_VOLTAGE_CALIBRATED ? 0x02u : 0u));
@@ -945,8 +1069,11 @@ void measurement_fft_process(void)
         cycle_start = DWT->CYCCNT;
         fft_status[0] = measurement_fft_analyze_channel(
             0u, time_metrics[0].mean_raw_code, 1u, &analysis[0]);
-        fft_status[1] = measurement_fft_analyze_channel(
-            1u, time_metrics[1].mean_raw_code, 0u, &analysis[1]);
+        if (active_channel_count > 1u)
+        {
+            fft_status[1] = measurement_fft_analyze_channel(
+                1u, time_metrics[1].mean_raw_code, 0u, &analysis[1]);
+        }
         measurement_fft_diagnostics.last_fft_cycles = DWT->CYCCNT - cycle_start;
         measurement_fft_diagnostics.peak_bin = analysis[0].peak_bin;
         measurement_fft_diagnostics.secondary_peak_bin = analysis[1].peak_bin;
@@ -957,10 +1084,20 @@ void measurement_fft_process(void)
             measurement_fft_calibrate_frequency(
                 measurement_fft_diagnostics.raw_peak_frequency_hz);
         measurement_fft_diagnostics.secondary_raw_peak_frequency_hz =
-            analysis[1].peak_position * measurement_fft_diagnostics.bin_width_hz;
-        measurement_fft_diagnostics.secondary_peak_frequency_hz =
-            measurement_fft_calibrate_frequency(
+            (active_channel_count > 1u)
+                ? analysis[1].peak_position
+                    * measurement_fft_diagnostics.bin_width_hz
+                : 0.0f;
+        if (active_channel_count > 1u)
+        {
+            measurement_fft_diagnostics.secondary_peak_frequency_hz =
+                measurement_fft_calibrate_frequency(
                 measurement_fft_diagnostics.secondary_raw_peak_frequency_hz);
+        }
+        else
+        {
+            measurement_fft_diagnostics.secondary_peak_frequency_hz = 0.0f;
+        }
         measurement_fft_diagnostics.harmonic_ratio_3 = analysis[0].harmonic_ratio_3;
         measurement_fft_diagnostics.harmonic_ratio_5 = analysis[0].harmonic_ratio_5;
         measurement_fft_diagnostics.secondary_harmonic_ratio_3 =
@@ -979,14 +1116,17 @@ void measurement_fft_process(void)
             analysis[0].wave_type,
             span_vpp[0]);
         measurement_fft_diagnostics.secondary_amplitude_vpp =
-            measurement_fft_rms_to_vpp(
+            (active_channel_count > 1u)
+                ? measurement_fft_rms_to_vpp(
                 measurement_fft_diagnostics.secondary_rms_voltage,
                 analysis[1].wave_type,
-                span_vpp[1]);
+                span_vpp[1])
+                : 0.0f;
 
         measurement_fft_diagnostics.raw_phase_deg = 0.0f;
         measurement_fft_diagnostics.phase_deg = 0.0f;
-        if ((analysis[0].peak_bin != 0u)
+        if ((active_channel_count > 1u)
+            && (analysis[0].peak_bin != 0u)
             && (fabsf(analysis[0].peak_position - analysis[1].peak_position)
                 <= MEASUREMENT_FFT_CHANNEL_MATCH_TOLERANCE_BINS))
         {
@@ -998,7 +1138,10 @@ void measurement_fft_process(void)
                  - atan2f(analysis[0].peak_imaginary, analysis[0].peak_real))
                 * 180.0f / MEASUREMENT_FFT_PI;
             measurement_fft_diagnostics.phase_deg = measurement_fft_wrap_phase(
-                measurement_fft_diagnostics.raw_phase_deg);
+                measurement_fft_diagnostics.raw_phase_deg
+                - 360.0f
+                    * measurement_fft_diagnostics.peak_frequency_hz
+                    * measurement_fft_input_profile.ch2_delay_seconds);
         }
 
         quality = MEASUREMENT_FFT_QUALITY_OK;
@@ -1008,6 +1151,9 @@ void measurement_fft_process(void)
             mode[channel] = MEASUREMENT_MODE_UNKNOWN;
             valid_mask[channel] = 0u;
             estimated_mask[channel] = 0u;
+        }
+        for (channel = 0u; channel < active_channel_count; channel++)
+        {
             if (voltage_status[channel] != MEASUREMENT_FFT_VOLTAGE_INVALID)
             {
                 valid_mask[channel] |= MEASUREMENT_VALID_DC_VOLTAGE;
@@ -1077,7 +1223,8 @@ void measurement_fft_process(void)
                        | MEASUREMENT_VALID_AMPLITUDE | MEASUREMENT_VALID_RMS);
             }
         }
-        if ((mode[0] == MEASUREMENT_MODE_AC)
+        if ((active_channel_count > 1u)
+            && (mode[0] == MEASUREMENT_MODE_AC)
             && (mode[1] == MEASUREMENT_MODE_AC)
             && (fabsf(analysis[0].peak_position - analysis[1].peak_position)
                 <= MEASUREMENT_FFT_CHANNEL_MATCH_TOLERANCE_BINS)
@@ -1085,12 +1232,28 @@ void measurement_fft_process(void)
         {
             valid_mask[0] |= MEASUREMENT_VALID_PHASE;
         }
-        else if ((mode[0] == MEASUREMENT_MODE_AC)
+        else if ((active_channel_count > 1u)
+                 && (mode[0] == MEASUREMENT_MODE_AC)
                  && (mode[1] == MEASUREMENT_MODE_AC))
         {
             quality = MEASUREMENT_FFT_QUALITY_CHANNEL_MISMATCH;
         }
-        valid = (((valid_mask[0] & (MEASUREMENT_VALID_AMPLITUDE
+        if (active_channel_count == 1u)
+        {
+            uint16_t secondary_valid_mask = 0u;
+            valid_mask[1] = secondary_valid_mask;
+            estimated_mask[1] = 0u;
+            mode[1] = MEASUREMENT_MODE_UNKNOWN;
+            valid = ((valid_mask[0] & (MEASUREMENT_VALID_AMPLITUDE
+                                      | MEASUREMENT_VALID_FREQUENCY))
+                     == (MEASUREMENT_VALID_AMPLITUDE
+                         | MEASUREMENT_VALID_FREQUENCY))
+                        ? 1u
+                        : 0u;
+        }
+        else
+        {
+            valid = (((valid_mask[0] & (MEASUREMENT_VALID_AMPLITUDE
                                     | MEASUREMENT_VALID_FREQUENCY
                                     | MEASUREMENT_VALID_PHASE))
                   == (MEASUREMENT_VALID_AMPLITUDE
@@ -1101,6 +1264,7 @@ void measurement_fft_process(void)
                          | MEASUREMENT_VALID_FREQUENCY)))
                     ? 1u
                     : 0u;
+        }
         measurement_fft_diagnostics.fft_count++;
         measurement_fft_diagnostics.fft_ready = 1u;
         measurement_fft_publish(valid, quality, mode[0], valid_mask[0],

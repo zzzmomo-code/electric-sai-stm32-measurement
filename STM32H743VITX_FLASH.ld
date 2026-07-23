@@ -147,6 +147,14 @@ SECTIONS
     . = ALIGN(32);
   } >RAM_D2
 
+  /* ADS8688 SPI3 循环 DMA 缓冲区，固定放入 DMA 可访问的 D2 SRAM。 */
+  .ads8688_dma (NOLOAD) :
+  {
+    . = ALIGN(32);
+    *(.ads8688_dma)
+    . = ALIGN(32);
+  } >RAM_D2
+
   /* 65536 个 float32_t FFT 原地工作区，固定放入 D1 SRAM。 */
   .fft_f32_work (NOLOAD) :
   {
@@ -192,4 +200,3 @@ SECTIONS
 
   .ARM.attributes 0 : { *(.ARM.attributes) }
 }
-
