@@ -6,8 +6,9 @@
 增加一套独立底层驱动。第二块器件使用 SPI6 和专用控制引脚，上电后由
 `system_init()` 初始化为 900 kHz，并提供双频率、双相位寄存器读写选择能力。
 
-保留用户在第一块驱动中尚未提交的 `DDS_SetFrequency()`。第二块驱动增加行为对应的
-`DDS2_SetFrequency()`，用于交替写入非活动频率寄存器后切换输出。
+保留用户在第一块驱动中尚未提交的交替更新功能，但将接口统一改为符合项目命名规则的
+`dds_set_frequency()`。第二块驱动增加对应的 `dds2_set_frequency()`，用于交替写入
+非活动频率寄存器后切换输出。
 
 ## 硬件与 CubeIDE 配置依据
 
@@ -54,12 +55,16 @@ void ad9834_2_select_frequency_register(
 void ad9834_2_select_phase_register(
     ad9834_2_phase_register_t phase_register);
 uint32_t ad9834_2_calculate_tuning_word(uint32_t frequency_hz);
-ad9834_2_status_t DDS2_SetFrequency(uint32_t freq);
+ad9834_2_status_t dds2_set_frequency(uint32_t frequency_hz);
 ```
 
-除用户明确指定的兼容接口 `DDS2_SetFrequency()` 外，所有新增函数和变量均使用
-小写下划线命名。`DDS2_SetFrequency()` 与第一块的 `DDS_SetFrequency()` 保持直观
-对应，不替换任何小写底层接口。
+所有新增及本功能涉及的用户函数和变量均使用小写下划线命名。第一块原有未提交接口
+`DDS_SetFrequency(uint32_t freq)` 在实现时改名为
+`dds_set_frequency(uint32_t frequency_hz)`，并同步更新声明、定义、内部参数名和中文
+注释；第二块对应接口为 `dds2_set_frequency(uint32_t frequency_hz)`。
+
+两个接口的中文注释均明确说明：函数先将目标频率写入当前非活动频率寄存器，只有完整
+写入成功后才切换 FSELECT；SPI 写入或参数校验失败时保持当前输出不变。
 
 `ad9834_2_set_frequency_hz()` 固定写入 FREQ0，用于与第一块基础 API 对应。
 通用频率和相位接口分别支持 FREQ0/FREQ1 与 PHASE0/PHASE1。写入寄存器不会自动切换
@@ -104,9 +109,9 @@ DDS2_RST 保持高电平，使器件不会带着不完整配置输出。下一�
 
 ## 交替频率更新
 
-`DDS2_SetFrequency(freq)` 保存第二块当前活动频率寄存器。每次调用时先把新频率写入
-非活动寄存器；只有两个 16 位频率数据字均发送成功后，才切换 PD6/DDS2_FS 并更新
-活动寄存器状态。SPI 写入失败时保持当前输出和活动寄存器不变。
+`dds2_set_frequency(frequency_hz)` 保存第二块当前活动频率寄存器。每次调用时先把
+新频率写入非活动寄存器；只有两个 16 位频率数据字均发送成功后，才切换
+PD6/DDS2_FS 并更新活动寄存器状态。SPI 写入失败时保持当前输出和活动寄存器不变。
 
 该接口不改变相位寄存器选择。非法频率沿用底层参数检查，不发送 SPI 数据，也不切换
 DDS2_FS。
@@ -135,18 +140,19 @@ DDS2_FS。
 - SPI6 每个 FSYNC 低电平窗口只发送一个 16 位字；
 - 非法频率、相位和寄存器不产生 SPI 或 GPIO 副作用；
 - SPI 失败后 FSYNC 恢复高电平，初始化失败时 RESET 保持高电平；
-- `DDS2_SetFrequency()` 只在完整写入成功后切换非活动寄存器；
-- 第一块现有 `DDS_SetFrequency()` 内容仍被保留。
+- `dds2_set_frequency()` 只在完整写入成功后切换非活动寄存器；
+- 第一块现有交替更新内容被保留，并以 `dds_set_frequency()` 小写接口提供。
 
 更新 `README.md`，记录第二块 AD9834 的用途、引脚、SPI6 配置、900 kHz 初始化、
-独立 API、`DDS2_SetFrequency()` 示例、限制与示波器/逻辑分析仪验证方法。
+独立 API、`dds2_set_frequency()` 示例、限制与示波器/逻辑分析仪验证方法。
 
 ## 完成标准
 
 - 所有新增 `.c/.h` 文件位于 `Core/User/`，并具有完整中文模块说明和函数注释；
 - `system.h` 包含第二块驱动头文件，`system_init()` 完成唯一初始化调用；
 - `main.c` 用户初始化区和主循环结构保持不变；
-- 第一块 AD9834、`dds_control` 及用户的 `DDS_SetFrequency()` 行为不变；
+- 第一块 AD9834 和 `dds_control` 行为不变，用户增加的交替更新函数仅统一更名为
+  `dds_set_frequency()` 并更新中文注释；
 - 主机契约测试全部通过；
 - STM32CubeIDE Debug 工程构建成功；
 - README 与实际代码、引脚及配置一致；
