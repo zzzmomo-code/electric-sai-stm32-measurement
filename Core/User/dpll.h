@@ -1,12 +1,13 @@
 /**
  * @file dpll.h
- * @brief 二阶数字锁相环、粗频率捕获和 I/Q 相位检测接口。
+ * @brief 低频数字锁相环、谐波判别和连续相位 DAC 输出接口。
  *
- * 模块用途：用带迟滞的插值上升过零完成粗频率捕获，并用 I/Q 相关检测相位。
+ * 模块用途：用 16 个同向施密特过零周期测频，用 f/2、f、2f 相关能量排除二倍频误锁，
+ *           再以跨 DMA 块 I/Q 检相和限速 PI 环路缓慢拉相。
  * GPIO 引脚：无直接 GPIO 引脚。
- * 依赖外设：无；输入为 ADC 采样数组，输出交给 DAC 缓冲区。
+ * 依赖外设：无；输入为 ADC 采样数组，输出交给 DAC DMA 缓冲区。
  * 初始化方法：先调用 nco_init()，再调用 dpll_init()。
- * 调用方法：每个 ADC 半缓冲调用 dpll_process_block()，随后可预测生成 DAC 波形。
+ * 调用方法：每个 ADC 半缓冲依次调用 dpll_process_block() 和 dpll_generate_dac()。
  */
 
 #ifndef USER_DPLL_H
@@ -25,11 +26,37 @@ typedef enum
 
 typedef struct
 {
+    /* 输入时间轴上的连续 NCO 相位，以及下一段 DAC 数据的连续输出相位。 */
     uint64_t phase_accumulator_q32;
+    uint64_t output_phase_accumulator_q32;
     uint32_t phase_increment_q32;
     uint64_t total_samples;
+
+    /* 16 周期同向过零测量状态。 */
+    double period_window_start_sample;
     double last_crossing_sample;
     float previous_raw_sample;
+    float period_estimate_samples;
+    uint32_t period_count;
+
+    /* f/2、f、2f 三候选相关能量验证器，仅保存累加量，不保存长窗样本。 */
+    uint32_t validation_phase_q32[3];
+    uint32_t validation_increment_q32[3];
+    double validation_i[3];
+    double validation_q[3];
+    float validation_frequency_hz[3];
+    uint32_t validation_raw_count;
+    uint32_t validation_target_raw_count;
+    uint32_t validation_decimation_count;
+
+    /* 跨多个 DMA 块的 I/Q 相位检测累加器。 */
+    double phase_i_sum;
+    double phase_q_sum;
+    uint32_t phase_raw_count;
+    uint32_t phase_target_raw_count;
+
+    /* 频率、相位、幅度和直流偏置的运行估计。 */
+    float candidate_frequency_hz;
     float nominal_frequency_hz;
     float coarse_frequency_hz;
     float output_frequency_hz;
@@ -37,24 +64,31 @@ typedef struct
     float phase_error_rad;
     float amplitude_adc_counts;
     float offset_adc_counts;
-    float loop_kp_hz_per_rad;
-    float loop_ki_hz_per_rad_s;
+    float output_envelope;
+
     uint32_t lock_confirm_count;
+    uint32_t unlock_confirm_count;
+    uint32_t no_signal_block_count;
+    uint32_t below_hysteresis_count;
     uint8_t previous_sample_valid;
     uint8_t crossing_armed;
     uint8_t crossing_valid;
     uint8_t frequency_valid;
+    uint8_t validation_active;
+    uint8_t output_started;
     dpll_lock_state_t lock_state;
 } dpll_t;
 
 void dpll_init(dpll_t *dpll, float initial_frequency_hz);
 void dpll_reset(dpll_t *dpll);
-void dpll_process_block(dpll_t *dpll, const uint16_t *samples, size_t sample_count);
-void dpll_generate_dac(const dpll_t *dpll,
+void dpll_process_block(dpll_t *dpll,
+                        const uint16_t *samples,
+                        size_t sample_count,
+                        float target_phase_deg);
+void dpll_generate_dac(dpll_t *dpll,
                        uint16_t *dac_samples,
                        size_t sample_count,
-                       uint32_t lead_samples,
-                       float target_phase_deg);
+                       uint32_t lead_samples);
 float dpll_get_phase_error_deg(const dpll_t *dpll);
 
 #endif /* USER_DPLL_H */

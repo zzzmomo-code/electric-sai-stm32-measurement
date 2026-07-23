@@ -127,12 +127,14 @@ static void signal_process_half(uint32_t sample_offset)
     }
     else
     {
-        dpll_process_block(&signal_dpll, adc_half, SIGNAL_DMA_HALF_SAMPLES);
+        dpll_process_block(&signal_dpll,
+                           adc_half,
+                           SIGNAL_DMA_HALF_SAMPLES,
+                           target_phase_deg);
         dpll_generate_dac(&signal_dpll,
                           dac_half,
                           SIGNAL_DMA_HALF_SAMPLES,
-                          SIGNAL_DMA_HALF_SAMPLES,
-                          target_phase_deg);
+                          SIGNAL_DMA_HALF_SAMPLES);
     }
 
     signal_cache_clean(dac_half, half_bytes);
