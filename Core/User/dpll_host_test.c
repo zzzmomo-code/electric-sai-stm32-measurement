@@ -136,6 +136,84 @@ static uint32_t test_run_until_locked(dpll_t *dpll,
 }
 
 /**
+ * @brief 直接对最终 DAC 采样数组计数，测量实际生成频率。
+ * @param dpll 已捕获的 DPLL 状态对象。
+ * @param input_frequency_hz 持续输入的基波频率。
+ * @param second_harmonic_amplitude 输入二次谐波峰值。
+ * @param target_phase_deg 目标相位。
+ * @param block_count 测量 DMA 半块数。
+ * @return DAC 上升过零测得的频率；过零不足时返回 0。
+ * @note 不使用 output_frequency_hz 状态量作为测试结果。
+ */
+static double test_measure_dac_frequency(dpll_t *dpll,
+                                         double input_frequency_hz,
+                                         double second_harmonic_amplitude,
+                                         float target_phase_deg,
+                                         uint32_t block_count)
+{
+    double first_crossing = 0.0;
+    double last_crossing = 0.0;
+    float previous_sample = 0.0f;
+    uint32_t crossing_count = 0u;
+    uint32_t block;
+    uint8_t previous_valid = 0u;
+
+    for (block = 0u; block < block_count; ++block)
+    {
+        uint32_t index;
+
+        test_generate_input(input_frequency_hz,
+                            12000.0,
+                            second_harmonic_amplitude);
+        dpll_process_block(dpll,
+                           test_adc_samples,
+                           SIGNAL_DMA_HALF_SAMPLES,
+                           target_phase_deg);
+        dpll_generate_dac(dpll,
+                          test_dac_samples,
+                          SIGNAL_DMA_HALF_SAMPLES,
+                          SIGNAL_DMA_HALF_SAMPLES);
+
+        for (index = 0u; index < SIGNAL_DMA_HALF_SAMPLES; ++index)
+        {
+            const float current_sample = (float)test_dac_samples[index];
+            const float threshold = dpll->offset_adc_counts / 16.0f;
+
+            if ((previous_valid != 0u)
+                && (previous_sample <= threshold)
+                && (current_sample > threshold))
+            {
+                const float denominator = current_sample - previous_sample;
+                const float fraction =
+                    (denominator > 0.0f)
+                    ? ((threshold - previous_sample) / denominator)
+                    : 0.0f;
+                const double crossing =
+                    (double)(block * SIGNAL_DMA_HALF_SAMPLES + index)
+                    - 1.0 + (double)fraction;
+
+                if (crossing_count == 0u)
+                {
+                    first_crossing = crossing;
+                }
+                last_crossing = crossing;
+                ++crossing_count;
+            }
+
+            previous_sample = current_sample;
+            previous_valid = 1u;
+        }
+    }
+
+    if (crossing_count < 2u)
+    {
+        return 0.0;
+    }
+    return ((double)(crossing_count - 1u) * (double)SIGNAL_SAMPLE_RATE_HZ)
+           / (last_crossing - first_crossing);
+}
+
+/**
  * @brief 验证一个简化验收频点。
  * @param frequency_hz 输入频率。
  * @return 通过返回 1，否则返回 0。
@@ -149,6 +227,7 @@ static int test_frequency_point(double frequency_hz)
     dpll_t dpll;
     uint32_t used_blocks;
     double elapsed_seconds;
+    double measured_dac_frequency_hz;
 
     test_input_phase_rad = 0.61;
     test_noise_amplitude = 0.0;
@@ -162,6 +241,12 @@ static int test_frequency_point(double frequency_hz)
     elapsed_seconds =
         (double)used_blocks * (double)SIGNAL_DMA_HALF_SAMPLES
         / (double)SIGNAL_SAMPLE_RATE_HZ;
+    measured_dac_frequency_hz =
+        test_measure_dac_frequency(&dpll,
+                                   frequency_hz,
+                                   0.0,
+                                   0.0f,
+                                   64u);
 
     TEST_CHECK(dpll.lock_state == DPLL_STATE_LOCKED,
                "frequency point did not lock");
@@ -169,13 +254,16 @@ static int test_frequency_point(double frequency_hz)
                "coarse frequency is outside 0.25 Hz");
     TEST_CHECK(fabs((double)dpll.output_frequency_hz - frequency_hz) < 0.60,
                "output frequency is outside 0.60 Hz");
+    TEST_CHECK(fabs(measured_dac_frequency_hz - frequency_hz) < 0.60,
+               "actual DAC samples have the wrong frequency");
     TEST_CHECK(fabs((double)dpll_get_phase_error_deg(&dpll))
                <= DPLL_LOCK_PHASE_THRESHOLD_DEG,
                "locked phase error exceeds threshold");
     TEST_CHECK(elapsed_seconds <= 5.0, "lock time exceeds 5 seconds");
 
-    (void)printf("PASS frequency=%7.1fHz lock=%6.3fs phase=%7.3fdeg\n",
+    (void)printf("PASS frequency=%7.1fHz dac=%9.3fHz lock=%6.3fs phase=%7.3fdeg\n",
                  frequency_hz,
+                 measured_dac_frequency_hz,
                  elapsed_seconds,
                  (double)dpll_get_phase_error_deg(&dpll));
     return 1;
@@ -184,27 +272,37 @@ static int test_frequency_point(double frequency_hz)
 /**
  * @brief 验证含强二次谐波时不会锁到二倍频。
  * @return 通过返回 1，否则返回 0。
- * @note 二次谐波足以制造额外过零，但其相关能量仍低于基波。
+ * @note 二次谐波幅度高于基波，专门验证“最低可信基波优先”策略。
  */
 static int test_second_harmonic_rejection(void)
 {
     dpll_t dpll;
     uint32_t used_blocks;
+    double measured_dac_frequency_hz;
 
     test_input_phase_rad = 0.23;
     test_noise_amplitude = 0.0;
     dpll_init(&dpll, DPLL_DEFAULT_FREQUENCY_HZ);
     used_blocks =
-        test_run_until_locked(&dpll, 1000.0, 7000.0, 0.0f, 2442u);
+        test_run_until_locked(&dpll, 1000.0, 16000.0, 0.0f, 2442u);
+    measured_dac_frequency_hz =
+        test_measure_dac_frequency(&dpll,
+                                   1000.0,
+                                   16000.0,
+                                   0.0f,
+                                   64u);
 
     TEST_CHECK(dpll.lock_state == DPLL_STATE_LOCKED,
                "harmonic input did not lock");
     TEST_CHECK(fabsf(dpll.coarse_frequency_hz - 1000.0f) < 0.50f,
                "harmonic input locked to the wrong candidate");
+    TEST_CHECK(fabs(measured_dac_frequency_hz - 1000.0) < 0.60,
+               "harmonic input produced a doubled DAC frequency");
     TEST_CHECK(used_blocks < 2442u, "harmonic rejection exceeded timeout");
 
-    (void)printf("PASS harmonic fundamental=1000.0Hz selected=%7.3fHz\n",
-                 (double)dpll.coarse_frequency_hz);
+    (void)printf("PASS harmonic selected=%7.3fHz dac=%9.3fHz\n",
+                 (double)dpll.coarse_frequency_hz,
+                 measured_dac_frequency_hz);
     return 1;
 }
 

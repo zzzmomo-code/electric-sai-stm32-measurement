@@ -14,6 +14,7 @@
 
 #define PHASE_PI_F                         (3.14159265358979323846f)
 #define PHASE_TWO_PI_F                     (6.28318530717958647692f)
+#define PHASE_LOCK_FIRMWARE_ID              "lfdpll_fundamental_v2"
 
 /* TIM2 以 240 MHz / 240 产生 1 MHz ADC/DAC 公共采样时钟。 */
 #define SIGNAL_SAMPLE_RATE_HZ               (1000000.0f)
@@ -57,6 +58,8 @@
 #define DPLL_VALIDATION_CYCLES                    (16u)
 #define DPLL_VALIDATION_MIN_RAW_SAMPLES           (8192u)
 #define DPLL_VALIDATION_MAX_RAW_SAMPLES           (65536u)
+/* 从低到高选择能量不低于最强候选 5% 的候选，优先保留真实基波。 */
+#define DPLL_FUNDAMENTAL_ENERGY_RATIO              (0.05f)
 
 /* I/Q 相位窗至少跨 4 个 DMA 半块、至少覆盖 8 个周期。 */
 #define DPLL_PHASE_WINDOW_CYCLES                  (8u)
@@ -68,8 +71,8 @@
 #define DPLL_CAPTURE_KI_HZ_PER_RAD_S              (0.32f)
 #define DPLL_LOCKED_KP_HZ_PER_RAD                 (0.05f)
 #define DPLL_LOCKED_KI_HZ_PER_RAD_S               (0.004f)
-#define DPLL_CAPTURE_CORRECTION_LIMIT_HZ          (0.50f)
-#define DPLL_LOCKED_CORRECTION_LIMIT_HZ           (0.10f)
+#define DPLL_CAPTURE_CORRECTION_LIMIT_HZ          (0.10f)
+#define DPLL_LOCKED_CORRECTION_LIMIT_HZ           (0.02f)
 #define DPLL_LOCK_PHASE_THRESHOLD_DEG             (5.0f)
 #define DPLL_UNLOCK_PHASE_THRESHOLD_DEG           (20.0f)
 #define DPLL_LOCK_CONFIRM_WINDOWS                 (8u)

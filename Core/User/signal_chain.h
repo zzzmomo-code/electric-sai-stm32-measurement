@@ -25,6 +25,7 @@ typedef struct
     signal_mode_t mode;
     dpll_lock_state_t lock_state;
     float frequency_hz;
+    float coarse_frequency_hz;
     float phase_error_deg;
     float amplitude_adc_counts;
     float offset_adc_counts;

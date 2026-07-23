@@ -40,7 +40,7 @@
 | 防误锁 | 对粗测频候选的 f/2、f、2f 做长窗相关能量比较 |
 | 相位 | DPLL 目标 0°，稳态软件误差不大于 5° |
 | 连续性 | DAC 64 位相位累加器跨 DMA 块连续，不允许块边界重置 |
-| 拉相 | 只用不超过 ±0.5 Hz 的频偏缓慢拉回，不直接改写运行中相位 |
+| 拉相 | 只用不超过 ±0.1 Hz 的频偏缓慢拉回，不直接改写运行中相位 |
 | 锁定时间 | 软件仿真不大于 5 秒；实板重新测量 |
 | 波形还原 | 保留直接 ADC→DAC 同步流水模式 |
 
@@ -94,7 +94,7 @@
 6. 如需完整波形直通，通过 USART1 发送字符 `0`。
 
 当前已完成 CubeIDE 1.19.0 无界面 Debug 完整编译：`0 errors, 0 warnings`，生成
-`Debug/phase_locking_codex.elf`。Flash 使用 43,448 字节，静态 RAM 使用 27,960 字节。
+`Debug/phase_locking_codex.elf`。Flash 使用 43,616 字节，静态 RAM 使用 27,960 字节。
 实物输入范围、锁定时间、幅相误差和噪声上限仍需上板测量。
 
 ## 5. 串口命令
@@ -113,13 +113,15 @@
 状态示例：
 
 ```text
-mode=dpll lock=locked run=1 f_mHz=10000000 phase_mdeg=800 target_mdeg=0 amp=12000 offset=32768 blocks=100 err=0/0/0
+fw=lfdpll_fundamental_v2 mode=dpll lock=locked run=1 f_mHz=1000000 coarse_mHz=1000000 phase_mdeg=800 target_mdeg=0 amp=12000 offset=32768 blocks=100 err=0/0/0
 ```
 
 主要字段：
 
 - `lock`：`no_signal`、`acquiring`、`tracking` 或 `locked`；
-- `f_mHz`：频率，单位 mHz，除以 1000 得到 Hz；
+- `fw`：当前固件标识，本版必须显示 `lfdpll_fundamental_v2`；
+- `f_mHz`：实际用于 DAC NCO 的频率，单位 mHz；
+- `coarse_mHz`：ADC 粗测频并经基波判决后的频率，单位 mHz；
 - `phase_mdeg`：当前相位误差，单位千分之一度；
 - `target_mdeg`：设置的目标相位；
 - `amp`、`offset`：ADC 码值下的幅值和直流偏置；
@@ -217,8 +219,9 @@ H743 开启了 D-Cache。DMA 缓冲区被固定放入 D2 RAM 的 `.dma_buffer` �
 - `DPLL_CROSSING_ARM_SAMPLES`：负阈值连续确认点数，当前为 16；
 - `DPLL_CROSSING_BLANKING_MIN_SAMPLES`：过零后的最短消隐点数；
 - `DPLL_PERIOD_TOLERANCE_RATIO`：16 周期一致性容差；
-- `DPLL_CAPTURE_CORRECTION_LIMIT_HZ`：捕获态最大拉相频偏，当前 ±0.5 Hz；
-- `DPLL_LOCKED_CORRECTION_LIMIT_HZ`：锁定态最大修正频偏，当前 ±0.1 Hz；
+- `DPLL_FUNDAMENTAL_ENERGY_RATIO`：最低可信基波门限，当前为最强候选能量的 5%；
+- `DPLL_CAPTURE_CORRECTION_LIMIT_HZ`：捕获态最大拉相频偏，当前 ±0.1 Hz；
+- `DPLL_LOCKED_CORRECTION_LIMIT_HZ`：锁定态最大修正频偏，当前 ±0.02 Hz；
 - `DPLL_LOCK_PHASE_THRESHOLD_DEG`：锁定相位门限，当前 5°；
 - `SIGNAL_DIRECT_GAIN_Q15`、`SIGNAL_DIRECT_OFFSET_ADC_COUNTS`：直接模式增益和偏置校准。
 
@@ -228,17 +231,17 @@ H743 开启了 D-Cache。DMA 缓冲区被固定放入 D2 RAM 的 `.dma_buffer` �
 
 - CubeIDE 1.19.0 Debug 完整编译：通过，`0 errors, 0 warnings`；
 - 真实 ELF 已生成：`Debug/phase_locking_codex.elf`；
-- Flash：43,448 B / 2 MiB，约 2.1%；
+- Flash：43,616 B / 2 MiB，约 2.1%；
 - 静态 RAM：27,960 B；其中 D2 RAM 的 ADC+DAC DMA 缓冲区共 16,384 B；
 - `dpll_t`：248 B；三候选相关和跨块 I/Q 都只保存累加量，没有长窗采样数组；
-- 主机测试 500 Hz：0.195 s 锁定，最终相位误差 -0.122°；
-- 主机测试 1 kHz：0.115 s 锁定，最终相位误差 -1.042°；
-- 主机测试 2 kHz：0.090 s 锁定，最终相位误差 -1.226°；
-- 主机测试 3 kHz：0.082 s 锁定，最终相位误差 -0.566°；
-- 1 kHz + 7,000 码二次谐波：选择 1000.004 Hz，没有锁到 2 kHz；
+- 主机测试 500 Hz：DAC 实测 500.004 Hz，0.195 s 锁定；
+- 主机测试 1 kHz：DAC 实测 1000.004 Hz，0.115 s 锁定；
+- 主机测试 2 kHz：DAC 实测 2000.002 Hz，0.090 s 锁定；
+- 主机测试 3 kHz：DAC 实测 2999.999 Hz，0.082 s 锁定；
+- 1 kHz + 16,000 码二次谐波（谐波强于基波）：选择 1000.012 Hz，DAC 实测 999.911 Hz；
 - 1 kHz + 70 kHz/5,000 码噪声：选择 999.999 Hz，短时多次过零测试通过；
 - DAC 跨 DMA 块连续相位测试通过；
-- 目标相位从 0° 改为 90°：未直接改写 DAC 相位，3 秒后重新锁定，误差 -3.519°；
+- 目标相位从 0° 改为 90°：未直接改写 DAC 相位，3 秒后重新锁定，误差 1.044°；
 - 无信号识别测试通过。
 
 以上是软件结果。最终的相位抖动、幅度误差、频率范围和长期稳定性必须接实板与示波器验证。

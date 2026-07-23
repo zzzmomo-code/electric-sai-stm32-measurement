@@ -57,6 +57,7 @@ static void system_report_status(void)
     static char status_text[256];
     signal_chain_status_t status;
     int32_t frequency_millihz;
+    int32_t coarse_frequency_millihz;
     int32_t phase_millideg;
     int32_t target_millideg;
     int32_t amplitude_counts;
@@ -64,6 +65,8 @@ static void system_report_status(void)
 
     signal_chain_get_status(&status);
     frequency_millihz = (int32_t)(status.frequency_hz * 1000.0f);
+    coarse_frequency_millihz =
+        (int32_t)(status.coarse_frequency_hz * 1000.0f);
     phase_millideg = (int32_t)(status.phase_error_deg * 1000.0f);
     target_millideg = (int32_t)(status.target_phase_deg * 1000.0f);
     amplitude_counts = (int32_t)(status.amplitude_adc_counts + 0.5f);
@@ -72,12 +75,14 @@ static void system_report_status(void)
     (void)snprintf(
         status_text,
         sizeof(status_text),
-        "mode=%s lock=%s run=%u f_mHz=%ld phase_mdeg=%ld target_mdeg=%ld "
+        "fw=" PHASE_LOCK_FIRMWARE_ID " mode=%s lock=%s run=%u "
+        "f_mHz=%ld coarse_mHz=%ld phase_mdeg=%ld target_mdeg=%ld "
         "amp=%ld offset=%ld blocks=%lu err=%lu/%lu/%lu\r\n",
         system_mode_name(status.mode),
         system_lock_name(status.lock_state),
         (unsigned int)status.running,
         (long)frequency_millihz,
+        (long)coarse_frequency_millihz,
         (long)phase_millideg,
         (long)target_millideg,
         (long)amplitude_counts,
@@ -152,7 +157,7 @@ void system_init(void)
     uart_debug_init();
     signal_chain_init();
     (void)uart_debug_write(
-        "\r\nphase_locking_codex ready\r\n"
+        "\r\nphase_locking_codex " PHASE_LOCK_FIRMWARE_ID " ready\r\n"
         "0=direct 1=dpll r=reset +=phase5 -=phase5 s=status\r\n");
 }
 

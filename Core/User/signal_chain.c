@@ -350,6 +350,7 @@ void signal_chain_get_status(signal_chain_status_t *status)
     status->mode = current_mode;
     status->lock_state = signal_dpll.lock_state;
     status->frequency_hz = signal_dpll.output_frequency_hz;
+    status->coarse_frequency_hz = signal_dpll.coarse_frequency_hz;
     status->phase_error_deg = dpll_get_phase_error_deg(&signal_dpll);
     status->amplitude_adc_counts = signal_dpll.amplitude_adc_counts;
     status->offset_adc_counts = signal_dpll.offset_adc_counts;

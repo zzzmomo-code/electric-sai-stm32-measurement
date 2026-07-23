@@ -307,6 +307,29 @@ static void dpll_process_validation_sample(dpll_t *dpll,
             }
         }
 
+        /*
+         * 不能简单选择最强谱线：模拟链路失真可能使二次谐波暂时强于基波。
+         * 从 f/2、f、2f 由低到高选择达到可信能量门限的第一个候选，
+         * 只要真实基波仍有足够能量，就不会再次误锁到二倍频。
+         */
+        for (candidate_index = 0u; candidate_index < 3u; ++candidate_index)
+        {
+            const double energy =
+                (dpll->validation_i[candidate_index]
+                 * dpll->validation_i[candidate_index])
+                + (dpll->validation_q[candidate_index]
+                   * dpll->validation_q[candidate_index]);
+
+            if ((dpll->validation_increment_q32[candidate_index] != 0u)
+                && (energy
+                    >= (winner_energy
+                        * (double)DPLL_FUNDAMENTAL_ENERGY_RATIO)))
+            {
+                winner_index = candidate_index;
+                break;
+            }
+        }
+
         dpll_accept_validation(dpll, winner_index, target_phase_deg);
         return;
     }
