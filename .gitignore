@@ -1,0 +1,22 @@
+# STM32CubeIDE 构建产物
+/Debug/
+/Release/
+
+# 编译器与链接器中间文件
+*.o
+*.d
+*.a
+*.elf
+*.hex
+*.bin
+*.map
+*.list
+*.su
+*.cyclo
+
+# IDE 工作区与本机临时文件
+/.metadata/
+*.tmp
+*.bak
+*~
+
