@@ -3,7 +3,8 @@
 
 /*
  * 模块用途：所有用户模块的唯一统一头文件入口。
- * GPIO 映射：PC0=ADC 输入，PA4/PA5=DAC 输出，PB14/PB15=USART1。
+ * GPIO 映射：PC0=ADC 输入，PA4=主 DAC 输出，PA5=双信号模式第二 DAC 输出，
+ *            PB14/PB15=USART1。
  * 外设依赖：ADC1、DAC1、TIM2、USART1、DMA1。
  * 初始化方法：main.c 在 CubeMX 外设初始化完成后只调用 system_init()。
  * 调用方法：main.c 的 while(1) 中只调用 system_process()。

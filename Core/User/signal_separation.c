@@ -26,6 +26,11 @@ _Static_assert(((SIGSEP_DAC_DMA_HALF_LEN * sizeof(uint16_t)) % 32U) == 0U,
 _Static_assert((SIGSEP_MAX_BIN * SIGSEP_FREQ_STEP_HZ) <=
                (SIGSEP_SAMPLE_RATE_HZ / 2U),
                "correlation table must not exceed Nyquist");
+_Static_assert((SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED) ||
+               (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE),
+               "invalid signal separation operation mode");
+_Static_assert(SIGSEP_FREQ_COUNT >= 2U,
+               "frequency search requires at least two bins");
 
 typedef struct
 {
@@ -362,13 +367,15 @@ static float measure_amplitude_only(const uint16_t *samples, float mean,
 }
 
 /**
- * @brief 根据三次/五次谐波含量判断正弦波或三角波。
+ * @brief 根据三次/五次谐波含量判断正弦波、三角波或方波。
  * @param samples ADC 分析帧。
  * @param mean ADC 均值。
  * @param frequency_hz 当前分量基波频率。
  * @param other_frequency_hz 另一个主分量频率。
  * @param fundamental_amplitude 当前基波幅值。
- * @return signal_wave_sine 或 signal_wave_triangle。
+ * @return 识别出的波形类型。
+ * @note 方波奇次谐波明显强于三角波；若三次谐波与双信号模式的另一分量
+ *       重合，则改用五次谐波，避免把另一输入误当成本分量谐波。
  */
 static signal_wave_type_t detect_wave_type(const uint16_t *samples, float mean,
                                            uint32_t frequency_hz,
@@ -394,27 +401,41 @@ static signal_wave_type_t detect_wave_type(const uint16_t *samples, float mean,
                                                  frequency_hz * 5U);
   }
 
-  if ((other_frequency_hz == (frequency_hz * 3U)) &&
-      (harmonic5_amplitude >
-       (fundamental_amplitude * SIGSEP_TRI_H5_RATIO)))
+  if (other_frequency_hz == (frequency_hz * 3U))
   {
-    return signal_wave_triangle;
+    if (harmonic5_amplitude >
+        (fundamental_amplitude * SIGSEP_SQUARE_H5_RATIO))
+    {
+      return signal_wave_square;
+    }
+    if (harmonic5_amplitude >
+        (fundamental_amplitude * SIGSEP_TRI_H5_RATIO))
+    {
+      return signal_wave_triangle;
+    }
   }
-  if ((other_frequency_hz != (frequency_hz * 3U)) &&
-      (harmonic3_amplitude >
-       (fundamental_amplitude * SIGSEP_TRI_H3_RATIO)))
+  else
   {
-    return signal_wave_triangle;
+    if (harmonic3_amplitude >
+        (fundamental_amplitude * SIGSEP_SQUARE_H3_RATIO))
+    {
+      return signal_wave_square;
+    }
+    if (harmonic3_amplitude >
+        (fundamental_amplitude * SIGSEP_TRI_H3_RATIO))
+    {
+      return signal_wave_triangle;
+    }
   }
 
   return signal_wave_sine;
 }
 
 /**
- * @brief 搜索并识别输入中幅值最大的两个候选频率分量。
+ * @brief 按当前编译期模式搜索单个主分量或两个混合分量。
  * @param samples ADC 分析帧。
- * @param output 两个分量的输出数组。
- * @return 累积到 4 帧并完成识别时返回 1，否则返回 0。
+ * @param output 最多两个分量的输出数组；单信号模式只使用 output[0]。
+ * @return 累积到指定帧数并获得当前模式所需分量时返回 1，否则返回 0。
  */
 static uint8_t analyze_frame(const uint16_t *samples,
                              signal_component_t output[2])
@@ -423,9 +444,8 @@ static uint8_t analyze_frame(const uint16_t *samples,
   float amplitude[SIGSEP_FREQ_COUNT];
   uint32_t phase[SIGSEP_FREQ_COUNT];
   uint32_t best0 = 0U;
-  uint32_t best1 = 1U;
   uint32_t index;
-  uint32_t temporary;
+  uint32_t component_count;
 
   for (index = 0U; index < SIGSEP_FREQ_COUNT; index++)
   {
@@ -450,38 +470,19 @@ static uint8_t analyze_frame(const uint16_t *samples,
   }
   identify_frame_count = 0U;
 
-  if (amplitude[best1] > amplitude[best0])
-  {
-    best0 = 1U;
-    best1 = 0U;
-  }
-
-  for (index = 2U; index < SIGSEP_FREQ_COUNT; index++)
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
+  /*
+   * 单信号模式只寻找全频段最强基波，不再强制从底噪中凑出第二个分量。
+   * 这样一路干净输入只驱动 PA4，PA5 始终保持 DAC 中点。
+   */
+  for (index = 1U; index < SIGSEP_FREQ_COUNT; index++)
   {
     if (amplitude[index] > amplitude[best0])
     {
-      best1 = best0;
       best0 = index;
     }
-    else if (amplitude[index] > amplitude[best1])
-    {
-      best1 = index;
-    }
   }
-
-  if (best0 > best1)
-  {
-    temporary = best0;
-    best0 = best1;
-    best1 = temporary;
-  }
-
-  /*
-   * 原参考代码即使只有直流、单音或噪声也会在四帧后强制宣布识别完成，并以
-   * 最小 700 码幅值输出。两个候选都达到有效幅度后才进入锁相状态。
-   */
-  if ((amplitude[best0] < SIGSEP_MIN_VALID_ADC_AMP) ||
-      (amplitude[best1] < SIGSEP_MIN_VALID_ADC_AMP))
+  if (amplitude[best0] < SIGSEP_MIN_VALID_ADC_AMP)
   {
     return 0U;
   }
@@ -491,35 +492,90 @@ static uint8_t analyze_frame(const uint16_t *samples,
                            (best0 * SIGSEP_FREQ_STEP_HZ);
   output[0].amplitude_adc = amplitude[best0];
   output[0].phase_q32 = phase[best0];
+  output[0].wave = detect_wave_type(samples, mean,
+                                    output[0].frequency_hz, 0U,
+                                    output[0].amplitude_adc);
 
-  output[1].frequency_index = (uint8_t)best1;
-  output[1].frequency_hz = SIGSEP_FREQ_MIN_HZ +
-                           (best1 * SIGSEP_FREQ_STEP_HZ);
-  output[1].amplitude_adc = amplitude[best1];
-  output[1].phase_q32 = phase[best1];
+  output[1].frequency_index = 0U;
+  output[1].frequency_hz = 0U;
+  output[1].wave = signal_wave_sine;
+  output[1].amplitude_adc = 0.0f;
+  output[1].amplitude_dac = 0.0f;
+  output[1].phase_q32 = 0U;
+  component_count = 1U;
+#else
+  {
+    uint32_t best1 = 1U;
+    uint32_t temporary;
+    float stronger_amplitude;
+    float weaker_amplitude;
 
-  for (index = 0U; index < 2U; index++)
+    if (amplitude[best1] > amplitude[best0])
+    {
+      best0 = 1U;
+      best1 = 0U;
+    }
+
+    for (index = 2U; index < SIGSEP_FREQ_COUNT; index++)
+    {
+      if (amplitude[index] > amplitude[best0])
+      {
+        best1 = best0;
+        best0 = index;
+      }
+      else if (amplitude[index] > amplitude[best1])
+      {
+        best1 = index;
+      }
+    }
+
+    stronger_amplitude = amplitude[best0];
+    weaker_amplitude = amplitude[best1];
+    if ((stronger_amplitude < SIGSEP_MIN_VALID_ADC_AMP) ||
+        (weaker_amplitude < SIGSEP_MIN_VALID_ADC_AMP) ||
+        (weaker_amplitude <
+         (stronger_amplitude * SIGSEP_DUAL_MIN_SECOND_RATIO)))
+    {
+      return 0U;
+    }
+
+    /* 两路 DAC 固定按低频到高频排序，与峰值强弱无关。 */
+    if (best0 > best1)
+    {
+      temporary = best0;
+      best0 = best1;
+      best1 = temporary;
+    }
+
+    output[0].frequency_index = (uint8_t)best0;
+    output[0].frequency_hz = SIGSEP_FREQ_MIN_HZ +
+                             (best0 * SIGSEP_FREQ_STEP_HZ);
+    output[0].amplitude_adc = amplitude[best0];
+    output[0].phase_q32 = phase[best0];
+
+    output[1].frequency_index = (uint8_t)best1;
+    output[1].frequency_hz = SIGSEP_FREQ_MIN_HZ +
+                             (best1 * SIGSEP_FREQ_STEP_HZ);
+    output[1].amplitude_adc = amplitude[best1];
+    output[1].phase_q32 = phase[best1];
+
+    output[0].wave = detect_wave_type(samples, mean,
+                                      output[0].frequency_hz,
+                                      output[1].frequency_hz,
+                                      output[0].amplitude_adc);
+    output[1].wave = detect_wave_type(samples, mean,
+                                      output[1].frequency_hz,
+                                      output[0].frequency_hz,
+                                      output[1].amplitude_adc);
+    component_count = 2U;
+  }
+#endif
+
+  for (index = 0U; index < component_count; index++)
   {
     output[index].amplitude_dac =
       output[index].amplitude_adc * SIGSEP_ADC_TO_DAC_SCALE;
-    if (output[index].amplitude_dac < SIGSEP_DEFAULT_DAC_AMP)
-    {
-      output[index].amplitude_dac = SIGSEP_DEFAULT_DAC_AMP;
-    }
-    if (output[index].amplitude_dac > SIGSEP_MAX_DAC_AMP)
-    {
-      output[index].amplitude_dac = SIGSEP_MAX_DAC_AMP;
-    }
   }
-
-  output[0].wave = detect_wave_type(samples, mean,
-                                    output[0].frequency_hz,
-                                    output[1].frequency_hz,
-                                    output[0].amplitude_adc);
-  output[1].wave = detect_wave_type(samples, mean,
-                                    output[1].frequency_hz,
-                                    output[0].frequency_hz,
-                                    output[1].amplitude_adc);
 
   return 1U;
 }
@@ -543,6 +599,8 @@ static void nco_init(uint32_t channel, const signal_component_t *component,
   nco_state[channel].last_error = 0;
 }
 
+#if ((SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED) && \
+     (SIGSEP_COMMON_SOURCE_LOCK != 0U))
 /**
  * @brief 在整数倍频时把跟随通道锚定到主通道的统一输出时间原点。
  * @param follower_channel 跟随通道索引。
@@ -582,6 +640,7 @@ static void nco_align_integer_common_source(uint32_t follower_channel,
   nco_state[follower_channel].integrator = 0;
   nco_state[follower_channel].last_error = 0;
 }
+#endif
 
 /**
  * @brief 获取包含 PLL 修正的实际 NCO 步进。
@@ -684,6 +743,8 @@ static int32_t nco_update_lock(uint32_t channel, uint32_t measured_phase,
   return phase_error;
 }
 
+#if ((SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED) && \
+     (SIGSEP_COMMON_SOURCE_LOCK != 0U))
 /**
  * @brief 按频率比例把主通道相位时间误差换算到跟随通道。
  * @param phase_error 主通道有符号 Q32 相位误差。
@@ -805,6 +866,7 @@ static void nco_follow_common_source(uint32_t follower_channel,
   nco_state[follower_channel].sample_reference = frame_start_sample;
   nco_state[follower_channel].last_error = follower_error;
 }
+#endif
 
 /**
  * @brief 生成一个通道的一段 DAC 采样数据。
@@ -829,7 +891,12 @@ static void build_dac_samples(uint16_t *destination,
     int32_t waveform_q15;
     int32_t code;
 
-    if (component->wave == signal_wave_triangle)
+    if (component->wave == signal_wave_square)
+    {
+      /* 与正弦基波保持同一零交叉相位：前半周期为高，后半周期为低。 */
+      waveform_q15 = ((phase & 0x80000000UL) == 0U) ? 32767 : -32767;
+    }
+    else if (component->wave == signal_wave_triangle)
     {
       uint32_t quadrant = phase >> 30;
       uint32_t fraction = (phase & 0x3FFFFFFFUL) >> 15;
@@ -895,7 +962,7 @@ static void fill_dac_half_midscale(uint32_t half_index)
 }
 
 /**
- * @brief 为两路 DAC 填充一个已释放半区并写回 D-Cache。
+ * @brief 按当前模式填充 DAC 信号半区并写回 D-Cache。
  * @param half_index 半区索引 0 或 1。
  * @param play_sample 该半区下次播放时第一个样点的绝对编号。
  * @return 无。
@@ -906,17 +973,31 @@ static void fill_dac_half_signal(uint32_t half_index, uint64_t play_sample)
   uint32_t phase0 =
     nco_phase_at_sample(0U, play_sample) +
     phase_offset_degree_to_q32(SIGSEP_DAC1_PHASE_OFFSET_DEG);
-  uint32_t phase1 =
-    nco_phase_at_sample(1U, play_sample) +
-    phase_offset_degree_to_q32(SIGSEP_DAC2_PHASE_OFFSET_DEG +
-                               output_phase_offset_deg);
   uint32_t byte_count =
     SIGSEP_DAC_DMA_HALF_LEN * (uint32_t)sizeof(uint16_t);
 
   build_dac_samples(&dac1_dma_buffer[offset], &active_component[0],
                     phase0, nco_step(0U), SIGSEP_DAC_DMA_HALF_LEN);
-  build_dac_samples(&dac2_dma_buffer[offset], &active_component[1],
-                    phase1, nco_step(1U), SIGSEP_DAC_DMA_HALF_LEN);
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
+  {
+    uint32_t index;
+
+    for (index = 0U; index < SIGSEP_DAC_DMA_HALF_LEN; index++)
+    {
+      dac2_dma_buffer[offset + index] = SIGSEP_DAC_MID;
+    }
+  }
+#else
+  {
+    uint32_t phase1 =
+      nco_phase_at_sample(1U, play_sample) +
+      phase_offset_degree_to_q32(SIGSEP_DAC2_PHASE_OFFSET_DEG +
+                                 output_phase_offset_deg);
+
+    build_dac_samples(&dac2_dma_buffer[offset], &active_component[1],
+                      phase1, nco_step(1U), SIGSEP_DAC_DMA_HALF_LEN);
+  }
+#endif
   dma_clean_to_peripheral(&dac1_dma_buffer[offset], byte_count);
   dma_clean_to_peripheral(&dac2_dma_buffer[offset], byte_count);
 }
@@ -942,6 +1023,8 @@ static void reset_runtime_state(void)
   dac_half_overrun = 0U;
   identify_frame_count = 0U;
   separation_identified = 0U;
+  memset(active_component, 0, sizeof(active_component));
+  memset(nco_state, 0, sizeof(nco_state));
 
   for (index = 0U; index < SIGSEP_FREQ_COUNT; index++)
   {
@@ -1009,8 +1092,23 @@ static void service_dac_halves(uint32_t dac1_event_count,
  */
 static void update_dac_amplitude(uint32_t channel, uint8_t smooth_output)
 {
-  float target =
-    active_component[channel].amplitude_adc * SIGSEP_ADC_TO_DAC_SCALE;
+  float waveform_peak_adc = active_component[channel].amplitude_adc;
+  float target;
+
+  /*
+   * 相关检测得到的是基波峰值。方波基波为原波峰值的 4/pi，三角波基波为
+   * 原波峰值的 8/pi^2，先换回时域峰值再映射到 DAC，避免不同波形幅度失真。
+   */
+  if (active_component[channel].wave == signal_wave_square)
+  {
+    waveform_peak_adc *= 0.7853981634f;
+  }
+  else if (active_component[channel].wave == signal_wave_triangle)
+  {
+    waveform_peak_adc *= 1.2337005501f;
+  }
+
+  target = waveform_peak_adc * SIGSEP_ADC_TO_DAC_SCALE;
 
   if (target < SIGSEP_DEFAULT_DAC_AMP)
   {
@@ -1082,8 +1180,9 @@ static void process_adc_frame(const uint16_t *samples,
     }
 
     active_component[0] = result[0];
-    active_component[1] = result[1];
     nco_init(0U, &active_component[0], frame_start_sample);
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
+    active_component[1] = result[1];
     nco_init(1U, &active_component[1], frame_start_sample);
 #if (SIGSEP_COMMON_SOURCE_LOCK != 0U)
     {
@@ -1094,12 +1193,33 @@ static void process_adc_frame(const uint16_t *samples,
       nco_align_integer_common_source(follower_channel, master_channel);
     }
 #endif
+#endif
     separation_identified = 1U;
     update_dac_amplitude(0U, 0U);
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
     update_dac_amplitude(1U, 0U);
+#endif
   }
   else
   {
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
+    float mean = frame_mean(samples);
+    float measured_amplitude;
+    uint32_t measured_phase;
+
+    /*
+     * 单信号模式直接复用双信号模式主通道的测相和 PI 型 PLL。相关器测得
+     * 基波相位，NCO 负责连续输出，PLL 只缓慢修正频差和相位误差。
+     */
+    measure_component(samples, mean, active_component[0].frequency_hz,
+                      &measured_amplitude, &measured_phase);
+    (void)nco_update_lock(0U, measured_phase, frame_start_sample);
+    active_component[0].phase_q32 = measured_phase;
+    active_component[0].amplitude_adc +=
+      (measured_amplitude - active_component[0].amplitude_adc) /
+      (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
+    update_dac_amplitude(0U, 1U);
+#else
     float mean = frame_mean(samples);
     float measured_amplitude[2];
     uint32_t measured_phase[2];
@@ -1144,6 +1264,7 @@ static void process_adc_frame(const uint16_t *samples,
       (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
     update_dac_amplitude(0U, 1U);
     update_dac_amplitude(1U, 1U);
+#endif
   }
 }
 
@@ -1311,6 +1432,12 @@ uint8_t signal_separation_get_status(signal_separation_status_t *status)
   }
 
   status->identified = separation_identified;
+  status->mode = (signal_operation_mode_t)SIGSEP_OPERATION_MODE;
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
+  status->output_count = 1U;
+#else
+  status->output_count = 2U;
+#endif
   for (channel = 0U; channel < 2U; channel++)
   {
     status->frequency_hz[channel] = active_component[channel].frequency_hz;

@@ -2,12 +2,26 @@
 #define SIGNAL_SEPARATION_CONFIG_H
 
 /*
- * 模块用途：STM32H743 双信号识别、数字锁相和双路 DAC 再生参数。
+ * 模块用途：STM32H743 单/双信号识别、数字锁相和 DAC 再生参数。
  * GPIO 映射：PC0=ADC1_INP10，PA4=DAC1_OUT1，PA5=DAC1_OUT2。
  * 外设依赖：ADC1、DAC1 CH1/CH2、TIM2 TRGO、DMA1 Stream0/1/2。
  * 初始化方法：由 signal_separation_start() 自动初始化并启动。
  * 调用方法：主循环持续调用 signal_separation_process()。
  */
+
+/*
+ * 编译期工作模式，只需要修改 SIGSEP_OPERATION_MODE 后重新编译下载。
+ *
+ * single：
+ *   PC0 输入一路正弦波、方波或三角波，PA4 重建并锁相输出，PA5 保持中点。
+ * dual_mixed：
+ *   PC0 输入两路信号的模拟叠加，PA4/PA5 分别重建低频/高频分量。
+ */
+#define SIGSEP_MODE_DUAL_MIXED                 1U
+#define SIGSEP_MODE_SINGLE                     2U
+#ifndef SIGSEP_OPERATION_MODE
+#define SIGSEP_OPERATION_MODE                  SIGSEP_MODE_SINGLE
+#endif
 
 /* TIM2 同时触发 ADC 和两路 DAC，采样率为 2.5 MSPS。 */
 #define SIGSEP_SAMPLE_RATE_HZ                  2500000U
@@ -56,10 +70,17 @@
 #define SIGSEP_COMMON_SOURCE_LOCK              1U
 #define SIGSEP_PHASE_MASTER_CH                 0U
 
-/* 谐波法波形分类参数。 */
+/*
+ * 识别有效性和谐波法波形分类参数。
+ * 双信号模式除固定门限外，还要求较弱分量至少达到较强分量的 5%，避免把
+ * 单音输入产生的频谱泄漏或底噪误当成第二路信号。
+ */
 #define SIGSEP_MIN_VALID_ADC_AMP               120.0f
+#define SIGSEP_DUAL_MIN_SECOND_RATIO           0.050f
 #define SIGSEP_TRI_H3_RATIO                    0.060f
 #define SIGSEP_TRI_H5_RATIO                    0.025f
+#define SIGSEP_SQUARE_H3_RATIO                 0.220f
+#define SIGSEP_SQUARE_H5_RATIO                 0.120f
 
 /*
  * Q32 NCO/PLL 参数。
