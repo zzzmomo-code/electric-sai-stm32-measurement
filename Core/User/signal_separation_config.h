@@ -20,7 +20,7 @@
 #define SIGSEP_MODE_DUAL_MIXED                 1U
 #define SIGSEP_MODE_SINGLE                     2U
 #ifndef SIGSEP_OPERATION_MODE
-#define SIGSEP_OPERATION_MODE                  SIGSEP_MODE_SINGLE
+#define SIGSEP_OPERATION_MODE                  SIGSEP_MODE_DUAL_MIXED
 #endif
 
 /* TIM2 同时触发 ADC 和两路 DAC，采样率为 2.5 MSPS。 */

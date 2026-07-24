@@ -18,11 +18,12 @@
 #define SIGSEP_MODE_DUAL_MIXED  1U
 #define SIGSEP_MODE_SINGLE      2U
 
-#define SIGSEP_OPERATION_MODE   SIGSEP_MODE_SINGLE
+#define SIGSEP_OPERATION_MODE   SIGSEP_MODE_DUAL_MIXED
 ```
 
 修改 `SIGSEP_OPERATION_MODE` 后必须重新编译并下载。当前默认值为
-`SIGSEP_MODE_SINGLE`，用于先验证单信号输入、PA4 重建和锁相。
+`SIGSEP_MODE_DUAL_MIXED`，先验证混合输入分离、PA4/PA5 双路重建和锁相；
+若双信号测试异常，再切换到单信号模式逐级排查。
 
 | 模式 | PC0 输入 | PA4 | PA5 |
 |---|---|---|---|
@@ -320,39 +321,11 @@ locked A=25000Hz/sin B=60000Hz/tri adc_drop=0 dac_drop=0
 
 ## 8. 第一次实板验证顺序
 
-### 8.1 先跑通默认单信号模式
+### 8.1 先验证默认双混合信号模式
 
 1. 先不接 PC0，完成下载并确认程序没有进入 `Error_Handler()`。
-2. 打开串口，确认看到 `mode=single`；若不是，检查
-   `SIGSEP_OPERATION_MODE` 是否为 `SIGSEP_MODE_SINGLE`，然后重新编译、下载。
-3. 函数发生器只启用一路，设置：
-   - 正弦波；
-   - 20 kHz；
-   - 0.5 Vpp；
-   - DC Offset 1.65 V；
-   - High-Z 显示模式。
-4. 函数发生器、开发板、示波器共地后，先用示波器探头直接测 **PC0 引脚处**：
-   - 频率确实为 20 kHz；
-   - 最低电压不低于 0 V；
-   - 最高电压不高于 3.3 V；
-   - 没有把其他通道、调制或扫频误接到 PC0。
-5. 观察 PA4，应输出识别到的同类波形；PA5 应保持约 1.65 V 直流中点。
-6. 串口应报告 `locked A=20000Hz/sin`，并观察 `adc_drop` 和 `dac_drop`
-   在正常全速运行时是否保持 0。
-7. 示波器同时观察 PC0 和 PA4，打开无限余辉或测量相位差：
-   - 相位差可以有固定常量；
-   - 连续观察 30 秒以上不应单向漂移；
-   - 若持续漂移，记录相位差每秒变化量和 `adc_drop`/`dac_drop`。
-8. 保持频率和电压范围不变，依次改成三角波、方波，确认串口分别报告
-   `tri`、`square`，且 PA4 波形类型随之改变。
-9. 再测试 10 kHz、15 kHz、25 kHz、50 kHz 和 100 kHz。当前搜索频率必须在
-   10～100 kHz 且是 5 kHz 的整数栅格；1 kHz、2 kHz、3 kHz、4 kHz
-   目前不属于本工程的识别范围。
-
-### 8.2 再验证双混合信号模式
-
-1. 把 `SIGSEP_OPERATION_MODE` 改为 `SIGSEP_MODE_DUAL_MIXED`，Clean/Build 后重新下载。
-2. 确认串口启动行显示 `mode=dual_mixed`。
+2. 确认串口启动行显示 `mode=dual_mixed`；若不是，检查
+   `SIGSEP_OPERATION_MODE` 是否为 `SIGSEP_MODE_DUAL_MIXED`，然后重新编译、下载。
 3. 两路发生器信号必须先经过外部模拟加法器，再把**加法器的单路输出**接到 PC0；
    不要把两个推挽信号源输出端直接短接。
 4. 先使用两个相差较大的 5 kHz 栅格频率，例如 20 kHz 和 55 kHz，并确保叠加后
@@ -364,12 +337,27 @@ locked A=25000Hz/sin B=60000Hz/tri adc_drop=0 dac_drop=0
    0°、90°、150°、180°，测量 PA5 相对 PA4 的初相位差。
 9. 再测试正弦波、三角波、方波分类、不同幅度组合和 10～100 kHz 边界。
 
+### 8.2 双信号异常时退回单信号模式
+
+1. 把 `SIGSEP_OPERATION_MODE` 改为 `SIGSEP_MODE_SINGLE`，Clean/Build 后重新下载。
+2. 函数发生器只启用一路，建议先设置正弦波、20 kHz、0.5 Vpp、DC Offset
+   1.65 V，并选择 High-Z 显示模式。
+3. 函数发生器、开发板、示波器共地后，先用示波器探头直接测 **PC0 引脚处**，
+   确认频率正确，且最低电压不低于 0 V、最高电压不高于 3.3 V。
+4. 观察 PA4，应输出识别到的同类波形；PA5 应保持约 1.65 V 直流中点。
+5. 串口应报告 `locked A=20000Hz/sin`，并观察 `adc_drop` 和 `dac_drop`
+   在正常全速运行时是否保持 0。
+6. 示波器同时观察 PC0 和 PA4，连续观察 30 秒以上；相位差可以是固定常量，
+   但不应持续单向漂移。
+7. 再依次测试三角波、方波，以及 10 kHz、15 kHz、25 kHz、50 kHz 和
+   100 kHz。当前识别范围为 10～100 kHz 的 5 kHz 整数栅格。
+
 ## 9. 当前限制
 
 - 已完成 IOC、源码和本机编译验证，尚未在真实 H743 板上验证模拟波形。
 - 输入没有硬件保护，接线和电压范围必须由操作者保证。
 - 候选输入频率按原题思路限定在 5 kHz 栅格；偏离过大时会识别到最近频点。
-- 当前默认单信号模式只使用 PA4 输出；PA5 保持中点不是故障。
+- 单信号模式只使用 PA4 输出；PA5 保持中点不是故障。
 - 单信号模式在识别完成后不会自动判定“信号已拔掉”并重新搜索；改变频率档位后，
   需要复位、重新下载或调用 `signal_separation_restart_identify()`。
 - 方波/三角波判别使用三次、五次谐波比例，阈值会受函数发生器带宽、前端失真和
