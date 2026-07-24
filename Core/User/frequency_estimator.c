@@ -1,7 +1,18 @@
+#if defined(FREQUENCY_ESTIMATOR_HOST_TEST)
+#include "signal_separation_config.h"
+#include "frequency_estimator.h"
+
+#include <math.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#else
 #include "system.h"
+#endif
 
 /*
- * 模块用途：高精度首次判频，使用 32768 点连续采样、Hann 窗、基 2 FFT 和对数谱峰插值。
+ * 模块用途：高精度首次判频，使用 32768 点连续采样、Hann 窗、基 2 FFT、
+ *           对数谱峰插值和前后半段相位斜率细化。
  * GPIO 映射：无直接 GPIO 引脚。
  * 外设依赖：无直接外设依赖；由 signal_separation.c 提供已经完成 Cache 维护的 ADC 副本。
  * 初始化方法：signal_separation_start() 或重新识别时调用 frequency_estimator_reset()。
@@ -116,6 +127,20 @@ static void fft_radix2(float *real, float *imag, uint32_t length)
         twiddle_imag =
           (twiddle_real * step_imag) + (twiddle_imag * step_real);
         twiddle_real = next_twiddle_real;
+
+        /*
+         * 最大级需要连续递推 16384 次。M7 单精度乘加会让旋转因子模长缓慢
+         * 偏离 1，每 256 点归一化一次，避免长 FFT 的谱峰位置和幅值受累积
+         * 舍入误差影响。
+         */
+        if ((offset & 255U) == 255U)
+        {
+          float twiddle_norm =
+            1.0f / sqrtf((twiddle_real * twiddle_real) +
+                         (twiddle_imag * twiddle_imag));
+          twiddle_real *= twiddle_norm;
+          twiddle_imag *= twiddle_norm;
+        }
       }
     }
 
@@ -411,6 +436,16 @@ static void prepare_spectrum(void)
       (window_real * window_step_imag) +
       (window_imag * window_step_real);
     window_real = next_window_real;
+
+    /* 限制 32768 点 Hann 窗单精度递推的模长漂移。 */
+    if ((index & 255U) == 255U)
+    {
+      float window_norm =
+        1.0f / sqrtf((window_real * window_real) +
+                     (window_imag * window_imag));
+      window_real *= window_norm;
+      window_imag *= window_norm;
+    }
   }
 
   fft_radix2(fft_real, fft_imag, SIGSEP_PRECISE_FFT_LEN);
@@ -478,10 +513,13 @@ uint8_t frequency_estimator_push(const uint16_t *samples,
   }
 
   guard_bins =
-    (uint32_t)((((uint64_t)SIGSEP_DUAL_MIN_SEPARATION_HZ *
-                 SIGSEP_PRECISE_FFT_LEN) +
-                SIGSEP_SAMPLE_RATE_HZ - 1ULL) /
+    (uint32_t)(((uint64_t)SIGSEP_DUAL_MIN_SEPARATION_HZ *
+                SIGSEP_PRECISE_FFT_LEN) /
                SIGSEP_SAMPLE_RATE_HZ);
+  if (guard_bins < 1U)
+  {
+    guard_bins = 1U;
+  }
   peak_bin[0] = find_strongest_peak(first_bin, last_bin, UINT32_MAX,
                                     guard_bins, &peak_power[0]);
 
@@ -523,6 +561,19 @@ uint8_t frequency_estimator_push(const uint16_t *samples,
     uint32_t temporary = result->frequency_millihz[0];
     result->frequency_millihz[0] = result->frequency_millihz[1];
     result->frequency_millihz[1] = temporary;
+  }
+
+  /*
+   * FFT 保护区只用于避免第二次峰值搜索重复选中同一主瓣；最终仍以插值和
+   * 相位斜率细化后的物理频率复核最小间隔。使用向下取整的保护频点数，可让
+   * 恰好相差 4 kHz、但峰值整数 bin 只相差 52 的有效双音进入细化步骤。
+   */
+  if ((requested_components == 2U) &&
+      ((result->frequency_millihz[1] -
+        result->frequency_millihz[0]) <
+       ((uint32_t)SIGSEP_DUAL_MIN_SEPARATION_HZ * 1000U)))
+  {
+    return 0U;
   }
 
   return 1U;

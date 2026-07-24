@@ -312,6 +312,34 @@ static void frequency_step_coefficients(uint32_t frequency_hz,
 }
 
 /**
+ * @brief 生成毫赫兹频率对应的单样点正弦/余弦递推系数。
+ * @param frequency_millihz 目标频率，单位 0.001 Hz。
+ * @param sine_step 非空的正弦系数输出。
+ * @param cosine_step 非空的余弦系数输出。
+ * @return 无。
+ * @note 整数赫兹直接复用原函数；小数频率只在识别完成和重新识别时计算一次，
+ *       不进入每个采样点的实时路径。
+ */
+static void frequency_step_coefficients_millihz(
+  uint32_t frequency_millihz, float *sine_step, float *cosine_step)
+{
+  if ((frequency_millihz % 1000U) == 0U)
+  {
+    frequency_step_coefficients(frequency_millihz / 1000U,
+                                sine_step, cosine_step);
+  }
+  else
+  {
+    float angle = (float)(((double)signal_two_pi_f *
+                           (double)frequency_millihz) /
+                          ((double)SIGSEP_SAMPLE_RATE_HZ * 1000.0));
+
+    *sine_step = sinf(angle);
+    *cosine_step = cosf(angle);
+  }
+}
+
+/**
  * @brief 计算指定长度 ADC 数据的直流平均值。
  * @param samples ADC 数据。
  * @param sample_count 样点数量。
@@ -393,17 +421,44 @@ static void measure_component_with_step(const uint16_t *samples,
 {
   float sine_value = 0.0f;
   float cosine_value = 1.0f;
+  float sample_sum = 0.0f;
   float sine_sum = 0.0f;
   float cosine_sum = 0.0f;
+  float sine_square_sum = 0.0f;
+  float cosine_square_sum = 0.0f;
+  float sine_cosine_sum = 0.0f;
+  float sample_sine_sum = 0.0f;
+  float sample_cosine_sum = 0.0f;
+  float inverse_count;
+  float centered_sine_square;
+  float centered_cosine_square;
+  float centered_sine_cosine;
+  float centered_sample_sine;
+  float centered_sample_cosine;
+  float determinant;
+  float sine_coefficient;
+  float cosine_coefficient;
   uint32_t index;
+
+  if ((samples == NULL) || (amplitude == NULL) ||
+      (phase_q32 == NULL) || (sample_count == 0U))
+  {
+    return;
+  }
 
   for (index = 0U; index < sample_count; index++)
   {
     float sample = (float)samples[index] - mean;
     float next_cosine;
 
-    sine_sum += sample * sine_value;
-    cosine_sum += sample * cosine_value;
+    sample_sum += sample;
+    sine_sum += sine_value;
+    cosine_sum += cosine_value;
+    sine_square_sum += sine_value * sine_value;
+    cosine_square_sum += cosine_value * cosine_value;
+    sine_cosine_sum += sine_value * cosine_value;
+    sample_sine_sum += sample * sine_value;
+    sample_cosine_sum += sample * cosine_value;
     next_cosine = (cosine_value * cosine_step) -
                   (sine_value * sine_step);
     sine_value = (sine_value * cosine_step) +
@@ -411,11 +466,252 @@ static void measure_component_with_step(const uint16_t *samples,
     cosine_value = next_cosine;
   }
 
-  *amplitude = (2.0f * sqrtf((sine_sum * sine_sum) +
-                             (cosine_sum * cosine_sum))) /
-               (float)sample_count;
-  *phase_q32 = phase_from_iq(sine_sum, cosine_sum);
+  /*
+   * 同时拟合 x=a*sin(wt)+b*cos(wt)+dc。与直接假设正弦/余弦在窗口内正交相比，
+   * 该 2x2 中心化最小二乘在 1 kHz、500 点仅 0.2 周期时仍能正确剥离直流并
+   * 得到幅相；在原 5 kHz 正交栅格上会自然退化为原相关公式。
+   */
+  inverse_count = 1.0f / (float)sample_count;
+  centered_sine_square =
+    sine_square_sum - (sine_sum * sine_sum * inverse_count);
+  centered_cosine_square =
+    cosine_square_sum - (cosine_sum * cosine_sum * inverse_count);
+  centered_sine_cosine =
+    sine_cosine_sum - (sine_sum * cosine_sum * inverse_count);
+  centered_sample_sine =
+    sample_sine_sum - (sample_sum * sine_sum * inverse_count);
+  centered_sample_cosine =
+    sample_cosine_sum - (sample_sum * cosine_sum * inverse_count);
+  determinant =
+    (centered_sine_square * centered_cosine_square) -
+    (centered_sine_cosine * centered_sine_cosine);
+
+  if (determinant <=
+      (1.0e-6f *
+       ((centered_sine_square * centered_cosine_square) + 1.0f)))
+  {
+    *amplitude = 0.0f;
+    *phase_q32 = 0U;
+    return;
+  }
+
+  sine_coefficient =
+    ((centered_sample_sine * centered_cosine_square) -
+     (centered_sample_cosine * centered_sine_cosine)) /
+    determinant;
+  cosine_coefficient =
+    ((centered_sample_cosine * centered_sine_square) -
+     (centered_sample_sine * centered_sine_cosine)) /
+    determinant;
+
+  *amplitude = sqrtf((sine_coefficient * sine_coefficient) +
+                     (cosine_coefficient * cosine_coefficient));
+  *phase_q32 = phase_from_iq(sine_coefficient, cosine_coefficient);
 }
+
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
+/**
+ * @brief 用带部分主元的高斯消元求解 4x4 线性方程。
+ * @param matrix 4x4 系数矩阵。
+ * @param vector 4x1 右端向量。
+ * @param solution 非空的 4x1 解向量。
+ * @return 矩阵可解返回 1，接近奇异返回 0。
+ */
+static uint8_t solve_linear_system_4x4(const float matrix[4][4],
+                                       const float vector[4],
+                                       float solution[4])
+{
+  float augmented[4][5];
+  uint32_t column;
+  uint32_t row;
+
+  for (row = 0U; row < 4U; row++)
+  {
+    for (column = 0U; column < 4U; column++)
+    {
+      augmented[row][column] = matrix[row][column];
+    }
+    augmented[row][4] = vector[row];
+  }
+
+  for (column = 0U; column < 4U; column++)
+  {
+    uint32_t pivot_row = column;
+    float pivot_magnitude = fabsf(augmented[column][column]);
+
+    for (row = column + 1U; row < 4U; row++)
+    {
+      float candidate_magnitude = fabsf(augmented[row][column]);
+
+      if (candidate_magnitude > pivot_magnitude)
+      {
+        pivot_magnitude = candidate_magnitude;
+        pivot_row = row;
+      }
+    }
+    if (pivot_magnitude < 1.0e-6f)
+    {
+      return 0U;
+    }
+
+    if (pivot_row != column)
+    {
+      for (row = column; row < 5U; row++)
+      {
+        float temporary = augmented[column][row];
+        augmented[column][row] = augmented[pivot_row][row];
+        augmented[pivot_row][row] = temporary;
+      }
+    }
+
+    {
+      float inverse_pivot = 1.0f / augmented[column][column];
+
+      for (row = column; row < 5U; row++)
+      {
+        augmented[column][row] *= inverse_pivot;
+      }
+    }
+
+    for (row = 0U; row < 4U; row++)
+    {
+      uint32_t element;
+      float factor;
+
+      if (row == column)
+      {
+        continue;
+      }
+
+      factor = augmented[row][column];
+      for (element = column; element < 5U; element++)
+      {
+        augmented[row][element] -=
+          factor * augmented[column][element];
+      }
+    }
+  }
+
+  for (row = 0U; row < 4U; row++)
+  {
+    solution[row] = augmented[row][4];
+  }
+  return 1U;
+}
+
+/**
+ * @brief 在同一混合帧中联合拟合两个已知频率的幅值和相位。
+ * @param samples ADC 混合信号。
+ * @param sample_count 样点数量。
+ * @param mean 当前帧直流均值。
+ * @param sine_step 两个频率的正弦递推系数。
+ * @param cosine_step 两个频率的余弦递推系数。
+ * @param amplitude 两路幅值输出。
+ * @param phase_q32 两路 Q32 相位输出。
+ * @return 联合方程求解成功返回 1；输入无效或矩阵接近奇异返回 0。
+ * @note 联合求解四个正交系数和一个隐式直流项，避免任意双音不再满足 500 点
+ *       正交条件时，一个分量泄漏到另一个 PLL 的相位检测器。
+ */
+static uint8_t measure_components_dual_with_step(
+  const uint16_t *samples, uint32_t sample_count, float mean,
+  const float sine_step[2], const float cosine_step[2],
+  float amplitude[2], uint32_t phase_q32[2])
+{
+  float sine_value[2] = {0.0f, 0.0f};
+  float cosine_value[2] = {1.0f, 1.0f};
+  float reference_sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float sample_reference_sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+  float gram[4][4] = {{0.0f}};
+  float centered_gram[4][4];
+  float centered_vector[4];
+  float coefficient[4];
+  float sample_sum = 0.0f;
+  float inverse_count;
+  uint32_t sample_index;
+  uint32_t row;
+  uint32_t column;
+
+  if ((samples == NULL) || (sine_step == NULL) ||
+      (cosine_step == NULL) || (amplitude == NULL) ||
+      (phase_q32 == NULL) || (sample_count == 0U))
+  {
+    return 0U;
+  }
+  amplitude[0] = 0.0f;
+  amplitude[1] = 0.0f;
+  phase_q32[0] = 0U;
+  phase_q32[1] = 0U;
+
+  for (sample_index = 0U; sample_index < sample_count; sample_index++)
+  {
+    float reference[4] =
+    {
+      sine_value[0], cosine_value[0],
+      sine_value[1], cosine_value[1]
+    };
+    float sample = (float)samples[sample_index] - mean;
+    uint32_t channel;
+
+    sample_sum += sample;
+    for (row = 0U; row < 4U; row++)
+    {
+      reference_sum[row] += reference[row];
+      sample_reference_sum[row] += sample * reference[row];
+      for (column = row; column < 4U; column++)
+      {
+        gram[row][column] += reference[row] * reference[column];
+      }
+    }
+
+    for (channel = 0U; channel < 2U; channel++)
+    {
+      float next_cosine =
+        (cosine_value[channel] * cosine_step[channel]) -
+        (sine_value[channel] * sine_step[channel]);
+
+      sine_value[channel] =
+        (sine_value[channel] * cosine_step[channel]) +
+        (cosine_value[channel] * sine_step[channel]);
+      cosine_value[channel] = next_cosine;
+    }
+  }
+
+  inverse_count = 1.0f / (float)sample_count;
+  for (row = 0U; row < 4U; row++)
+  {
+    centered_vector[row] =
+      sample_reference_sum[row] -
+      (sample_sum * reference_sum[row] * inverse_count);
+    for (column = 0U; column < 4U; column++)
+    {
+      float raw_gram = (row <= column) ?
+                       gram[row][column] : gram[column][row];
+
+      centered_gram[row][column] =
+        raw_gram -
+        (reference_sum[row] * reference_sum[column] * inverse_count);
+    }
+  }
+
+  if (solve_linear_system_4x4(centered_gram, centered_vector,
+                              coefficient) == 0U)
+  {
+    /*
+     * 不退回两次独立拟合：矩阵奇异时独立测量会重新引入双音串扰。返回无效
+     * 幅度可让首次识别重新收集，或让运行中的两路 PLL 冻结在上次可靠状态。
+     */
+    return 0U;
+  }
+
+  amplitude[0] = sqrtf((coefficient[0] * coefficient[0]) +
+                       (coefficient[1] * coefficient[1]));
+  amplitude[1] = sqrtf((coefficient[2] * coefficient[2]) +
+                       (coefficient[3] * coefficient[3]));
+  phase_q32[0] = phase_from_iq(coefficient[0], coefficient[1]);
+  phase_q32[1] = phase_from_iq(coefficient[2], coefficient[3]);
+  return 1U;
+}
+#endif
 
 /**
  * @brief 测量指定整数频率在任意长度数据中的幅值和相位。
@@ -486,6 +782,19 @@ static float measure_amplitude_only(const uint16_t *samples, float mean,
   return amplitude;
 }
 
+/**
+ * @brief 计算两个无符号频率的绝对差。
+ * @param first_hz 第一个频率。
+ * @param second_hz 第二个频率。
+ * @return 绝对频差，单位 Hz。
+ */
+static uint32_t frequency_distance_hz(uint32_t first_hz,
+                                      uint32_t second_hz)
+{
+  return (first_hz >= second_hz) ?
+         (first_hz - second_hz) : (second_hz - first_hz);
+}
+
 #if (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_CONTINUOUS)
 /**
  * @brief 测量长采样记录中指定频率的幅值。
@@ -506,19 +815,6 @@ static float measure_amplitude_length(const uint16_t *samples,
   measure_component_length(samples, sample_count, mean, frequency_hz,
                            &amplitude, &unused_phase);
   return amplitude;
-}
-
-/**
- * @brief 计算两个无符号频率的绝对差。
- * @param first_hz 第一个频率。
- * @param second_hz 第二个频率。
- * @return 绝对频差，单位 Hz。
- */
-static uint32_t frequency_distance_hz(uint32_t first_hz,
-                                      uint32_t second_hz)
-{
-  return (first_hz >= second_hz) ?
-         (first_hz - second_hz) : (second_hz - first_hz);
 }
 
 /**
@@ -547,7 +843,7 @@ static uint8_t fine_frequency_allowed(uint32_t frequency_hz,
  * @param blocked_frequency_hz 双信号时需要避开的另一主峰，0 表示不屏蔽。
  * @return 细化后的整数 Hz 频率。
  * @note 先按 250 Hz 扫描，再对离散最大值及左右邻点做抛物线插值。最终残差
- *       由原 PI 型 PLL 消除，不改变其增益、限幅和抗积分饱和逻辑。
+ *       由原 PI 型 PLL 消除，不改变其增益、积分泄漏和限幅逻辑。
  */
 static uint32_t refine_frequency(const uint16_t *samples,
                                  float mean,
@@ -760,8 +1056,16 @@ static uint8_t frequency_overlaps_harmonic(uint32_t other_frequency_hz,
   return (frequency_distance_hz(other_frequency_hz,
                                 harmonic_frequency_hz) <=
           SIGSEP_FINE_FREQ_STEP_HZ) ? 1U : 0U;
+#elif (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT)
+  /*
+   * 高精度主频以毫赫兹保存，但波形分类接口使用四舍五入后的整数 Hz。三倍频
+   * 两端各自取整最多产生约 2 Hz 组合误差，因此用 2 Hz 容差识别谐波重合。
+   */
+  return (frequency_distance_hz(other_frequency_hz,
+                                harmonic_frequency_hz) <= 2U) ? 1U : 0U;
 #else
-  return (other_frequency_hz == harmonic_frequency_hz) ? 1U : 0U;
+  return (frequency_distance_hz(other_frequency_hz,
+                                harmonic_frequency_hz) == 0U) ? 1U : 0U;
 #endif
 }
 
@@ -1104,15 +1408,33 @@ static uint8_t analyze_continuous_capture(
   output[0].frequency_index = (uint8_t)best0;
   output[0].frequency_hz = frequency0_hz;
   output[0].frequency_millihz = frequency0_hz * 1000U;
-  measure_component(current_samples, current_mean, frequency0_hz,
-                    &output[0].amplitude_adc, &output[0].phase_q32);
 
 #if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
+  {
+    float sine_step[2];
+    float cosine_step[2];
+    float measured_amplitude[2];
+    uint32_t measured_phase[2];
+
+    frequency_step_coefficients(frequency0_hz,
+                                &sine_step[0], &cosine_step[0]);
+    frequency_step_coefficients(frequency1_hz,
+                                &sine_step[1], &cosine_step[1]);
+    if (measure_components_dual_with_step(
+          current_samples, SIGSEP_ANALYSIS_FRAME_LEN, current_mean,
+          sine_step, cosine_step,
+          measured_amplitude, measured_phase) == 0U)
+    {
+      return 0U;
+    }
+    output[0].amplitude_adc = measured_amplitude[0];
+    output[0].phase_q32 = measured_phase[0];
+    output[1].amplitude_adc = measured_amplitude[1];
+    output[1].phase_q32 = measured_phase[1];
+  }
   output[1].frequency_index = (uint8_t)best1;
   output[1].frequency_hz = frequency1_hz;
   output[1].frequency_millihz = frequency1_hz * 1000U;
-  measure_component(current_samples, current_mean, frequency1_hz,
-                    &output[1].amplitude_adc, &output[1].phase_q32);
   output[0].wave = detect_wave_type(current_samples, current_mean,
                                     output[0].frequency_hz,
                                     output[1].frequency_hz,
@@ -1122,6 +1444,8 @@ static uint8_t analyze_continuous_capture(
                                     output[0].frequency_hz,
                                     output[1].amplitude_adc);
 #else
+  measure_component(current_samples, current_mean, frequency0_hz,
+                    &output[0].amplitude_adc, &output[0].phase_q32);
   output[0].wave = detect_wave_type(current_samples, current_mean,
                                     output[0].frequency_hz, 0U,
                                     output[0].amplitude_adc);
@@ -1217,12 +1541,34 @@ static uint8_t analyze_frame(const uint16_t *samples,
       estimate.frequency_millihz[channel];
     output[channel].frequency_hz =
       (estimate.frequency_millihz[channel] + 500U) / 1000U;
-    measure_component(samples, mean, output[channel].frequency_hz,
-                      &output[channel].amplitude_adc,
-                      &output[channel].phase_q32);
   }
 
 #if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
+  {
+    float sine_step[2];
+    float cosine_step[2];
+    float measured_amplitude[2];
+    uint32_t measured_phase[2];
+
+    for (channel = 0U; channel < 2U; channel++)
+    {
+      frequency_step_coefficients_millihz(
+        output[channel].frequency_millihz,
+        &sine_step[channel], &cosine_step[channel]);
+    }
+    if (measure_components_dual_with_step(
+          samples, SIGSEP_ANALYSIS_FRAME_LEN, mean,
+          sine_step, cosine_step,
+          measured_amplitude, measured_phase) == 0U)
+    {
+      return 0U;
+    }
+    for (channel = 0U; channel < 2U; channel++)
+    {
+      output[channel].amplitude_adc = measured_amplitude[channel];
+      output[channel].phase_q32 = measured_phase[channel];
+    }
+  }
   output[0].wave = detect_wave_type(samples, mean,
                                     output[0].frequency_hz,
                                     output[1].frequency_hz,
@@ -1232,6 +1578,17 @@ static uint8_t analyze_frame(const uint16_t *samples,
                                     output[0].frequency_hz,
                                     output[1].amplitude_adc);
 #else
+  {
+    float sine_step;
+    float cosine_step;
+
+    frequency_step_coefficients_millihz(
+      output[0].frequency_millihz, &sine_step, &cosine_step);
+    measure_component_with_step(
+      samples, SIGSEP_ANALYSIS_FRAME_LEN, mean,
+      sine_step, cosine_step,
+      &output[0].amplitude_adc, &output[0].phase_q32);
+  }
   output[0].wave = detect_wave_type(samples, mean,
                                     output[0].frequency_hz, 0U,
                                     output[0].amplitude_adc);
@@ -1256,9 +1613,9 @@ static uint8_t analyze_frame(const uint16_t *samples,
 static void nco_init(uint32_t channel, const signal_component_t *component,
                      uint64_t sample_start)
 {
-  frequency_step_coefficients(component->frequency_hz,
-                              &tracking_step_sine[channel],
-                              &tracking_step_cosine[channel]);
+  frequency_step_coefficients_millihz(
+    component->frequency_millihz,
+    &tracking_step_sine[channel], &tracking_step_cosine[channel]);
   nco_state[channel].nominal_step =
     phase_step_q32_millihz(component->frequency_millihz);
   nco_state[channel].step_correction = 0;
@@ -1374,48 +1731,49 @@ static int32_t nco_update_lock(uint32_t channel, uint32_t measured_phase,
 /**
  * @brief 按频率比例把主通道相位时间误差换算到跟随通道。
  * @param phase_error 主通道有符号 Q32 相位误差。
- * @param destination_hz 跟随通道频率。
- * @param source_hz 主通道频率。
+ * @param destination_millihz 跟随通道频率，单位 0.001 Hz。
+ * @param source_millihz 主通道频率，单位 0.001 Hz。
  * @return 跟随通道的有符号 Q32 相位误差。
  */
 static int32_t scale_phase_error_by_frequency(int32_t phase_error,
-                                              uint32_t destination_hz,
-                                              uint32_t source_hz)
+                                              uint32_t destination_millihz,
+                                              uint32_t source_millihz)
 {
   int64_t scaled;
 
-  if (source_hz == 0U)
+  if (source_millihz == 0U)
   {
     return 0;
   }
 
-  scaled = ((int64_t)phase_error * (int64_t)destination_hz) /
-           (int64_t)source_hz;
+  scaled = ((int64_t)phase_error * (int64_t)destination_millihz) /
+           (int64_t)source_millihz;
   return (int32_t)((uint32_t)scaled);
 }
 
 /**
  * @brief 先在宽整数域缩放主相位误差并施加环路增益，最后才折回 Q32。
  * @param phase_error 主通道有符号 Q32 相位误差。
- * @param destination_hz 跟随通道频率。
- * @param source_hz 主通道频率。
+ * @param destination_millihz 跟随通道频率，单位 0.001 Hz。
+ * @param source_millihz 主通道频率，单位 0.001 Hz。
  * @return 跟随通道本帧应施加的有符号 Q32 相位修正。
  * @note 不可先把倍频后的结果折回 int32_t 再除以 2，否则大相位误差在整数倍频
  *       场景会产生 180° 分支错误。
  */
 static int32_t scale_phase_adjustment_by_frequency(
-  int32_t phase_error, uint32_t destination_hz, uint32_t source_hz)
+  int32_t phase_error, uint32_t destination_millihz,
+  uint32_t source_millihz)
 {
   int64_t scaled_adjustment;
 
-  if (source_hz == 0U)
+  if (source_millihz == 0U)
   {
     return 0;
   }
 
   scaled_adjustment =
-    ((int64_t)phase_error * (int64_t)destination_hz) /
-    (int64_t)source_hz;
+    ((int64_t)phase_error * (int64_t)destination_millihz) /
+    (int64_t)source_millihz;
   scaled_adjustment /=
     (int64_t)(1UL << SIGSEP_PLL_PHASE_KP_SHIFT);
 
@@ -1476,13 +1834,13 @@ static void nco_follow_common_source(uint32_t follower_channel,
   int32_t follower_error =
     scale_phase_error_by_frequency(
       master_phase_error,
-      active_component[follower_channel].frequency_hz,
-      active_component[master_channel].frequency_hz);
+      active_component[follower_channel].frequency_millihz,
+      active_component[master_channel].frequency_millihz);
   int32_t follower_phase_adjust =
     scale_phase_adjustment_by_frequency(
       master_phase_error,
-      active_component[follower_channel].frequency_hz,
-      active_component[master_channel].frequency_hz);
+      active_component[follower_channel].frequency_millihz,
+      active_component[master_channel].frequency_millihz);
 
   nco_state[follower_channel].integrator = 0;
   nco_state[follower_channel].step_correction =
@@ -1763,17 +2121,41 @@ static void update_dac_amplitude(uint32_t channel, uint8_t smooth_output)
   }
 }
 
-#if ((SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE) || \
-     (SIGSEP_COMMON_SOURCE_LOCK == 0U))
 /**
- * @brief 用与参考工程双通道独立 PLL 完全相同的流程跟踪一个分量。
- * @param channel 待跟踪的输出通道索引。
+ * @brief 把一次可靠的幅相测量送入指定通道的 PLL 和幅度平滑器。
+ * @param channel 待更新的输出通道索引。
+ * @param measured_amplitude 当前帧最小二乘拟合得到的 ADC 峰值。
+ * @param measured_phase 当前帧起点的 Q32 输入相位。
+ * @param frame_start_sample 当前帧第一个样点的绝对采样点编号。
+ * @return 无。
+ * @note 幅度低于有效阈值时冻结 PLL 和相位状态，避免拔掉输入后把噪声相位积分
+ *       进 NCO；幅度显示仍缓慢衰减，便于诊断信号丢失。
+ */
+static void update_tracked_component(uint32_t channel,
+                                     float measured_amplitude,
+                                     uint32_t measured_phase,
+                                     uint64_t frame_start_sample)
+{
+  if (measured_amplitude >= SIGSEP_MIN_VALID_ADC_AMP)
+  {
+    (void)nco_update_lock(channel, measured_phase, frame_start_sample);
+    active_component[channel].phase_q32 = measured_phase;
+  }
+
+  active_component[channel].amplitude_adc +=
+    (measured_amplitude - active_component[channel].amplitude_adc) /
+    (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
+  update_dac_amplitude(channel, 1U);
+}
+
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
+/**
+ * @brief 用与双通道独立 PLL 相同的顺序跟踪单信号分量。
+ * @param channel 待跟踪的输出通道索引，单信号模式固定为 0。
  * @param samples 当前 ADC 分析帧。
  * @param mean 当前分析帧的直流均值。
  * @param frame_start_sample 当前帧第一个样点的绝对采样点编号。
  * @return 无。
- * @note 固定执行“相关测幅/测相→PI 型 PLL 更新→状态与幅度平滑”顺序。
- *       单通道模式调用通道 0；双通道独立锁相依次调用通道 0 和通道 1。
  */
 static void track_component_independent(uint32_t channel,
                                         const uint16_t *samples,
@@ -1787,12 +2169,38 @@ static void track_component_independent(uint32_t channel,
                               tracking_step_sine[channel],
                               tracking_step_cosine[channel],
                               &measured_amplitude, &measured_phase);
-  (void)nco_update_lock(channel, measured_phase, frame_start_sample);
-  active_component[channel].phase_q32 = measured_phase;
-  active_component[channel].amplitude_adc +=
-    (measured_amplitude - active_component[channel].amplitude_adc) /
-    (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
-  update_dac_amplitude(channel, 1U);
+  update_tracked_component(channel, measured_amplitude, measured_phase,
+                           frame_start_sample);
+}
+#endif
+
+#if ((SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED) && \
+     (SIGSEP_COMMON_SOURCE_LOCK == 0U))
+/**
+ * @brief 在同一混合帧内联合测量两路分量，再分别更新两个独立 PLL。
+ * @param samples 当前 ADC 混合信号帧。
+ * @param mean 当前帧直流均值。
+ * @param frame_start_sample 当前帧第一个样点的绝对采样点编号。
+ * @return 无。
+ * @note 联合 4x4 最小二乘先消除任意双音之间的非正交串扰，之后两路仍使用与
+ *       原方案相同的 PI/NCO 闭环，不共享积分器或频率修正量。
+ */
+static void track_components_independent_dual(
+  const uint16_t *samples, float mean, uint64_t frame_start_sample)
+{
+  float measured_amplitude[2];
+  uint32_t measured_phase[2];
+  uint32_t channel;
+
+  (void)measure_components_dual_with_step(
+    samples, SIGSEP_ANALYSIS_FRAME_LEN, mean,
+    tracking_step_sine, tracking_step_cosine,
+    measured_amplitude, measured_phase);
+  for (channel = 0U; channel < 2U; channel++)
+  {
+    update_tracked_component(channel, measured_amplitude[channel],
+                             measured_phase[channel], frame_start_sample);
+  }
 }
 #endif
 
@@ -1875,28 +2283,22 @@ static void process_adc_frame(const uint16_t *samples,
     uint32_t follower_channel = master_channel ^ 1U;
     int32_t master_phase_error;
 
-    measure_component_with_step(
+    (void)measure_components_dual_with_step(
       samples, SIGSEP_ANALYSIS_FRAME_LEN, mean,
-      tracking_step_sine[master_channel],
-      tracking_step_cosine[master_channel],
-      &measured_amplitude[master_channel],
-      &measured_phase[master_channel]);
-    measure_component_with_step(
-      samples, SIGSEP_ANALYSIS_FRAME_LEN, mean,
-      tracking_step_sine[follower_channel],
-      tracking_step_cosine[follower_channel],
-      &measured_amplitude[follower_channel],
-      &measured_phase[follower_channel]);
-    measured_phase[follower_channel] =
-      nco_phase_at_sample(follower_channel, frame_start_sample);
-    master_phase_error =
-      nco_update_lock(master_channel, measured_phase[master_channel],
-                      frame_start_sample);
-    nco_follow_common_source(follower_channel, master_channel,
-                             master_phase_error, frame_start_sample);
-
-    active_component[0].phase_q32 = measured_phase[0];
-    active_component[1].phase_q32 = measured_phase[1];
+      tracking_step_sine, tracking_step_cosine,
+      measured_amplitude, measured_phase);
+    if (measured_amplitude[master_channel] >= SIGSEP_MIN_VALID_ADC_AMP)
+    {
+      master_phase_error =
+        nco_update_lock(master_channel, measured_phase[master_channel],
+                        frame_start_sample);
+      nco_follow_common_source(follower_channel, master_channel,
+                               master_phase_error, frame_start_sample);
+      active_component[master_channel].phase_q32 =
+        measured_phase[master_channel];
+      active_component[follower_channel].phase_q32 =
+        nco_phase_at_sample(follower_channel, frame_start_sample);
+    }
     active_component[0].amplitude_adc +=
       (measured_amplitude[0] - active_component[0].amplitude_adc) /
       (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
@@ -1906,8 +2308,7 @@ static void process_adc_frame(const uint16_t *samples,
     update_dac_amplitude(0U, 1U);
     update_dac_amplitude(1U, 1U);
 #else
-    track_component_independent(0U, samples, mean, frame_start_sample);
-    track_component_independent(1U, samples, mean, frame_start_sample);
+    track_components_independent_dual(samples, mean, frame_start_sample);
 #endif
 #endif
   }
@@ -2030,6 +2431,17 @@ void signal_separation_process(void)
   if (copy_adc_frame(adc_offset, adc_event_count) == 0U)
   {
     adc_frame_overrun++;
+#if ((SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_CONTINUOUS) || \
+     (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT))
+    /*
+     * 复制期间 DMA 已翻到下一半区也等价于长记录缺帧。首次识别必须丢弃之前
+     * 已收集的数据，防止把不连续的 512 点拼接进 FFT 或相位斜率估计。
+     */
+    if (separation_identified == 0U)
+    {
+      signal_separation_restart_identify();
+    }
+#endif
     return;
   }
 

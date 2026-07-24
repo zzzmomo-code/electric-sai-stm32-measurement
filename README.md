@@ -8,6 +8,24 @@
 
 旧的失败工程 `phase_locking_codex` 没有被用于承载代码，也没有被修改。
 
+## 锁相思路快速说明
+
+本工程把“首次判频”和“持续锁相”分成两个阶段：
+
+1. 默认先连续采集 32768 点，经过直流去除、Hann 窗、FFT 峰值插值和前后
+   半段相位斜率，得到非 5 kHz 栅格的毫赫兹格式频率初值。
+2. 初值直接转换成 Q32 NCO 相位步进，不重新取整成整数 Hz。
+3. 运行时每 512 个 ADC 样点做一次带直流项的最小二乘测相；双信号在同一帧
+   联合求解四个正余弦系数，避免任意双音相互串扰。
+4. PI 型数字 PLL 根据相位误差微调 NCO 步进；积分器带泄漏和限幅，最终频率
+   修正限制为名义步进的约 ±2%。
+5. DAC 按绝对样点编号预测未来半缓冲区的相位，因此软件处理延迟不会让输入、
+   输出的相对相位持续漂移。
+
+锁相公式、具体函数、单/双通道差异和 Debug 变量见：
+
+- [docs/PHASE_LOCKING.md](docs/PHASE_LOCKING.md)
+
 ## 1. 实现的功能
 
 ### 1.1 工作模式超参数
@@ -98,7 +116,7 @@ FFT 原始频点间隔约 76.2939 Hz，再用峰顶插值消除“只能落在�
 
 - `frequency=grid_5khz`：原 5 kHz 栅格方案；
 - `frequency=continuous, coarse=5000Hz, fine=250Hz+PLL`：快速任意频率方案；
-- `frequency=precise_fft, N=32768, Hann+peak interpolation`：默认高精度方案。
+- `frequency=precise_fft, N=32768, Hann+peak+phase`：默认高精度方案。
 
 ### 1.3 公共数据链路
 
@@ -120,10 +138,10 @@ FFT 原始频点间隔约 76.2939 Hz，再用峰顶插值消除“只能落在�
 8. 插值得到的毫赫兹初值直接换算为 Q32 NCO 步进；之后仍使用原 Q32 NCO 和 PI
    型数字 PLL 跟踪输入相位及频率误差，锁相环参数没有因判频升级而改变。HSI 场景的软件
    捕获范围设为约 ±2%。
-9. 单信号模式和双信号独立锁相模式共用同一个
-   `track_component_independent()`：执行顺序固定为相关测幅/测相、PI 型 PLL
-   更新、Q32 NCO 状态更新和幅值平滑。单信号只调用通道 0 并输出 PA4，
-   PA5 始终回填中点值。
+9. 单信号用 2×2 中心化最小二乘测幅/测相；双信号用 4×4 联合最小二乘同时
+   求两路幅相，解决低频不足一个周期和任意双音非正交造成的测相偏差。测相后
+   仍按原流程执行 PI 型 PLL、Q32 NCO 状态更新和幅值平滑；单信号只更新通道 0
+   并输出 PA4，PA5 始终回填中点值。
 10. 双信号默认使用两个独立 PLL：PA4 持续测量并锁定低频输入，PA5 持续测量并
    锁定高频输入。只有把 `SIGSEP_COMMON_SOURCE_LOCK` 改为 `1U` 时，才切换为
    GitHub 参考工程的同源主从锁相。PA5 还可额外叠加默认 150° 的输出相位。
@@ -348,8 +366,15 @@ Core/User/
 ├─ signal_separation_config.h     采样、识别、PLL 和输出参数
 ├─ signal_separation.h            对外 API 和状态结构
 ├─ signal_separation.c            采样、识别、锁相、DAC、DMA/Cache
+├─ frequency_estimator.h          高精度首次判频接口
+├─ frequency_estimator.c          32768 点 FFT、插值和相位斜率细化
 ├─ uart_debug.h
 └─ uart_debug.c                   启动信息和一次性非阻塞锁定结果
+
+docs/
+└─ PHASE_LOCKING.md               锁相公式、代码入口和 Debug 指南
+
+STUDY_NOTES.md                     移植差异、关键架构和学习总结
 ```
 
 所有 ADC/DAC HAL DMA 回调只递增一个对应的 32 位单调事件标志；耗时处理全部
@@ -378,6 +403,19 @@ Core/User/
 - ELF 已生成
 - `.dma_buffer = 0x30000000，大小 0x2800`
 
+本次任意频率扩展还完成了以下软件侧检查：
+
+- 实际 `frequency_estimator.c` 主机测试覆盖 1 kHz、1234.567 Hz、
+  10.321789 kHz、99.999730 kHz、249.876400 kHz，以及多组双音和恰好
+  相差 4 kHz 的组合；带量化和随机噪声的这些用例误差不超过 0.002 Hz。
+- 500 点双音联合最小二乘测试覆盖 1 kHz + 5 kHz、10 kHz + 14 kHz、
+  20.3214 kHz + 30.7896 kHz 和 1 kHz + 249 kHz；测试相位误差不超过
+  0.086°。
+- 原栅格/快速连续/高精度三种判频模式、单/双通道模式和同源主从可选路径均
+  通过 `-Wall -Wextra -Werror` 语法编译。
+
+这些是确定性合成数据和交叉编译检查，不替代 H743 + 模拟前端 + 示波器验证。
+
 ## 7. 串口输出
 
 上电启动时：
@@ -385,8 +423,8 @@ Core/User/
 ```text
 H743 phase locking port
 ADC PC0, DAC PA4/PA5, Fs=2500000Hz
-mode=single, signal=PA4, PA5=midscale
-frequency=continuous, coarse=5000Hz, fine=250Hz+PLL
+mode=dual_mixed, low=PA4, high=PA5
+frequency=precise_fft, N=32768, Hann+peak+phase
 command: r=restart identify
 state=search
 ```
@@ -394,14 +432,14 @@ state=search
 单信号模式首次识别完成时：
 
 ```text
-locked A=20000Hz/sin adc_drop=0 dac_drop=0
+locked A=20000.000Hz/sin adc_drop=0 dac_drop=0
 ```
 
 双信号模式启动行和首次识别结果示例：
 
 ```text
 mode=dual_mixed, low=PA4, high=PA5
-locked A=20000Hz/tri B=30000Hz/tri adc_drop=0 dac_drop=0
+locked A=20000.000Hz/tri B=30000.000Hz/tri adc_drop=0 dac_drop=0
 ```
 
 锁定结果使用 USART1 中断发送，不阻塞实时采样。输入频率或接线改变后，可通过
@@ -456,18 +494,23 @@ USART1 发送字符 `r` 或 `R` 重新识别；这对应参考工程串口屏上
   范围宏，但必须保持 `0 < MIN < MAX < 1.25 MHz`；为保证方波/三角波重建仍有
   约 10 点/周期，默认没有把上限推到奈奎斯特边缘。
 - 双信号分量建议至少相差 4 kHz；更近时需要更长记录或专门的双音高分辨算法。
+- 强三角波/方波的谐波若高于弱信号基波，第二主峰可能选到谐波。若一条谱线
+  同时可能是强信号谐波和第二路真实基波，仅靠 PC0 单路混合采样无法无条件
+  区分来源；实测应控制幅度比例，或增加额外输入/题目先验。
 - 32768 点 FFT 的静态 CPU 缓冲区约占 320 KiB，且识别计算期间 DAC 暂时保持
   中点；FFT 只在启动或收到 `r` 重新识别时运行，不进入锁定后的实时路径。
 - 单信号模式只使用 PA4 输出；PA5 保持中点不是故障。
-- 程序不会自动判定“信号已拔掉”并重新搜索；改变频率档位后，发送串口字符
-  `r`/`R`、复位，或调用 `signal_separation_restart_identify()`。
+- 输入幅度低于有效阈值后，PLL 会冻结相位和积分状态，避免把噪声相位继续写入
+  NCO；程序不会自动重新搜索。改变频率档位后，发送串口字符 `r`/`R`、复位，
+  或调用 `signal_separation_restart_identify()`。
 - 方波/三角波判别使用三次、五次谐波比例，阈值会受函数发生器带宽、前端失真和
   ADC 噪声影响，仍需实板标定。
 - 使用内部 HSI，绝对频率精度和温漂不如外部晶振。软件 PLL 捕获范围已从参考
   工程的约 ±0.05% 扩大到约 ±2%，但捕获、稳态相位误差和环路参数仍须实板确认。
 - 默认 `SIGSEP_COMMON_SOURCE_LOCK=0U`，两路 PLL 分别持续测量各自输入相位，
   适用于独立或同源的两路输入。只有明确确认两路来自同一相干时钟、并希望完全
-  复现参考工程的主从时间误差传播时，才改成 `1U`。
+  复现参考工程的主从时间误差传播时，才改成 `1U`。主从模式按主通道幅度门控：
+  主通道失效时两路冻结；主通道有效时从通道按频率比继续跟随。
 - 双信号模式的 PA5 默认额外偏移 150°；如不需要，修改配置宏或调用
   `signal_separation_set_phase_offset_deg(0)`。
 - 20 kHz + 30 kHz 当前实板输入已确认识别正确，ADC:DAC 半缓冲事件比为

@@ -53,7 +53,8 @@
  * 频率识别模式：
  * - GRID_5KHZ：完整保留已经实板验证的原方案，只输出 5 kHz 整数栅格频率；
  * - CONTINUOUS：快速粗到细相关搜索，供资源/启动时间受限时使用；
- * - PRECISE_FFT：32768 点 Hann 窗 FFT 加三点峰值插值，优先保证首次判频精度。
+ * - PRECISE_FFT：32768 点 Hann 窗 FFT、三点峰值插值和前后半段相位斜率细化，
+ *   优先保证首次判频精度。
  */
 #define SIGSEP_FREQ_MODE_GRID_5KHZ             1U
 #define SIGSEP_FREQ_MODE_CONTINUOUS            2U
@@ -97,7 +98,8 @@
 
 /*
  * 32768 点对应 13.1072 ms 观测时间、76.2939 Hz 原始频点间隔。Hann 窗降低
- * 非整周期截断造成的谱泄漏，三点抛物线插值给出毫赫兹格式的非栅格初值。
+ * 非整周期截断造成的谱泄漏，三点抛物线插值和相位斜率细化给出毫赫兹格式的
+ * 非栅格初值。
  */
 #define SIGSEP_PRECISE_FFT_LEN                 32768U
 
@@ -117,8 +119,12 @@
  * 信号源的模式。只有明确确认两分量来自同一相干时钟时才设为 1，此时通道 0
  * 为主环路，通道 1 按频率比例跟随主环路的时间误差。
  */
+#ifndef SIGSEP_COMMON_SOURCE_LOCK
 #define SIGSEP_COMMON_SOURCE_LOCK              0U
+#endif
+#ifndef SIGSEP_PHASE_MASTER_CH
 #define SIGSEP_PHASE_MASTER_CH                 0U
+#endif
 
 /*
  * 识别有效性和谐波法波形分类参数。双信号模式与参考工程一样只区分正弦波

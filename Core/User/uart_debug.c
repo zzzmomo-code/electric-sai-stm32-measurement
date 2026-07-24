@@ -16,7 +16,7 @@ static char async_message[160];
   "frequency=continuous, coarse=5000Hz, fine=250Hz+PLL\r\n"
 #elif (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT)
 #define uart_debug_frequency_mode_line \
-  "frequency=precise_fft, N=32768, Hann+peak interpolation\r\n"
+  "frequency=precise_fft, N=32768, Hann+peak+phase\r\n"
 #else
 #define uart_debug_frequency_mode_line \
   "frequency=grid_5khz\r\n"
@@ -132,7 +132,17 @@ void uart_debug_process(void)
     reported_identified_state = 0U;
     return;
   }
-  if (reported_identified_state != 0U)
+  /*
+   * 第一次看到 identified 时先让出一轮主循环。32768 点 FFT 运行期间可能已经
+   * 积压 DMA 事件，下一轮 signal_separation_process() 会先把这些事件计入
+   * adc_drop/dac_drop，随后再打印，避免串口报告刚锁定时的陈旧统计值。
+   */
+  if (reported_identified_state == 0U)
+  {
+    reported_identified_state = 1U;
+    return;
+  }
+  if (reported_identified_state >= 2U)
   {
     return;
   }
@@ -164,6 +174,6 @@ void uart_debug_process(void)
       (HAL_UART_Transmit_IT(&huart1, (uint8_t *)async_message,
                             (uint16_t)length) == HAL_OK))
   {
-    reported_identified_state = 1U;
+    reported_identified_state = 2U;
   }
 }
