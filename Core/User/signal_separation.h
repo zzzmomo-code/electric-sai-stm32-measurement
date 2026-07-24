@@ -33,6 +33,7 @@ typedef struct
   signal_operation_mode_t mode;   /* 当前编译期工作模式。 */
   uint8_t output_count;           /* 当前模式有效的 DAC 信号输出路数。 */
   uint32_t frequency_hz[2];       /* 有效输出的识别频率，单位 Hz。 */
+  uint32_t frequency_millihz[2];  /* 高精度首次判频结果，单位 0.001 Hz。 */
   signal_wave_type_t wave[2];     /* 有效输出的波形类型。 */
   uint32_t amplitude_adc[2];      /* 基波峰值估计，单位为 ADC 码。 */
   int32_t phase_error_mdeg[2];    /* 最近相位误差，单位 0.001°。 */

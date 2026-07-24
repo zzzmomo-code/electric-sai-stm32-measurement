@@ -64,28 +64,67 @@
     - `mode=dual_mixed, low=PA4, high=PA5` 表示双信号模式；
     - `mode=single, signal=PA4, PA5=midscale` 表示单信号模式。
 
-当前仓库默认并且当前已经下载到开发板的是
-`SIGSEP_MODE_DUAL_MIXED`，且 `SIGSEP_COMMON_SOURCE_LOCK=0U`，因此 PA4、PA5
-分别闭环锁定低频和高频输入。若只是按开发板复位键，仍会保持这个模式。
+当前源码默认使用 `SIGSEP_MODE_DUAL_MIXED`，且
+`SIGSEP_COMMON_SOURCE_LOCK=0U`，因此 PA4、PA5 分别闭环锁定低频和高频输入。
+开发板实际运行的模式以最后一次编译下载时的宏为准；只按复位键不会切换模式。
 
-### 1.2 公共数据链路
+### 1.2 频率识别模式
+
+频率识别模式也在 `Core/User/signal_separation_config.h` 中选择：
+
+```c
+#define SIGSEP_FREQ_MODE_GRID_5KHZ   1U
+#define SIGSEP_FREQ_MODE_CONTINUOUS  2U
+#define SIGSEP_FREQ_MODE_PRECISE_FFT 3U
+
+#define SIGSEP_FREQUENCY_MODE SIGSEP_FREQ_MODE_PRECISE_FFT
+```
+
+| 频率模式 | 用途 | 识别结果 |
+|---|---|---|
+| `SIGSEP_FREQ_MODE_GRID_5KHZ` | 完整保留原题和已实板验证方案 | 只识别 10～100 kHz 范围内的 5 kHz 整数倍 |
+| `SIGSEP_FREQ_MODE_CONTINUOUS` | 低内存、快速任意频率方案 | 5 kHz 粗搜索、4096 点连续记录和 250 Hz 细搜索 |
+| `SIGSEP_FREQ_MODE_PRECISE_FFT` | 默认高精度首次判频方案 | 32768 点连续记录、Hann 窗 FFT、三点对数谱峰插值和前后半段相位斜率细化，结果保留到 0.001 Hz |
+
+当前源码默认使用 `SIGSEP_FREQ_MODE_PRECISE_FFT`。它连续采样约 13.1072 ms，
+FFT 原始频点间隔约 76.2939 Hz，再用峰顶插值消除“只能落在整数频点”的限制。
+默认搜索范围为 1～250 kHz，范围宏为
+`SIGSEP_PRECISE_FREQ_MIN_HZ` 和 `SIGSEP_PRECISE_FREQ_MAX_HZ`。
+如果高精度模式实板测试出现问题，
+只需把 `SIGSEP_FREQUENCY_MODE` 改回 `SIGSEP_FREQ_MODE_GRID_5KHZ`，Clean/Build
+并重新下载，即可恢复之前已经锁住的算法，不需要回退代码。
+
+串口启动信息会明确显示：
+
+- `frequency=grid_5khz`：原 5 kHz 栅格方案；
+- `frequency=continuous, coarse=5000Hz, fine=250Hz+PLL`：快速任意频率方案；
+- `frequency=precise_fft, N=32768, Hann+peak interpolation`：默认高精度方案。
+
+### 1.3 公共数据链路
 
 1. TIM2 以 2.5 MHz 产生 TRGO，同时触发 ADC1 和 DAC1 两个通道。
 2. ADC1 通过 PC0 采集单信号或混合信号，16 位、DMA 循环双半区。
-3. 每个 DMA 半区包含 512 点；完成后先把最新安全半区的前 500 点复制到 CPU
+3. 每个 DMA 半区包含 512 点；完成后先把最新安全半区复制到 CPU
    专用缓冲区，再执行分析，避免计算期间被下一轮 DMA 覆写。
-4. 在 10 kHz～100 kHz 范围内，以 5 kHz 为间隔检查 19 个候选频点。
-5. 对 4 帧幅值结果求平均；单信号模式选择一个最强分量，双信号模式与参考工程
-   一样直接选择两个最强分量。
-6. 双信号题目模式与参考工程一样根据三次/五次谐波区分正弦波和三角波；单信号
+4. 原模式在 10 kHz～100 kHz 范围内，以 5 kHz 为间隔检查 19 个候选频点，
+   并对 4 帧幅值求平均。
+5. 快速连续频率模式先用相同的 19 点粗搜索定位主峰，同时收集 8 个完整 DMA 半区；
+   然后在粗峰附近按 250 Hz 搜索并做三点抛物线插值。双信号模式会屏蔽第一个
+   主峰附近的谱泄漏，再寻找第二分量。
+6. 默认高精度模式收集 32768 个连续样点，去直流后加 Hann 窗，执行基 2 FFT，
+   在设定频段内寻找局部主峰并用相邻三点的对数功率做抛物线插值，再比较记录
+   前后两半的基波相位斜率细化频率。双信号模式还会用 4 kHz 保护区避免重复
+   选择同一主峰。
+7. 双信号题目模式与参考工程一样根据三次/五次谐波区分正弦波和三角波；单信号
    扩展模式额外支持方波分类与重建。
-7. 使用 Q32 NCO 和 PI 型数字 PLL 跟踪输入相位及频率误差；HSI 场景的软件
+8. 插值得到的毫赫兹初值直接换算为 Q32 NCO 步进；之后仍使用原 Q32 NCO 和 PI
+   型数字 PLL 跟踪输入相位及频率误差，锁相环参数没有因判频升级而改变。HSI 场景的软件
    捕获范围设为约 ±2%。
-8. 单信号模式和双信号独立锁相模式共用同一个
+9. 单信号模式和双信号独立锁相模式共用同一个
    `track_component_independent()`：执行顺序固定为相关测幅/测相、PI 型 PLL
    更新、Q32 NCO 状态更新和幅值平滑。单信号只调用通道 0 并输出 PA4，
    PA5 始终回填中点值。
-9. 双信号默认使用两个独立 PLL：PA4 持续测量并锁定低频输入，PA5 持续测量并
+10. 双信号默认使用两个独立 PLL：PA4 持续测量并锁定低频输入，PA5 持续测量并
    锁定高频输入。只有把 `SIGSEP_COMMON_SOURCE_LOCK` 改为 `1U` 时，才切换为
    GitHub 参考工程的同源主从锁相。PA5 还可额外叠加默认 150° 的输出相位。
 
@@ -347,6 +386,7 @@ Core/User/
 H743 phase locking port
 ADC PC0, DAC PA4/PA5, Fs=2500000Hz
 mode=single, signal=PA4, PA5=midscale
+frequency=continuous, coarse=5000Hz, fine=250Hz+PLL
 command: r=restart identify
 state=search
 ```
@@ -394,12 +434,13 @@ USART1 发送字符 `r` 或 `R` 重新识别；这对应参考工程串口屏上
 3. 函数发生器、开发板、示波器共地后，先用示波器探头直接测 **PC0 引脚处**，
    确认频率正确，且最低电压不低于 0 V、最高电压不高于 3.3 V。
 4. 观察 PA4，应输出识别到的同类波形；PA5 应保持约 1.65 V 直流中点。
-5. 串口应报告 `locked A=20000Hz/sin`，并观察 `adc_drop` 和 `dac_drop`
+5. 串口应报告类似 `locked A=20000.000Hz/sin`，并观察 `adc_drop` 和 `dac_drop`
    在正常全速运行时是否保持 0。
 6. 示波器同时观察 PC0 和 PA4，连续观察 30 秒以上；相位差可以是固定常量，
    但不应持续单向漂移。
-7. 再依次测试三角波、方波，以及 10 kHz、15 kHz、25 kHz、50 kHz 和
-   100 kHz。当前识别范围为 10～100 kHz 的 5 kHz 整数栅格。
+7. 高精度模式再依次测试三角波、方波，以及 1.3 kHz、10.3 kHz、17.8 kHz、23.4 kHz、
+   51.7 kHz、99.6 kHz 等非 5 kHz 整数倍频率；原栅格模式仍测试
+   10 kHz、15 kHz、25 kHz、50 kHz 和 100 kHz。
 
 ## 9. 当前限制
 
@@ -408,7 +449,15 @@ USART1 发送字符 `r` 或 `R` 重新识别；这对应参考工程串口屏上
   持续相位漂移。双信号模式下 PA4/PA5 的最终模拟幅值、波形质量和相位仍需继续
   用示波器完整确认。
 - 输入没有硬件保护，接线和电压范围必须由操作者保证。
-- 候选输入频率按原题思路限定在 5 kHz 栅格；偏离过大时会识别到最近频点。
+- 高精度任意频率扩展仍需在真实 H743 上逐点验证；
+  原 `SIGSEP_FREQ_MODE_GRID_5KHZ` 方案保持不变，可随时切回。
+- 高精度模式默认识别范围为 1～250 kHz；2.5 MSPS 的理论奈奎斯特上限为
+  1.25 MHz，因此不存在不受采样率和模拟带宽限制的“任意实数频率”。可以修改
+  范围宏，但必须保持 `0 < MIN < MAX < 1.25 MHz`；为保证方波/三角波重建仍有
+  约 10 点/周期，默认没有把上限推到奈奎斯特边缘。
+- 双信号分量建议至少相差 4 kHz；更近时需要更长记录或专门的双音高分辨算法。
+- 32768 点 FFT 的静态 CPU 缓冲区约占 320 KiB，且识别计算期间 DAC 暂时保持
+  中点；FFT 只在启动或收到 `r` 重新识别时运行，不进入锁定后的实时路径。
 - 单信号模式只使用 PA4 输出；PA5 保持中点不是故障。
 - 程序不会自动判定“信号已拔掉”并重新搜索；改变频率档位后，发送串口字符
   `r`/`R`、复位，或调用 `signal_separation_restart_identify()`。

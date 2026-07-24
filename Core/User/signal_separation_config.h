@@ -31,7 +31,7 @@
 #define SIGSEP_SAMPLE_RATE_HZ                  2500000U
 
 /*
- * 每帧只分析前 500 点，维持 2.5 MHz / 500 = 5 kHz 的正交频点间隔。
+ * 每帧只分析前 500 点，维持 2.5 MHz / 500 = 5 kHz 的正交粗搜索频点间隔。
  * DMA 半区使用 512 点，使每个半区恰好占 1024 字节并与 D-Cache 行对齐。
  */
 #define SIGSEP_ANALYSIS_FRAME_LEN              500U
@@ -49,12 +49,57 @@
 #define SIGSEP_SINE_LUT_SIZE                   (1U << SIGSEP_SINE_LUT_BITS)
 #define SIGSEP_SINE_LUT_SHIFT                  (32U - SIGSEP_SINE_LUT_BITS)
 
-/* 输入只搜索 10 kHz～100 kHz，候选间隔 5 kHz，共 19 个频点。 */
+/*
+ * 频率识别模式：
+ * - GRID_5KHZ：完整保留已经实板验证的原方案，只输出 5 kHz 整数栅格频率；
+ * - CONTINUOUS：快速粗到细相关搜索，供资源/启动时间受限时使用；
+ * - PRECISE_FFT：32768 点 Hann 窗 FFT 加三点峰值插值，优先保证首次判频精度。
+ */
+#define SIGSEP_FREQ_MODE_GRID_5KHZ             1U
+#define SIGSEP_FREQ_MODE_CONTINUOUS            2U
+#define SIGSEP_FREQ_MODE_PRECISE_FFT           3U
+#ifndef SIGSEP_FREQUENCY_MODE
+#define SIGSEP_FREQUENCY_MODE                  SIGSEP_FREQ_MODE_PRECISE_FFT
+#endif
+
+/* 输入搜索范围为 10 kHz～100 kHz；原方案粗搜索间隔为 5 kHz，共 19 点。 */
 #define SIGSEP_FREQ_MIN_HZ                     10000U
 #define SIGSEP_FREQ_STEP_HZ                    5000U
 #define SIGSEP_FREQ_COUNT                      19U
 #define SIGSEP_MAX_BIN                         100U
 #define SIGSEP_IDENTIFY_FRAMES                 4U
+
+/*
+ * 连续频率模式连续收集 8 个完整 DMA 半区，共 4096 点。细搜索以 250 Hz
+ * 为步长，并用峰顶三点抛物线插值进一步缩小初始频差。PLL 仍负责最终精确跟踪，
+ * 因此这里不需要在启动阶段做代价很高的 1 Hz 全频段扫描。
+ */
+#define SIGSEP_CONTINUOUS_CAPTURE_FRAMES       8U
+#define SIGSEP_CONTINUOUS_CAPTURE_LEN          \
+  (SIGSEP_ADC_DMA_HALF_LEN * SIGSEP_CONTINUOUS_CAPTURE_FRAMES)
+#define SIGSEP_FINE_FREQ_STEP_HZ               250U
+#define SIGSEP_FINE_SEARCH_RADIUS_HZ           \
+  ((SIGSEP_FREQ_STEP_HZ / 2U) + SIGSEP_FINE_FREQ_STEP_HZ)
+
+/*
+ * 双信号连续频率模式仍要求两个分量具有足够频率间隔。原题频率至少相差 5 kHz，
+ * 这里用 4 kHz 屏蔽同一主峰的旁瓣，同时给估计误差留出裕量。
+ */
+#define SIGSEP_DUAL_MIN_SEPARATION_HZ          4000U
+
+/*
+ * 高精度首次判频范围。2.5 MSPS 的理论奈奎斯特上限为 1.25 MHz，但为了让
+ * 三角波/方波重建仍有至少约 10 个样点/周期，默认上限保守设为 250 kHz。
+ * 可按硬件带宽修改，但必须满足 0 < MIN < MAX < Fs/2。
+ */
+#define SIGSEP_PRECISE_FREQ_MIN_HZ             1000U
+#define SIGSEP_PRECISE_FREQ_MAX_HZ             250000U
+
+/*
+ * 32768 点对应 13.1072 ms 观测时间、76.2939 Hz 原始频点间隔。Hann 窗降低
+ * 非整周期截断造成的谱泄漏，三点抛物线插值给出毫赫兹格式的非栅格初值。
+ */
+#define SIGSEP_PRECISE_FFT_LEN                 32768U
 
 /* 16 位 ADC 幅值到 12 位 DAC 幅值的换算和安全限幅。 */
 #define SIGSEP_DAC_MID                         2048U

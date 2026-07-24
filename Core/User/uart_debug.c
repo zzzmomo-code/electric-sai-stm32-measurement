@@ -11,6 +11,17 @@
 static uint8_t reported_identified_state;
 static char async_message[160];
 
+#if (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_CONTINUOUS)
+#define uart_debug_frequency_mode_line \
+  "frequency=continuous, coarse=5000Hz, fine=250Hz+PLL\r\n"
+#elif (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT)
+#define uart_debug_frequency_mode_line \
+  "frequency=precise_fft, N=32768, Hann+peak interpolation\r\n"
+#else
+#define uart_debug_frequency_mode_line \
+  "frequency=grid_5khz\r\n"
+#endif
+
 /**
  * @brief 把波形枚举转换为紧凑的串口名称。
  * @param wave 波形类型。
@@ -71,12 +82,14 @@ void uart_debug_init(void)
   uart_debug_write("\r\nH743 phase locking port\r\n"
                    "ADC PC0, DAC PA4/PA5, Fs=2500000Hz\r\n"
                    "mode=single, signal=PA4, PA5=midscale\r\n"
+                   uart_debug_frequency_mode_line
                    "command: r=restart identify\r\n"
                    "state=search\r\n");
 #else
   uart_debug_write("\r\nH743 phase locking port\r\n"
                    "ADC PC0, DAC PA4/PA5, Fs=2500000Hz\r\n"
                    "mode=dual_mixed, low=PA4, high=PA5\r\n"
+                   uart_debug_frequency_mode_line
                    "command: r=restart identify\r\n"
                    "state=search\r\n");
 #endif
@@ -127,16 +140,23 @@ void uart_debug_process(void)
   wave0 = uart_debug_wave_name(status.wave[0]);
 #if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
   length = snprintf(async_message, sizeof(async_message),
-                    "locked A=%luHz/%s adc_drop=%lu dac_drop=%lu\r\n",
-                    (unsigned long)status.frequency_hz[0], wave0,
+                    "locked A=%lu.%03luHz/%s adc_drop=%lu dac_drop=%lu\r\n",
+                    (unsigned long)(status.frequency_millihz[0] / 1000U),
+                    (unsigned long)(status.frequency_millihz[0] % 1000U),
+                    wave0,
                     (unsigned long)status.adc_frame_overrun,
                     (unsigned long)status.dac_half_overrun);
 #else
   wave1 = uart_debug_wave_name(status.wave[1]);
   length = snprintf(async_message, sizeof(async_message),
-                    "locked A=%luHz/%s B=%luHz/%s adc_drop=%lu dac_drop=%lu\r\n",
-                    (unsigned long)status.frequency_hz[0], wave0,
-                    (unsigned long)status.frequency_hz[1], wave1,
+                    "locked A=%lu.%03luHz/%s B=%lu.%03luHz/%s "
+                    "adc_drop=%lu dac_drop=%lu\r\n",
+                    (unsigned long)(status.frequency_millihz[0] / 1000U),
+                    (unsigned long)(status.frequency_millihz[0] % 1000U),
+                    wave0,
+                    (unsigned long)(status.frequency_millihz[1] / 1000U),
+                    (unsigned long)(status.frequency_millihz[1] % 1000U),
+                    wave1,
                     (unsigned long)status.adc_frame_overrun,
                     (unsigned long)status.dac_half_overrun);
 #endif

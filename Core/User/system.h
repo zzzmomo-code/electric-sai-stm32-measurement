@@ -12,6 +12,7 @@
 
 #include "main.h"
 #include "signal_separation_config.h"
+#include "frequency_estimator.h"
 #include "signal_separation.h"
 #include "uart_debug.h"
 
