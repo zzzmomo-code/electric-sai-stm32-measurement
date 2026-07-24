@@ -1095,6 +1095,37 @@ static void update_dac_amplitude(uint32_t channel, uint8_t smooth_output)
   }
 }
 
+#if ((SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE) || \
+     (SIGSEP_COMMON_SOURCE_LOCK == 0U))
+/**
+ * @brief 用与参考工程双通道独立 PLL 完全相同的流程跟踪一个分量。
+ * @param channel 待跟踪的输出通道索引。
+ * @param samples 当前 ADC 分析帧。
+ * @param mean 当前分析帧的直流均值。
+ * @param frame_start_sample 当前帧第一个样点的绝对采样点编号。
+ * @return 无。
+ * @note 固定执行“相关测幅/测相→PI 型 PLL 更新→状态与幅度平滑”顺序。
+ *       单通道模式调用通道 0；双通道独立锁相依次调用通道 0 和通道 1。
+ */
+static void track_component_independent(uint32_t channel,
+                                        const uint16_t *samples,
+                                        float mean,
+                                        uint64_t frame_start_sample)
+{
+  float measured_amplitude;
+  uint32_t measured_phase;
+
+  measure_component(samples, mean, active_component[channel].frequency_hz,
+                    &measured_amplitude, &measured_phase);
+  (void)nco_update_lock(channel, measured_phase, frame_start_sample);
+  active_component[channel].phase_q32 = measured_phase;
+  active_component[channel].amplitude_adc +=
+    (measured_amplitude - active_component[channel].amplitude_adc) /
+    (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
+  update_dac_amplitude(channel, 1U);
+}
+#endif
+
 /**
  * @brief 把一个刚完成的 ADC DMA 半区复制到 CPU 专用分析缓冲区。
  * @param offset 半区在 adc_dma_buffer 中的起始索引。
@@ -1157,28 +1188,18 @@ static void process_adc_frame(const uint16_t *samples,
   }
   else
   {
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
     float mean = frame_mean(samples);
-    float measured_amplitude;
-    uint32_t measured_phase;
 
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
     /*
-     * 单信号模式直接复用双信号模式主通道的测相和 PI 型 PLL。相关器测得
-     * 基波相位，NCO 负责连续输出，PLL 只缓慢修正频差和相位误差。
+     * 单信号模式与双通道独立 PLL 共用同一个通道跟踪函数，因此除只使用
+     * 通道 0、只输出 PA4 外，测相、环路状态更新和幅度平滑顺序完全一致。
      */
-    measure_component(samples, mean, active_component[0].frequency_hz,
-                      &measured_amplitude, &measured_phase);
-    (void)nco_update_lock(0U, measured_phase, frame_start_sample);
-    active_component[0].phase_q32 = measured_phase;
-    active_component[0].amplitude_adc +=
-      (measured_amplitude - active_component[0].amplitude_adc) /
-      (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
-    update_dac_amplitude(0U, 1U);
+    track_component_independent(0U, samples, mean, frame_start_sample);
 #else
-    float mean = frame_mean(samples);
+#if (SIGSEP_COMMON_SOURCE_LOCK != 0U)
     float measured_amplitude[2];
     uint32_t measured_phase[2];
-#if (SIGSEP_COMMON_SOURCE_LOCK != 0U)
     uint32_t master_channel =
       (SIGSEP_PHASE_MASTER_CH == 0U) ? 0U : 1U;
     uint32_t follower_channel = master_channel ^ 1U;
@@ -1199,14 +1220,6 @@ static void process_adc_frame(const uint16_t *samples,
                       frame_start_sample);
     nco_follow_common_source(follower_channel, master_channel,
                              master_phase_error, frame_start_sample);
-#else
-    measure_component(samples, mean, active_component[0].frequency_hz,
-                      &measured_amplitude[0], &measured_phase[0]);
-    measure_component(samples, mean, active_component[1].frequency_hz,
-                      &measured_amplitude[1], &measured_phase[1]);
-    (void)nco_update_lock(0U, measured_phase[0], frame_start_sample);
-    (void)nco_update_lock(1U, measured_phase[1], frame_start_sample);
-#endif
 
     active_component[0].phase_q32 = measured_phase[0];
     active_component[1].phase_q32 = measured_phase[1];
@@ -1218,6 +1231,10 @@ static void process_adc_frame(const uint16_t *samples,
       (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
     update_dac_amplitude(0U, 1U);
     update_dac_amplitude(1U, 1U);
+#else
+    track_component_independent(0U, samples, mean, frame_start_sample);
+    track_component_independent(1U, samples, mean, frame_start_sample);
+#endif
 #endif
   }
 }
