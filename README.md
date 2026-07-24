@@ -30,6 +30,43 @@
 | `SIGSEP_MODE_SINGLE` | 一路干净的正弦波、三角波或方波 | 重建并锁相输出 | 保持 DAC 中点，约 1.65 V |
 | `SIGSEP_MODE_DUAL_MIXED` | 两路信号经过模拟加法器后的混合波形 | 较低频分量 | 较高频分量 |
 
+#### 在 STM32CubeIDE 中切换模式
+
+模式不在 `.ioc` 中选择，也不能通过按复位键切换。它是一个编译期宏，每次修改后
+都必须重新编译并下载。具体操作如下：
+
+1. 在左侧 **Project Explorer** 展开工程
+   `phase_locking_ported_codex`。
+2. 依次展开 **Core → User**，双击打开
+   `signal_separation_config.h`。
+3. 在文件顶部找到 `SIGSEP_OPERATION_MODE`。只修改这一行，不要修改
+   `SIGSEP_MODE_DUAL_MIXED` 和 `SIGSEP_MODE_SINGLE` 的数值。
+4. 测试两路混合输入、PA4/PA5 双路输出时写成：
+
+   ```c
+   #define SIGSEP_OPERATION_MODE SIGSEP_MODE_DUAL_MIXED
+   ```
+
+5. 测试一路干净输入、PA4 单路输出时写成：
+
+   ```c
+   #define SIGSEP_OPERATION_MODE SIGSEP_MODE_SINGLE
+   ```
+
+6. 按 **Ctrl+S** 保存。
+7. 在菜单栏依次选择 **Project → Clean...**，勾选
+   `phase_locking_ported_codex` 后点击 **Clean**。
+8. 选中左侧的 `phase_locking_ported_codex`，点击工具栏锤子图标，或选择
+   **Project → Build Project**。在底部 **Console** 确认出现
+   `Build Finished`，并且为 `0 errors`。
+9. 点击绿色运行按钮下载，或点击小甲虫进入 Debug；下载完成后再让程序继续运行。
+10. 打开串口观察启动信息：
+    - `mode=dual_mixed, low=PA4, high=PA5` 表示双信号模式；
+    - `mode=single, signal=PA4, PA5=midscale` 表示单信号模式。
+
+当前仓库默认并且当前已经下载到开发板的是
+`SIGSEP_MODE_DUAL_MIXED`。若只是按开发板复位键，仍会保持这个模式。
+
 ### 1.2 公共数据链路
 
 1. TIM2 以 2.5 MHz 产生 TRGO，同时触发 ADC1 和 DAC1 两个通道。
