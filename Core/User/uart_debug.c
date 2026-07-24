@@ -71,11 +71,13 @@ void uart_debug_init(void)
   uart_debug_write("\r\nH743 phase locking port\r\n"
                    "ADC PC0, DAC PA4/PA5, Fs=2500000Hz\r\n"
                    "mode=single, signal=PA4, PA5=midscale\r\n"
+                   "command: r=restart identify\r\n"
                    "state=search\r\n");
 #else
   uart_debug_write("\r\nH743 phase locking port\r\n"
                    "ADC PC0, DAC PA4/PA5, Fs=2500000Hz\r\n"
                    "mode=dual_mixed, low=PA4, high=PA5\r\n"
+                   "command: r=restart identify\r\n"
                    "state=search\r\n");
 #endif
 }
@@ -89,11 +91,24 @@ void uart_debug_init(void)
 void uart_debug_process(void)
 {
   signal_separation_status_t status;
+  uint8_t command;
   const char *wave0;
 #if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
   const char *wave1;
 #endif
   int length;
+
+  /*
+   * 参考工程由串口屏“分离”按键触发重新识别。本移植工程没有该屏，
+   * 因此用 USART1 接收 r/R 作为等价入口；轮询超时为 0，不阻塞主循环。
+   */
+  if ((HAL_UART_Receive(&huart1, &command, 1U, 0U) == HAL_OK) &&
+      ((command == (uint8_t)'r') || (command == (uint8_t)'R')))
+  {
+    signal_separation_restart_identify();
+    reported_identified_state = 0U;
+    return;
+  }
 
   if (signal_separation_get_status(&status) == 0U)
   {

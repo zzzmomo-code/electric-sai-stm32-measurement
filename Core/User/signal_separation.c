@@ -401,6 +401,11 @@ static signal_wave_type_t detect_wave_type(const uint16_t *samples, float mean,
                                                  frequency_hz * 5U);
   }
 
+#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
+  /*
+   * 单信号扩展模式额外区分方波；参考工程的双信号题目模式只区分正弦波和
+   * 三角波，避免改变其既有判据和输出流程。
+   */
   if (other_frequency_hz == (frequency_hz * 3U))
   {
     if (harmonic5_amplitude >
@@ -427,6 +432,20 @@ static signal_wave_type_t detect_wave_type(const uint16_t *samples, float mean,
       return signal_wave_triangle;
     }
   }
+#else
+  if ((other_frequency_hz == (frequency_hz * 3U)) &&
+      (harmonic5_amplitude >
+       (fundamental_amplitude * SIGSEP_TRI_H5_RATIO)))
+  {
+    return signal_wave_triangle;
+  }
+  if ((other_frequency_hz != (frequency_hz * 3U)) &&
+      (harmonic3_amplitude >
+       (fundamental_amplitude * SIGSEP_TRI_H3_RATIO)))
+  {
+    return signal_wave_triangle;
+  }
+#endif
 
   return signal_wave_sine;
 }
@@ -507,8 +526,6 @@ static uint8_t analyze_frame(const uint16_t *samples,
   {
     uint32_t best1 = 1U;
     uint32_t temporary;
-    float stronger_amplitude;
-    float weaker_amplitude;
 
     if (amplitude[best1] > amplitude[best0])
     {
@@ -527,16 +544,6 @@ static uint8_t analyze_frame(const uint16_t *samples,
       {
         best1 = index;
       }
-    }
-
-    stronger_amplitude = amplitude[best0];
-    weaker_amplitude = amplitude[best1];
-    if ((stronger_amplitude < SIGSEP_MIN_VALID_ADC_AMP) ||
-        (weaker_amplitude < SIGSEP_MIN_VALID_ADC_AMP) ||
-        (weaker_amplitude <
-         (stronger_amplitude * SIGSEP_DUAL_MIN_SECOND_RATIO)))
-    {
-      return 0U;
     }
 
     /* 两路 DAC 固定按低频到高频排序，与峰值强弱无关。 */
@@ -598,49 +605,6 @@ static void nco_init(uint32_t channel, const signal_component_t *component,
   nco_state[channel].sample_reference = sample_start;
   nco_state[channel].last_error = 0;
 }
-
-#if ((SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED) && \
-     (SIGSEP_COMMON_SOURCE_LOCK != 0U))
-/**
- * @brief 在整数倍频时把跟随通道锚定到主通道的统一输出时间原点。
- * @param follower_channel 跟随通道索引。
- * @param master_channel 主 PLL 通道索引。
- * @return 无。
- * @note 题目相位项定义 B'=sin(wB*t+phi)。因此 B' 的基础相位必须由 A' 的
- *       相位乘频率整数比得到，用户 phi 仍在 DAC2 渲染时单独叠加。
- */
-static void nco_align_integer_common_source(uint32_t follower_channel,
-                                            uint32_t master_channel)
-{
-  uint32_t source_hz = active_component[master_channel].frequency_hz;
-  uint32_t destination_hz =
-    active_component[follower_channel].frequency_hz;
-  uint32_t frequency_ratio;
-  uint64_t scaled_step;
-
-  if ((source_hz == 0U) || ((destination_hz % source_hz) != 0U))
-  {
-    return;
-  }
-
-  frequency_ratio = destination_hz / source_hz;
-  scaled_step =
-    (uint64_t)nco_state[master_channel].nominal_step * frequency_ratio;
-  if (scaled_step > UINT32_MAX)
-  {
-    return;
-  }
-
-  nco_state[follower_channel].nominal_step = (uint32_t)scaled_step;
-  nco_state[follower_channel].phase_reference =
-    nco_state[master_channel].phase_reference * frequency_ratio;
-  nco_state[follower_channel].sample_reference =
-    nco_state[master_channel].sample_reference;
-  nco_state[follower_channel].step_correction = 0;
-  nco_state[follower_channel].integrator = 0;
-  nco_state[follower_channel].last_error = 0;
-}
-#endif
 
 /**
  * @brief 获取包含 PLL 修正的实际 NCO 步进。
@@ -1184,15 +1148,6 @@ static void process_adc_frame(const uint16_t *samples,
 #if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
     active_component[1] = result[1];
     nco_init(1U, &active_component[1], frame_start_sample);
-#if (SIGSEP_COMMON_SOURCE_LOCK != 0U)
-    {
-      uint32_t master_channel =
-        (SIGSEP_PHASE_MASTER_CH == 0U) ? 0U : 1U;
-      uint32_t follower_channel = master_channel ^ 1U;
-
-      nco_align_integer_common_source(follower_channel, master_channel);
-    }
-#endif
 #endif
     separation_identified = 1U;
     update_dac_amplitude(0U, 0U);
@@ -1223,11 +1178,10 @@ static void process_adc_frame(const uint16_t *samples,
     float mean = frame_mean(samples);
     float measured_amplitude[2];
     uint32_t measured_phase[2];
+#if (SIGSEP_COMMON_SOURCE_LOCK != 0U)
     uint32_t master_channel =
       (SIGSEP_PHASE_MASTER_CH == 0U) ? 0U : 1U;
     uint32_t follower_channel = master_channel ^ 1U;
-
-#if (SIGSEP_COMMON_SOURCE_LOCK != 0U)
     int32_t master_phase_error;
 
     measure_component(samples, mean,

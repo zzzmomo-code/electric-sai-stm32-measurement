@@ -21,7 +21,7 @@ extern "C" {
 void uart_debug_init(void);
 
 /**
- * @brief 在首次识别完成时用中断方式输出一次结果。
+ * @brief 处理 r/R 重新识别命令，并在首次识别完成时用中断方式输出一次结果。
  * @param 无。
  * @return 无。
  * @note 发送缓冲区为静态存储，发送期间不会被主循环覆盖。

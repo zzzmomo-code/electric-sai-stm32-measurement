@@ -23,7 +23,11 @@
 #define SIGSEP_OPERATION_MODE                  SIGSEP_MODE_DUAL_MIXED
 #endif
 
-/* TIM2 同时触发 ADC 和两路 DAC，采样率为 2.5 MSPS。 */
+/*
+ * TIM2 同时触发 ADC 和两路 DAC，采样率为 2.5 MSPS。
+ * H743 Rev.V 会把 ADC RCC 内核时钟再除以 2，因此 IOC 中 PLL2P 输出必须
+ * 保持 78.4 MHz，使 ADC 实际工作在 39.2 MHz；不要恢复成 49 MHz。
+ */
 #define SIGSEP_SAMPLE_RATE_HZ                  2500000U
 
 /*
@@ -64,19 +68,18 @@
 #define SIGSEP_DAC2_PHASE_OFFSET_DEG           0
 
 /*
- * 两分量来自同一相干源时，仅让通道 0 的 PLL 作为主环路，通道 1 按
- * 频率比例跟随主环路的时间误差，避免两个环路各自漂移。
+ * 设为 0 时两路 PLL 分别持续测量并锁定各自输入分量，这是默认且适用于独立
+ * 信号源的模式。只有明确确认两分量来自同一相干时钟时才设为 1，此时通道 0
+ * 为主环路，通道 1 按频率比例跟随主环路的时间误差。
  */
-#define SIGSEP_COMMON_SOURCE_LOCK              1U
+#define SIGSEP_COMMON_SOURCE_LOCK              0U
 #define SIGSEP_PHASE_MASTER_CH                 0U
 
 /*
- * 识别有效性和谐波法波形分类参数。
- * 双信号模式除固定门限外，还要求较弱分量至少达到较强分量的 5%，避免把
- * 单音输入产生的频谱泄漏或底噪误当成第二路信号。
+ * 识别有效性和谐波法波形分类参数。双信号模式与参考工程一样只区分正弦波
+ * 和三角波；方波阈值只供单信号扩展模式使用。
  */
 #define SIGSEP_MIN_VALID_ADC_AMP               120.0f
-#define SIGSEP_DUAL_MIN_SECOND_RATIO           0.050f
 #define SIGSEP_TRI_H3_RATIO                    0.060f
 #define SIGSEP_TRI_H5_RATIO                    0.025f
 #define SIGSEP_SQUARE_H3_RATIO                 0.220f

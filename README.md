@@ -65,7 +65,8 @@
     - `mode=single, signal=PA4, PA5=midscale` 表示单信号模式。
 
 当前仓库默认并且当前已经下载到开发板的是
-`SIGSEP_MODE_DUAL_MIXED`。若只是按开发板复位键，仍会保持这个模式。
+`SIGSEP_MODE_DUAL_MIXED`，且 `SIGSEP_COMMON_SOURCE_LOCK=0U`，因此 PA4、PA5
+分别闭环锁定低频和高频输入。若只是按开发板复位键，仍会保持这个模式。
 
 ### 1.2 公共数据链路
 
@@ -74,16 +75,17 @@
 3. 每个 DMA 半区包含 512 点；完成后先把最新安全半区的前 500 点复制到 CPU
    专用缓冲区，再执行分析，避免计算期间被下一轮 DMA 覆写。
 4. 在 10 kHz～100 kHz 范围内，以 5 kHz 为间隔检查 19 个候选频点。
-5. 对 4 帧幅值结果求平均；单信号模式选择一个最强分量，双信号模式选择两个
-   分量，并要求较弱分量至少达到较强分量的 5%。
-6. 根据三次/五次谐波比例区分正弦波、三角波和方波。
+5. 对 4 帧幅值结果求平均；单信号模式选择一个最强分量，双信号模式与参考工程
+   一样直接选择两个最强分量。
+6. 双信号题目模式与参考工程一样根据三次/五次谐波区分正弦波和三角波；单信号
+   扩展模式额外支持方波分类与重建。
 7. 使用 Q32 NCO 和 PI 型数字 PLL 跟踪输入相位及频率误差；HSI 场景的软件
    捕获范围设为约 ±2%。
 8. 单信号模式直接复用双信号模式主通道的测相、NCO 和 PLL，PA4 连续输出，
    PA5 始终回填中点值。
-9. 双信号模式下，当高频是低频的整数倍时，两路 NCO 使用共同输出时间原点，PA5 相对 PA4
-   默认设置 150° 初相位；可通过 API 修改为 0°～180°，不会再叠加输入 A/B
-   原有的初相位差。
+9. 双信号默认使用两个独立 PLL：PA4 持续测量并锁定低频输入，PA5 持续测量并
+   锁定高频输入。只有把 `SIGSEP_COMMON_SOURCE_LOCK` 改为 `1U` 时，才切换为
+   GitHub 参考工程的同源主从锁相。PA5 还可额外叠加默认 150° 的输出相位。
 
 ## 2. 引脚连接
 
@@ -148,8 +150,13 @@ DAC 已开启内部输出缓冲，示波器使用高阻输入。不要直接驱�
 8. PLL2 设置：
    - DIVM2：`4`
    - DIVN2：`49`
-   - DIVP2：`16`
-9. ADC Clock Mux 选择 `PLL2P`，ADC kernel clock 为 49 MHz。
+   - DIVP2：`10`
+9. ADC Clock Mux 选择 `PLL2P`，时钟树显示 78.4 MHz。
+
+本板芯片 Revision ID 为 **Rev.V**。H743 HAL 会在 Rev.V 的 ADC 路径内部再除以 2，
+所以 ADC 实际工作时钟为 39.2 MHz。若把 DIVP2 恢复成 16，时钟树虽然显示
+49 MHz，但 ADC 实际只有 24.5 MHz，无法接收全部 2.5 MHz 外部触发，会固定漏掉
+20% 采样；算法仍按 2.5 MSPS 换算时就会出现频率偏高。
 
 页面右侧看不全时，使用底部横向滚动条；出现红色数字或红点就表示时钟仍有冲突。
 
@@ -182,7 +189,7 @@ DAC 已开启内部输出缓冲，示波器使用高阻输入。不要直接驱�
 - Overrun behaviour：Overwritten
 - ADC Clock Prescaler：Asynchronous clock mode divided by 1
 - Rank 1 Channel：Channel 10
-- Sampling Time：8.5 Cycles
+- Sampling Time：1.5 Cycles
 - Single-ended
 
 ADC DMA：
@@ -338,6 +345,7 @@ Core/User/
 H743 phase locking port
 ADC PC0, DAC PA4/PA5, Fs=2500000Hz
 mode=single, signal=PA4, PA5=midscale
+command: r=restart identify
 state=search
 ```
 
@@ -351,10 +359,12 @@ locked A=20000Hz/sin adc_drop=0 dac_drop=0
 
 ```text
 mode=dual_mixed, low=PA4, high=PA5
-locked A=25000Hz/sin B=60000Hz/tri adc_drop=0 dac_drop=0
+locked A=20000Hz/tri B=30000Hz/tri adc_drop=0 dac_drop=0
 ```
 
-锁定结果使用 USART1 中断发送，不阻塞实时采样。
+锁定结果使用 USART1 中断发送，不阻塞实时采样。输入频率或接线改变后，可通过
+USART1 发送字符 `r` 或 `R` 重新识别；这对应参考工程串口屏上的“分离”按键，
+不必重新下载固件。
 
 ## 8. 第一次实板验证顺序
 
@@ -367,7 +377,7 @@ locked A=25000Hz/sin B=60000Hz/tri adc_drop=0 dac_drop=0
    不要把两个推挽信号源输出端直接短接。
 4. 先使用两个相差较大的 5 kHz 栅格频率，例如 20 kHz 和 55 kHz，并确保叠加后
    PC0 始终位于 0～3.3 V。
-5. 观察 PA4/PA5，确认分别输出较低和较高频率；弱分量幅值至少应达到强分量的 5%。
+5. 观察 PA4/PA5，确认分别输出较低和较高频率。
 6. 观察串口 `adc_drop` 和 `dac_drop` 是否保持 0。
 7. 用示波器分别测输入分量与对应输出的相位差，确认 PLL 收敛且无持续漂移。
 8. 相位功能使用同一时基生成的整数倍频组合（例如 20 kHz 和 60 kHz），依次设置
@@ -391,20 +401,22 @@ locked A=25000Hz/sin B=60000Hz/tri adc_drop=0 dac_drop=0
 
 ## 9. 当前限制
 
-- 已完成 IOC、源码和本机编译验证，尚未在真实 H743 板上验证模拟波形。
+- 已完成 IOC、源码、完整编译、下载校验和真实 H743 Rev.V 板上寄存器/DMA/锁相
+  状态验证；PA4/PA5 的最终模拟幅值、波形质量和探头测得相位仍需用示波器确认。
 - 输入没有硬件保护，接线和电压范围必须由操作者保证。
 - 候选输入频率按原题思路限定在 5 kHz 栅格；偏离过大时会识别到最近频点。
 - 单信号模式只使用 PA4 输出；PA5 保持中点不是故障。
-- 单信号模式在识别完成后不会自动判定“信号已拔掉”并重新搜索；改变频率档位后，
-  需要复位、重新下载或调用 `signal_separation_restart_identify()`。
+- 程序不会自动判定“信号已拔掉”并重新搜索；改变频率档位后，发送串口字符
+  `r`/`R`、复位，或调用 `signal_separation_restart_identify()`。
 - 方波/三角波判别使用三次、五次谐波比例，阈值会受函数发生器带宽、前端失真和
   ADC 噪声影响，仍需实板标定。
 - 使用内部 HSI，绝对频率精度和温漂不如外部晶振。软件 PLL 捕获范围已从参考
   工程的约 ±0.05% 扩大到约 ±2%，但捕获、稳态相位误差和环路参数仍须实板确认。
-- 双信号模式采用同源主从锁相，通道 0 是主 PLL；若两路输入不是同一时基，
-  应关闭 `SIGSEP_COMMON_SOURCE_LOCK`，让两路 PLL 独立跟踪。
-- 整数倍频相位控制已改为共同输出时间原点；非整数倍频只要求两路稳定同频显示，
-  不承诺固定的 A′/B′ 初相位定义。
+- 默认 `SIGSEP_COMMON_SOURCE_LOCK=0U`，两路 PLL 分别持续测量各自输入相位，
+  适用于独立或同源的两路输入。只有明确确认两路来自同一相干时钟、并希望完全
+  复现参考工程的主从时间误差传播时，才改成 `1U`。
 - 双信号模式的 PA5 默认额外偏移 150°；如不需要，修改配置宏或调用
   `signal_separation_set_phase_offset_deg(0)`。
-- 所有“锁定稳定、相位误差、幅度精度”结论均为待硬件验证。
+- 20 kHz + 30 kHz 当前实板输入已确认识别正确，ADC:DAC 半缓冲事件比为
+  2.000:1，ADC 无 overrun、DAC 无 underrun；同源主从和独立双 PLL 均已确认
+  进入闭环且修正量未饱和。模拟幅度精度和示波器相位漂移仍待探头确认。
