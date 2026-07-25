@@ -29,7 +29,7 @@
 #define DDS_CONTROL_TARGET_IF_HZ 100000u
 
 /** 每次立即测量需要成功完成的 ADC 闭环补偿次数。 */
-#define DDS_CONTROL_COMPENSATION_LIMIT 5u
+#define DDS_CONTROL_COMPENSATION_LIMIT 10u
 
 /** 题目允许的输入频率范围，单位Hz。 */
 #define DDS_CONTROL_MIN_INPUT_HZ 1000000u

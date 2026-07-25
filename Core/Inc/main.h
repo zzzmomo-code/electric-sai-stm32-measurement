@@ -57,12 +57,50 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define LED_Pin GPIO_PIN_13
+#define LED_GPIO_Port GPIOC
+#define BUSY_Pin GPIO_PIN_0
+#define BUSY_GPIO_Port GPIOC
+#define CS_Pin GPIO_PIN_1
+#define CS_GPIO_Port GPIOC
+#define PS_PWM_Pin GPIO_PIN_13
+#define PS_PWM_GPIO_Port GPIOE
 #define DDS_FSYNC_Pin GPIO_PIN_12
 #define DDS_FSYNC_GPIO_Port GPIOB
 #define FS_Pin GPIO_PIN_14
 #define FS_GPIO_Port GPIOB
 #define PS_Pin GPIO_PIN_8
 #define PS_GPIO_Port GPIOD
+#define DDS_RST_Pin GPIO_PIN_9
+#define DDS_RST_GPIO_Port GPIOD
+#define relay3_Pin GPIO_PIN_12
+#define relay3_GPIO_Port GPIOD
+#define relay_1_Pin GPIO_PIN_13
+#define relay_1_GPIO_Port GPIOD
+#define relay_2_Pin GPIO_PIN_14
+#define relay_2_GPIO_Port GPIOD
+#define relay_4_Pin GPIO_PIN_6
+#define relay_4_GPIO_Port GPIOC
+#define FS_PWM_Pin GPIO_PIN_11
+#define FS_PWM_GPIO_Port GPIOA
+#define ADS8688_DAISY_Pin GPIO_PIN_0
+#define ADS8688_DAISY_GPIO_Port GPIOD
+#define ADS8688_RST_Pin GPIO_PIN_1
+#define ADS8688_RST_GPIO_Port GPIOD
+#define update9959_Pin GPIO_PIN_4
+#define update9959_GPIO_Port GPIOD
+#define DDS2_FSYNC_Pin GPIO_PIN_5
+#define DDS2_FSYNC_GPIO_Port GPIOD
+#define DDS2_FS_Pin GPIO_PIN_6
+#define DDS2_FS_GPIO_Port GPIOD
+#define DDS2_PS_Pin GPIO_PIN_7
+#define DDS2_PS_GPIO_Port GPIOD
+#define DDS2_RST_Pin GPIO_PIN_4
+#define DDS2_RST_GPIO_Port GPIOB
+#define FS2_PWM_Pin GPIO_PIN_6
+#define FS2_PWM_GPIO_Port GPIOB
+#define PS2_PWM_Pin GPIO_PIN_7
+#define PS2_PWM_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

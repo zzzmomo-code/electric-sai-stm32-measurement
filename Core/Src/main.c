@@ -21,6 +21,7 @@
 #include "adc.h"
 #include "dac.h"
 #include "dma.h"
+#include "opamp.h"
 #include "spi.h"
 #include "tim.h"
 #include "usart.h"
@@ -110,6 +111,18 @@ int main(void)
   MX_TIM5_Init();
   MX_SPI2_Init();
   MX_DAC1_Init();
+  MX_ADC3_Init();
+  MX_OPAMP2_Init();
+  MX_SPI3_Init();
+  MX_USART2_UART_Init();
+  MX_TIM1_Init();
+  MX_SPI6_Init();
+  MX_TIM4_Init();
+  MX_SPI4_Init();
+  MX_TIM8_Init();
+  MX_TIM13_Init();
+  MX_TIM14_Init();
+  MX_USART3_UART_Init();
   /* USER CODE BEGIN 2 */
   system_init();
   /* USER CODE END 2 */
@@ -122,7 +135,6 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
     system_process();
-
   }
   /* USER CODE END 3 */
 }

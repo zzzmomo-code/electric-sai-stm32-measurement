@@ -1,4 +1,5 @@
-# STM32CubeIDE build analysis files
+# STM32CubeIDE build output
+Debug/
 *.su
 *.cyclo
 

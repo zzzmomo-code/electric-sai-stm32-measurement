@@ -1,3 +1,0 @@
-../Core/User/measurement_result.c:26:6:measurement_result_init	0	static
-../Core/User/measurement_result.c:59:6:measurement_result_publish	12	static
-../Core/User/measurement_result.c:76:9:measurement_result_get_snapshot	8	static

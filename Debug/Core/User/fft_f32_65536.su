@@ -1,2 +1,0 @@
-../Core/User/fft_f32_65536.c:29:16:fft_f32_65536_normalize	0	static
-../Core/User/fft_f32_65536.c:186:24:fft_f32_65536_forward	80	static
