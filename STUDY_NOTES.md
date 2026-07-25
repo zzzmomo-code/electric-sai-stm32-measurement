@@ -198,7 +198,7 @@ while (1) { system_process(); }
 
 | 宏 | 默认值 | 作用 |
 |---|---|---|
-| `SIGSEP_OPERATION_MODE` | `DUAL_MIXED` | 单信号/双信号模式 |
+| `SIGSEP_OPERATION_MODE` | `SINGLE` | 最终版默认单信号；双混合为可选扩展 |
 | `SIGSEP_FREQUENCY_MODE` | `PRECISE_FFT` | 频率识别算法 |
 | `SIGSEP_SAMPLE_RATE_HZ` | `2500000` | 2.5 MSPS |
 | `SIGSEP_PHASE_OFFSET_DEFAULT_DEG` | `150` | DAC2 额外相位（0-180, 步进 5） |

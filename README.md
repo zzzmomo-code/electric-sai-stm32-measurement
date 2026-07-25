@@ -1,6 +1,6 @@
-# STM32H743 单/双信号识别、重建与锁相输出
+# STM32H743 单信号识别、重建与数字锁相（最终版）
 
-本工程把 `tongw60536/EDU_Work` 仓库中 `2023H` 的关键输入、频率识别、波形分类、Q32 NCO/PLL 和双 DAC 输出思路移植到 **STM32H743VIT6**，并增加单信号重建模式。工程使用 STM32CubeIDE 1.19.0，时钟源仅使用芯片内部 HSI。
+本工程把 `tongw60536/EDU_Work` 仓库中 `2023H` 的关键输入、频率识别、波形分类、Q32 NCO/PLL 和 DAC 输出思路移植到 **STM32H743VIT6**。最终版默认工作在单信号模式：PC0 输入一路正弦波、三角波或方波，PA4 输出识别后重建并持续锁相的波形，PA5 保持 DAC 中点。工程使用 STM32CubeIDE 1.19.0，时钟源仅使用芯片内部 HSI。
 
 本次只修改了：
 
@@ -25,6 +25,7 @@
 锁相公式、具体函数、单/双通道差异和 Debug 变量见：
 
 - [docs/PHASE_LOCKING.md](docs/PHASE_LOCKING.md)
+- [docs/SINGLE_SIGNAL_PROJECT_TUTORIAL.md](docs/SINGLE_SIGNAL_PROJECT_TUTORIAL.md)：从创建工程、配置 IOC 到独立写出锁相代码的入门教程，包含英文缩写和专业名词解释。
 
 ## 1. 实现的功能
 
@@ -36,12 +37,12 @@
 #define SIGSEP_MODE_DUAL_MIXED  1U
 #define SIGSEP_MODE_SINGLE      2U
 
-#define SIGSEP_OPERATION_MODE   SIGSEP_MODE_DUAL_MIXED
+#define SIGSEP_OPERATION_MODE   SIGSEP_MODE_SINGLE
 ```
 
 修改 `SIGSEP_OPERATION_MODE` 后必须重新编译并下载。当前默认值为
-`SIGSEP_MODE_DUAL_MIXED`，先验证混合输入分离、PA4/PA5 双路重建和锁相；
-若双信号测试异常，再切换到单信号模式逐级排查。
+`SIGSEP_MODE_SINGLE`。正常使用时不需要修改它；只有需要研究原题双信号扩展时，
+才临时切换到 `SIGSEP_MODE_DUAL_MIXED`。
 
 | 模式 | PC0 输入 | PA4 | PA5 |
 |---|---|---|---|
@@ -82,8 +83,8 @@
     - `mode=dual_mixed, low=PA4, high=PA5` 表示双信号模式；
     - `mode=single, signal=PA4, PA5=midscale` 表示单信号模式。
 
-当前源码默认使用 `SIGSEP_MODE_DUAL_MIXED`，且
-`SIGSEP_COMMON_SOURCE_LOCK=0U`，因此 PA4、PA5 分别闭环锁定低频和高频输入。
+当前源码默认使用 `SIGSEP_MODE_SINGLE`，因此只启用通道 0 的识别、NCO 和 PLL：
+PA4 输出锁相重建波形，PA5 保持约 1.65 V 中点。
 开发板实际运行的模式以最后一次编译下载时的宏为准；只按复位键不会切换模式。
 
 ### 1.2 频率识别模式
@@ -372,7 +373,9 @@ Core/User/
 └─ uart_debug.c                   启动信息和一次性非阻塞锁定结果
 
 docs/
-└─ PHASE_LOCKING.md               锁相公式、代码入口和 Debug 指南
+├─ PHASE_LOCKING.md               锁相公式、代码入口和 Debug 指南
+└─ SINGLE_SIGNAL_PROJECT_TUTORIAL.md
+                                   从建工程到独立实现数字锁相的入门教程
 
 STUDY_NOTES.md                     移植差异、关键架构和学习总结
 ```
@@ -448,25 +451,9 @@ USART1 发送字符 `r` 或 `R` 重新识别；这对应参考工程串口屏上
 
 ## 8. 第一次实板验证顺序
 
-### 8.1 先验证默认双混合信号模式
+### 8.1 验证最终版默认单信号模式
 
-1. 先不接 PC0，完成下载并确认程序没有进入 `Error_Handler()`。
-2. 确认串口启动行显示 `mode=dual_mixed`；若不是，检查
-   `SIGSEP_OPERATION_MODE` 是否为 `SIGSEP_MODE_DUAL_MIXED`，然后重新编译、下载。
-3. 两路发生器信号必须先经过外部模拟加法器，再把**加法器的单路输出**接到 PC0；
-   不要把两个推挽信号源输出端直接短接。
-4. 先使用两个相差较大的 5 kHz 栅格频率，例如 20 kHz 和 55 kHz，并确保叠加后
-   PC0 始终位于 0～3.3 V。
-5. 观察 PA4/PA5，确认分别输出较低和较高频率。
-6. 观察串口 `adc_drop` 和 `dac_drop` 是否保持 0。
-7. 用示波器分别测输入分量与对应输出的相位差，确认 PLL 收敛且无持续漂移。
-8. 相位功能使用同一时基生成的整数倍频组合（例如 20 kHz 和 60 kHz），依次设置
-   0°、90°、150°、180°，测量 PA5 相对 PA4 的初相位差。
-9. 再测试正弦波、三角波、方波分类、不同幅度组合和 10～100 kHz 边界。
-
-### 8.2 双信号异常时退回单信号模式
-
-1. 把 `SIGSEP_OPERATION_MODE` 改为 `SIGSEP_MODE_SINGLE`，Clean/Build 后重新下载。
+1. 保持 `SIGSEP_OPERATION_MODE=SIGSEP_MODE_SINGLE`，Clean/Build 后重新下载。
 2. 函数发生器只启用一路，建议先设置正弦波、20 kHz、0.5 Vpp、DC Offset
    1.65 V，并选择 High-Z 显示模式。
 3. 函数发生器、开发板、示波器共地后，先用示波器探头直接测 **PC0 引脚处**，
@@ -479,6 +466,18 @@ USART1 发送字符 `r` 或 `R` 重新识别；这对应参考工程串口屏上
 7. 高精度模式再依次测试三角波、方波，以及 1.3 kHz、10.3 kHz、17.8 kHz、23.4 kHz、
    51.7 kHz、99.6 kHz 等非 5 kHz 整数倍频率；原栅格模式仍测试
    10 kHz、15 kHz、25 kHz、50 kHz 和 100 kHz。
+
+### 8.2 需要研究原题时再启用双信号扩展
+
+1. 把 `SIGSEP_OPERATION_MODE` 改为 `SIGSEP_MODE_DUAL_MIXED`，Clean/Build 后重新下载。
+2. 两路发生器信号必须先经过外部模拟加法器，再把**加法器的单路输出**接到 PC0；
+   不要把两个推挽信号源输出端直接短接。
+3. 先使用两个相差较大的频率，例如 20 kHz 和 55 kHz，并确保叠加后 PC0 始终位于
+   0～3.3 V。
+4. 观察 PA4/PA5，确认分别输出较低和较高频率，并检查串口 `adc_drop`、
+   `dac_drop` 是否保持 0。
+5. 双信号扩展不是最终版的默认验收路径；切回单信号时必须重新修改宏、Clean、
+   Build 并下载。
 
 ## 9. 当前限制
 
@@ -504,7 +503,9 @@ USART1 发送字符 `r` 或 `R` 重新识别；这对应参考工程串口屏上
   NCO；程序不会自动重新搜索。改变频率档位后，发送串口字符 `r`/`R`、复位，
   或调用 `signal_separation_restart_identify()`。
 - 方波/三角波判别使用三次、五次谐波比例，阈值会受函数发生器带宽、前端失真和
-  ADC 噪声影响，仍需实板标定。
+  ADC 噪声影响，仍需实板标定。当前分类只使用最新 DMA 半区的前 500 点；
+  1～4 kHz 在该窗口内不足一个完整周期或周期数太少，因此低频波形类型容易误判。
+  这是最终版保留的已知限制，不影响已经正确识别频率后的 PLL 基本锁相流程。
 - 使用内部 HSI，绝对频率精度和温漂不如外部晶振。软件 PLL 捕获范围已从参考
   工程的约 ±0.05% 扩大到约 ±2%，但捕获、稳态相位误差和环路参数仍须实板确认。
 - 默认 `SIGSEP_COMMON_SOURCE_LOCK=0U`，两路 PLL 分别持续测量各自输入相位，

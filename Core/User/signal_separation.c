@@ -15,6 +15,19 @@
  *    收集 32768 个连续样点做 Hann 窗 FFT 和非栅格峰值插值。
  */
 
+/*
+ * 默认单信号数据流（按阅读代码的建议顺序）：
+ * 1. signal_separation_start() 同步启动 ADC、DAC DMA 和 TIM2；
+ * 2. process_adc_frame() 在搜索状态调用 analyze_frame() 完成首次判频；
+ * 3. nco_init() 把毫赫兹频率换成 Q32 NCO（数控振荡器）相位步进；
+ * 4. track_component_independent() 每 512 点重新测量输入幅值和相位；
+ * 5. nco_update_lock() 用 PI（比例积分）数字 PLL 修正相位参考和 NCO 步进；
+ * 6. service_dac_halves() 按未来绝对播放样点回填 PA4，PA5 保持中点。
+ *
+ * 术语：PLL=锁相环，NCO=数控振荡器，I/Q=同相/正交分量，
+ * DMA=直接存储器访问，Q32=用 32 位无符号数表示一整周期相位。
+ */
+
 #define signal_two_pi_f                  6.28318530717958647692f
 #define signal_q32_scale_d               4294967296.0
 
@@ -49,7 +62,7 @@ typedef struct
   uint32_t frequency_hz;       /* 分量频率，单位 Hz。 */
   uint32_t frequency_millihz;  /* 高精度初始频率，单位 0.001 Hz。 */
   uint8_t frequency_index;     /* 在候选频率表中的索引。 */
-  signal_wave_type_t wave;     /* 正弦波或三角波。 */
+  signal_wave_type_t wave;     /* 正弦波、三角波或方波。 */
   float amplitude_adc;         /* 输入分量 ADC 峰值估计。 */
   float amplitude_dac;         /* 限幅后的 DAC 输出峰值。 */
   uint32_t phase_q32;          /* 输入分量在帧起点的 Q32 相位。 */
@@ -2234,7 +2247,7 @@ static uint8_t copy_adc_frame(uint32_t offset,
 
 /**
  * @brief 处理一个已经安全复制、不会再被 DMA 改写的 ADC 分析帧。
- * @param samples CPU 专用的 500 点分析缓冲区。
+ * @param samples CPU 专用的 512 点 DMA 副本；算法使用其中前 500 点测量。
  * @param frame_start_sample 此半区第一个样点的绝对采样点编号。
  * @return 无。
  */

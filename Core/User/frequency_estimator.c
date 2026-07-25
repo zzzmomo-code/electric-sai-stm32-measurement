@@ -19,6 +19,13 @@
  * 调用方法：frequency_estimator_push() 每次接收一个连续 ADC DMA 半区。
  */
 
+/*
+ * 本模块只负责“首次频率初值”，不直接完成持续锁相：
+ * 连续样点 -> 去直流 -> Hann（汉宁）窗 -> FFT（快速傅里叶变换）
+ * -> 主峰三点插值 -> 前后半段相位斜率细化 -> 毫赫兹频率。
+ * 返回后由 signal_separation.c 测量当前短帧相位，并交给 Q32 NCO/PLL 闭环。
+ */
+
 #if (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT)
 
 #define frequency_estimator_pi_f 3.14159265358979323846f
