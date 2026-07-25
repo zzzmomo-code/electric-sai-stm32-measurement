@@ -53,8 +53,6 @@ typedef struct
   float amplitude_adc;         /* 输入分量 ADC 峰值估计。 */
   float amplitude_dac;         /* 限幅后的 DAC 输出峰值。 */
   uint32_t phase_q32;          /* 输入分量在帧起点的 Q32 相位。 */
-  float mean_adc;              /* 长记录直流中心，仅供单信号低频过零锁相使用。 */
-  uint8_t low_frequency_path;  /* 1 表示首次识别使用了抽取低频长记录。 */
 } signal_component_t;
 
 typedef struct
@@ -66,26 +64,6 @@ typedef struct
   uint64_t sample_reference;   /* 相位参考的绝对采样点编号。 */
   int32_t last_error;          /* 最近一次有符号 Q32 相位误差。 */
 } signal_nco_state_t;
-
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
-typedef struct
-{
-  uint32_t center_adc;             /* 自适应输入中心电平。 */
-  uint32_t hysteresis_adc;         /* 上升过零的施密特迟滞半宽。 */
-  uint16_t previous_sample;        /* 上一个连续原始 ADC 样点。 */
-  uint16_t cycle_minimum;          /* 当前完整周期的最小样点。 */
-  uint16_t cycle_maximum;          /* 当前完整周期的最大样点。 */
-  uint8_t previous_valid;          /* previous_sample 是否连续有效。 */
-  uint8_t armed;                   /* 已经越过下门限，允许寻找下一次上升过零。 */
-  uint8_t candidate_valid;         /* 已记录中心上升穿越，等待越过上门限确认。 */
-  uint8_t last_crossing_valid;     /* 是否已有上一周期的确认过零时刻。 */
-  uint64_t previous_sample_index;  /* previous_sample 的绝对样点编号。 */
-  uint64_t monitor_start_sample;   /* 本次过零有效性监视的起始原始样点。 */
-  uint64_t candidate_crossing_q16; /* 待确认中心上升穿越，单位 1/65536 样点。 */
-  uint64_t last_crossing_q16;      /* 上一次确认过零，单位 1/65536 样点。 */
-  uint64_t filtered_period_q16;    /* 平滑后的周期，单位 1/65536 样点。 */
-} signal_low_lock_state_t;
-#endif
 
 /*
  * 三个 DMA 缓冲区必须：
@@ -132,9 +110,6 @@ static float tracking_step_cosine[2];
 /* 主循环拥有的分量、NCO 和统计状态。 */
 static signal_component_t active_component[2];
 static signal_nco_state_t nco_state[2];
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
-static signal_low_lock_state_t low_lock_state;
-#endif
 static uint32_t identify_frame_count;
 static uint8_t separation_identified;
 static int32_t output_phase_offset_deg = SIGSEP_PHASE_OFFSET_DEFAULT_DEG;
@@ -738,8 +713,6 @@ static uint8_t measure_components_dual_with_step(
 }
 #endif
 
-#if !((SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE) && \
-      (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT))
 /**
  * @brief 测量指定整数频率在任意长度数据中的幅值和相位。
  * @param samples ADC 分析帧。
@@ -821,7 +794,6 @@ static uint32_t frequency_distance_hz(uint32_t first_hz,
   return (first_hz >= second_hz) ?
          (first_hz - second_hz) : (second_hz - first_hz);
 }
-#endif
 
 #if (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_CONTINUOUS)
 /**
@@ -1066,8 +1038,6 @@ static float measure_segmented_amplitude(const uint16_t *samples,
 #endif
 #endif
 
-#if !((SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE) && \
-      (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT))
 /**
  * @brief 判断另一分量是否与当前基波的指定谐波重合。
  * @param other_frequency_hz 另一主分量频率。
@@ -1185,36 +1155,6 @@ static signal_wave_type_t detect_wave_type(const uint16_t *samples, float mean,
 
   return signal_wave_sine;
 }
-#endif
-
-#if ((SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE) && \
-     (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT))
-/**
- * @brief 用完整长记录的三次/五次谐波比例判别单信号波形。
- * @param harmonic3_ratio 三次谐波/基波幅值比；超出奈奎斯特时为 0。
- * @param harmonic5_ratio 五次谐波/基波幅值比；超出奈奎斯特时为 0。
- * @return 正弦波、三角波或方波。
- * @note 理想方波的 H3/H1=1/3、H5/H1=1/5；理想三角波分别为 1/9、1/25。
- *       两个判据取“任一可靠谐波超过门限”，从而在高频五次谐波不可测时仍可使用三次谐波。
- */
-static signal_wave_type_t detect_wave_type_from_long_record(
-  float harmonic3_ratio, float harmonic5_ratio)
-{
-  if ((harmonic3_ratio >= SIGSEP_SQUARE_H3_RATIO) ||
-      ((harmonic5_ratio >= SIGSEP_SQUARE_H5_RATIO) &&
-       (harmonic3_ratio >= (SIGSEP_SQUARE_H3_RATIO * 0.5f))))
-  {
-    return signal_wave_square;
-  }
-  if ((harmonic3_ratio >= SIGSEP_TRI_H3_RATIO) ||
-      ((harmonic5_ratio >= SIGSEP_TRI_H5_RATIO) &&
-       (harmonic3_ratio >= (SIGSEP_TRI_H3_RATIO * 0.5f))))
-  {
-    return signal_wave_triangle;
-  }
-  return signal_wave_sine;
-}
-#endif
 
 #if (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_GRID_5KHZ)
 /**
@@ -1537,7 +1477,6 @@ static uint8_t analyze_continuous_capture(
 static uint8_t analyze_frame(const uint16_t *samples,
                              signal_component_t output[2])
 {
-  memset(output, 0, 2U * sizeof(signal_component_t));
 #if (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_GRID_5KHZ)
   return analyze_grid_frame(samples, output);
 #elif (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_CONTINUOUS)
@@ -1580,9 +1519,7 @@ static uint8_t analyze_frame(const uint16_t *samples,
   return result;
 #else
   frequency_estimator_result_t estimate;
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
   float mean;
-#endif
   uint32_t channel;
 #if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
   const uint8_t requested_components = 1U;
@@ -1596,9 +1533,8 @@ static uint8_t analyze_frame(const uint16_t *samples,
     return 0U;
   }
 
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_DUAL_MIXED)
   mean = frame_mean(samples);
-#endif
+  memset(output, 0, 2U * sizeof(signal_component_t));
   for (channel = 0U; channel < requested_components; channel++)
   {
     output[channel].frequency_millihz =
@@ -1642,17 +1578,20 @@ static uint8_t analyze_frame(const uint16_t *samples,
                                     output[0].frequency_hz,
                                     output[1].amplitude_adc);
 #else
-  /*
-   * 单信号首次幅相和波形类型全部使用与判频相同的长记录。不能退回最后 500 点：
-   * 1 kHz 在 500 点内仅有 0.2 周期，会把纯基波投影成虚假的三次谐波。
-   */
-  output[0].amplitude_adc = estimate.amplitude_adc[0];
-  output[0].phase_q32 = estimate.phase_q32[0];
-  output[0].mean_adc = estimate.mean_adc;
-  output[0].low_frequency_path = estimate.low_frequency_path;
-  output[0].wave =
-    detect_wave_type_from_long_record(estimate.harmonic3_ratio[0],
-                                      estimate.harmonic5_ratio[0]);
+  {
+    float sine_step;
+    float cosine_step;
+
+    frequency_step_coefficients_millihz(
+      output[0].frequency_millihz, &sine_step, &cosine_step);
+    measure_component_with_step(
+      samples, SIGSEP_ANALYSIS_FRAME_LEN, mean,
+      sine_step, cosine_step,
+      &output[0].amplitude_adc, &output[0].phase_q32);
+  }
+  output[0].wave = detect_wave_type(samples, mean,
+                                    output[0].frequency_hz, 0U,
+                                    output[0].amplitude_adc);
 #endif
 
   for (channel = 0U; channel < requested_components; channel++)
@@ -1684,41 +1623,6 @@ static void nco_init(uint32_t channel, const signal_component_t *component,
   nco_state[channel].phase_reference = component->phase_q32;
   nco_state[channel].sample_reference = sample_start;
   nco_state[channel].last_error = 0;
-
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
-  if ((channel == 0U) &&
-      (component->low_frequency_path != 0U) &&
-      (component->frequency_hz <= SIGSEP_LOW_LOCK_MAX_HZ))
-  {
-    float hysteresis = component->amplitude_adc * 0.08f;
-
-    memset(&low_lock_state, 0, sizeof(low_lock_state));
-    if (component->mean_adc < 0.0f)
-    {
-      low_lock_state.center_adc = 0U;
-    }
-    else if (component->mean_adc > 65535.0f)
-    {
-      low_lock_state.center_adc = 65535U;
-    }
-    else
-    {
-      low_lock_state.center_adc =
-        (uint32_t)(component->mean_adc + 0.5f);
-    }
-    if (hysteresis < 64.0f)
-    {
-      hysteresis = 64.0f;
-    }
-    else if (hysteresis > 4096.0f)
-    {
-      hysteresis = 4096.0f;
-    }
-    low_lock_state.hysteresis_adc = (uint32_t)(hysteresis + 0.5f);
-    low_lock_state.cycle_minimum = UINT16_MAX;
-    low_lock_state.monitor_start_sample = sample_start;
-  }
-#endif
 }
 
 /**
@@ -2109,9 +2013,6 @@ static void reset_runtime_state(void)
   frequency_estimator_reset();
   memset(active_component, 0, sizeof(active_component));
   memset(nco_state, 0, sizeof(nco_state));
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
-  memset(&low_lock_state, 0, sizeof(low_lock_state));
-#endif
   memset(tracking_step_sine, 0, sizeof(tracking_step_sine));
   memset(tracking_step_cosine, 0, sizeof(tracking_step_cosine));
 
@@ -2249,254 +2150,6 @@ static void update_tracked_component(uint32_t channel,
 
 #if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
 /**
- * @brief 确认一次低频上升中点过零，并更新周期、NCO 频率和相位。
- * @param crossing_q16 过零绝对时刻，单位为 1/65536 个原始 ADC 样点。
- * @return 无。
- * @note 正弦、三角和方波在上升中点处都定义为相位 0，因此该相位检测器与三种
- *       DAC 重建波形共用同一相位基准，不依赖不足一周期的短帧正交拟合。
- */
-static void low_lock_accept_crossing(uint64_t crossing_q16)
-{
-  uint8_t period_valid = 0U;
-  int64_t target_correction = 0LL;
-  int32_t maximum_correction = 0;
-
-  if (low_lock_state.last_crossing_valid != 0U)
-  {
-    uint64_t measured_period_q16 =
-      crossing_q16 - low_lock_state.last_crossing_q16;
-    uint64_t expected_period_q16 =
-      (((uint64_t)SIGSEP_SAMPLE_RATE_HZ * 1000ULL) << 16U) /
-      (uint64_t)active_component[0].frequency_millihz;
-
-    if ((measured_period_q16 >= (expected_period_q16 / 2ULL)) &&
-        (measured_period_q16 <=
-         (expected_period_q16 + (expected_period_q16 / 2ULL))))
-    {
-      uint64_t measured_step;
-      maximum_correction =
-        (int32_t)(nco_state[0].nominal_step /
-                  SIGSEP_PLL_MAX_CORR_DIV);
-
-      if (low_lock_state.filtered_period_q16 == 0ULL)
-      {
-        low_lock_state.filtered_period_q16 = measured_period_q16;
-      }
-      else
-      {
-        low_lock_state.filtered_period_q16 =
-          ((low_lock_state.filtered_period_q16 * 3ULL) +
-           measured_period_q16) / 4ULL;
-      }
-
-      measured_step =
-        (1ULL << 48U) / low_lock_state.filtered_period_q16;
-      target_correction =
-        (int64_t)measured_step -
-        (int64_t)nco_state[0].nominal_step;
-      if (maximum_correction < 1)
-      {
-        maximum_correction = 1;
-      }
-      if (target_correction > (int64_t)maximum_correction)
-      {
-        target_correction = maximum_correction;
-      }
-      else if (target_correction < -(int64_t)maximum_correction)
-      {
-        target_correction = -(int64_t)maximum_correction;
-      }
-      period_valid = 1U;
-    }
-  }
-
-  /*
-   * 首次交越只建立相位和周期基准；已有基准后，只有落入 0.5T～1.5T
-   * 合法窗口的交越才能修正相位并刷新超时计时。这样噪声或振铃产生的
-   * 假交越不会让 DAC 瞬时跳相，也不会掩盖真正的失锁超时。
-   */
-  if ((low_lock_state.last_crossing_valid != 0U) &&
-      (period_valid == 0U))
-  {
-    return;
-  }
-
-  {
-    uint64_t crossing_sample = crossing_q16 >> 16U;
-    uint32_t crossing_fraction = (uint32_t)(crossing_q16 & 0xFFFFULL);
-    uint32_t predicted_at_sample =
-      nco_phase_at_sample(0U, crossing_sample);
-    uint32_t predicted_at_crossing =
-      predicted_at_sample +
-      (uint32_t)(((uint64_t)nco_step(0U) * crossing_fraction) >> 16U);
-    int32_t phase_error = (int32_t)(0U - predicted_at_crossing);
-
-    nco_state[0].integrator = 0;
-    nco_state[0].phase_reference =
-      predicted_at_sample + (uint32_t)(phase_error / 2);
-    nco_state[0].sample_reference = crossing_sample;
-    nco_state[0].last_error = phase_error;
-    active_component[0].phase_q32 = 0U;
-  }
-
-  /*
-   * 先用旧步进把 NCO 重基准到本次过零，再修改频率修正；若先改步进，
-   * nco_phase_at_sample() 会把新步进错误地追溯到整个旧参考区间并制造相位跳变。
-   */
-  if (period_valid != 0U)
-  {
-    nco_state[0].step_correction +=
-      (int32_t)((target_correction -
-                 (int64_t)nco_state[0].step_correction) / 4LL);
-  }
-
-  if ((period_valid != 0U) &&
-      (low_lock_state.cycle_maximum > low_lock_state.cycle_minimum))
-  {
-    float measured_amplitude =
-      ((float)low_lock_state.cycle_maximum -
-       (float)low_lock_state.cycle_minimum) * 0.5f;
-    float measured_center =
-      ((float)low_lock_state.cycle_maximum +
-       (float)low_lock_state.cycle_minimum) * 0.5f;
-    float hysteresis = measured_amplitude * 0.08f;
-
-    active_component[0].amplitude_adc +=
-      (measured_amplitude - active_component[0].amplitude_adc) /
-      (float)(1UL << SIGSEP_AMP_SMOOTH_SHIFT);
-    low_lock_state.center_adc = (uint32_t)(measured_center + 0.5f);
-    if (hysteresis < 64.0f)
-    {
-      hysteresis = 64.0f;
-    }
-    else if (hysteresis > 4096.0f)
-    {
-      hysteresis = 4096.0f;
-    }
-    low_lock_state.hysteresis_adc = (uint32_t)(hysteresis + 0.5f);
-    update_dac_amplitude(0U, 1U);
-  }
-
-  low_lock_state.last_crossing_q16 = crossing_q16;
-  low_lock_state.last_crossing_valid = 1U;
-  low_lock_state.monitor_start_sample = crossing_q16 >> 16U;
-  low_lock_state.cycle_minimum = UINT16_MAX;
-  low_lock_state.cycle_maximum = 0U;
-}
-
-/**
- * @brief 用带迟滞确认和线性插值的上升中点过零持续锁定 40 Hz～1 kHz 单信号。
- * @param samples 当前完整 512 点原始 ADC DMA 半区。
- * @param frame_start_sample 当前块首点绝对编号。
- * @return 无。
- */
-static void track_component_low_frequency(const uint16_t *samples,
-                                          uint64_t frame_start_sample)
-{
-  uint32_t lower_threshold =
-    (low_lock_state.center_adc > low_lock_state.hysteresis_adc) ?
-    (low_lock_state.center_adc - low_lock_state.hysteresis_adc) : 0U;
-  uint32_t upper_threshold =
-    low_lock_state.center_adc + low_lock_state.hysteresis_adc;
-  uint32_t index;
-
-  if (upper_threshold > UINT16_MAX)
-  {
-    upper_threshold = UINT16_MAX;
-  }
-  if (low_lock_state.previous_valid == 0U)
-  {
-    /*
-     * 首次识别的两次 FFT 可能让主循环积压很多 DMA 事件；超时监视必须从恢复
-     * 实时处理的第一块数据开始，而不是从执行 FFT 前的旧帧开始。
-     */
-    low_lock_state.monitor_start_sample = frame_start_sample;
-  }
-  if ((low_lock_state.previous_valid != 0U) &&
-      (frame_start_sample !=
-       (low_lock_state.previous_sample_index + 1ULL)))
-  {
-    low_lock_state.previous_valid = 0U;
-    low_lock_state.armed = 0U;
-    low_lock_state.candidate_valid = 0U;
-    low_lock_state.last_crossing_valid = 0U;
-    low_lock_state.filtered_period_q16 = 0ULL;
-    low_lock_state.monitor_start_sample = frame_start_sample;
-  }
-
-  for (index = 0U; index < SIGSEP_ADC_DMA_HALF_LEN; index++)
-  {
-    uint16_t sample = samples[index];
-    uint64_t sample_index = frame_start_sample + index;
-
-    if (sample < low_lock_state.cycle_minimum)
-    {
-      low_lock_state.cycle_minimum = sample;
-    }
-    if (sample > low_lock_state.cycle_maximum)
-    {
-      low_lock_state.cycle_maximum = sample;
-    }
-
-    if (sample <= lower_threshold)
-    {
-      low_lock_state.armed = 1U;
-      low_lock_state.candidate_valid = 0U;
-    }
-
-    if ((low_lock_state.previous_valid != 0U) &&
-        (low_lock_state.armed != 0U) &&
-        (low_lock_state.candidate_valid == 0U) &&
-        (low_lock_state.previous_sample < low_lock_state.center_adc) &&
-        (sample >= low_lock_state.center_adc) &&
-        (sample > low_lock_state.previous_sample))
-    {
-      uint32_t sample_delta =
-        (uint32_t)sample - (uint32_t)low_lock_state.previous_sample;
-      uint32_t center_delta =
-        low_lock_state.center_adc -
-        (uint32_t)low_lock_state.previous_sample;
-      uint32_t fraction_q16 =
-        (uint32_t)(((uint64_t)center_delta << 16U) / sample_delta);
-
-      low_lock_state.candidate_crossing_q16 =
-        ((sample_index - 1ULL) << 16U) + fraction_q16;
-      low_lock_state.candidate_valid = 1U;
-    }
-
-    if ((low_lock_state.candidate_valid != 0U) &&
-        (sample >= upper_threshold))
-    {
-      low_lock_accept_crossing(low_lock_state.candidate_crossing_q16);
-      low_lock_state.armed = 0U;
-      low_lock_state.candidate_valid = 0U;
-    }
-
-    low_lock_state.previous_sample = sample;
-    low_lock_state.previous_sample_index = sample_index;
-    low_lock_state.previous_valid = 1U;
-  }
-
-  {
-    uint64_t current_end_sample =
-      frame_start_sample + SIGSEP_ADC_DMA_HALF_LEN;
-    uint64_t expected_period_samples =
-      ((uint64_t)SIGSEP_SAMPLE_RATE_HZ * 1000ULL) /
-      (uint64_t)active_component[0].frequency_millihz;
-
-    /*
-     * 连续约 2.5 个周期没有确认过零，视为拔掉输入或波形超出门限，回到重新识别；
-     * 避免 PA4 永久沿用最后一次 NCO 频率继续输出一个看似“锁定”的旧波形。
-     */
-    if ((current_end_sample - low_lock_state.monitor_start_sample) >
-        ((expected_period_samples * 5ULL) / 2ULL))
-    {
-      signal_separation_restart_identify();
-    }
-  }
-}
-
-/**
  * @brief 用与双通道独立 PLL 相同的顺序跟踪单信号分量。
  * @param channel 待跟踪的输出通道索引，单信号模式固定为 0。
  * @param samples 当前 ADC 分析帧。
@@ -2620,15 +2273,7 @@ static void process_adc_frame(const uint16_t *samples,
      * 单信号模式与双通道独立 PLL 共用同一个通道跟踪函数，因此除只使用
      * 通道 0、只输出 PA4 外，测相、环路状态更新和幅度平滑顺序完全一致。
      */
-    if ((active_component[0].low_frequency_path != 0U) &&
-        (active_component[0].frequency_hz <= SIGSEP_LOW_LOCK_MAX_HZ))
-    {
-      track_component_low_frequency(samples, frame_start_sample);
-    }
-    else
-    {
-      track_component_independent(0U, samples, mean, frame_start_sample);
-    }
+    track_component_independent(0U, samples, mean, frame_start_sample);
 #else
 #if (SIGSEP_COMMON_SOURCE_LOCK != 0U)
     float measured_amplitude[2];
@@ -2814,9 +2459,6 @@ void signal_separation_restart_identify(void)
 
   separation_identified = 0U;
   identify_frame_count = 0U;
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
-  memset(&low_lock_state, 0, sizeof(low_lock_state));
-#endif
 #if (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_CONTINUOUS)
   identify_sample_count = 0U;
 #endif

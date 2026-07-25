@@ -15,13 +15,8 @@ static char async_message[160];
 #define uart_debug_frequency_mode_line \
   "frequency=continuous, coarse=5000Hz, fine=250Hz+PLL\r\n"
 #elif (SIGSEP_FREQUENCY_MODE == SIGSEP_FREQ_MODE_PRECISE_FFT)
-#if (SIGSEP_OPERATION_MODE == SIGSEP_MODE_SINGLE)
-#define uart_debug_frequency_mode_line \
-  "frequency=precise_fft, range=40..400000Hz, acquire=419ms\r\n"
-#else
 #define uart_debug_frequency_mode_line \
   "frequency=precise_fft, N=32768, Hann+peak+phase\r\n"
-#endif
 #else
 #define uart_debug_frequency_mode_line \
   "frequency=grid_5khz\r\n"

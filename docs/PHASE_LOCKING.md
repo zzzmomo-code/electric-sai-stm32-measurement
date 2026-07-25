@@ -7,28 +7,27 @@ DAC 重建”的完整流程。代码目标是：
 - PC0 输入两路信号的模拟叠加时，PA4、PA5 分别重建低频和高频分量；
 - 首次判频不再限制为 5 kHz 整数倍；
 - 原 5 kHz 栅格方案完整保留，出现问题时可以一行宏切回；
-- 1 kHz 以上沿用已经跑通的 Q32 NCO + PI PLL；40 Hz～1 kHz 只替换病态的
-  500 点测相器，改为带迟滞和插值的上升中点过零，Q32 NCO 和 DAC 时间轴不变。
+- 锁相闭环沿用已经跑通的 Q32 NCO + PI PLL，不因高精度判频而大改。
 
 ## 1. 一句话概括
 
-先用较长 ADC 记录同时得到频率、波形类型和首次相位，再把结果换成 Q32 相位步进；
-高频运行时用短帧最小二乘测相，低频运行时用上升中点过零测相和测周期，DAC 始终
-按照绝对样点时间生成未来半缓冲区，因此输入和输出不会持续相对漂移。
+先用较长 ADC 记录尽可能准确地得到频率初值，再把初值换成 Q32 相位步进；
+运行时每个 ADC 半帧重新测量输入相位，用带积分泄漏和积分器限幅的 PI
+环路微调 NCO 步进，DAC 则按照绝对样点时间生成未来半缓冲区，因此输入和输出
+不会持续相对漂移。
 
 ```mermaid
 flowchart LR
-    A["PC0 / ADC1<br/>2.5 MSPS"] --> B["原始 32768 点<br/>32 倍抽取 32768 点"]
-    B --> C["Hann FFT + 峰值插值<br/>长记录 H3/H1、H5/H1"]
-    C --> D["40 Hz～400 kHz<br/>频率、波形、首次相位"]
-    D --> E["mHz 初值 → Q32 NCO"]
-    E --> F{"频率 ≤ 1 kHz?"}
-    F -- "是" --> G["迟滞确认 + 插值上升过零<br/>周期/相位校正"]
-    F -- "否" --> H["500 点最小二乘测相<br/>双音联合拟合 + PI PLL"]
-    G --> I["按绝对样点时间预测相位"]
+    A["PC0 / ADC1<br/>2.5 MSPS"] --> B["32768 点连续记录"]
+    B --> C["去直流 + Hann 窗"]
+    C --> D["FFT 主峰 + 三点插值"]
+    D --> E["前后半段相位斜率细化"]
+    E --> F["mHz 初值 → Q32 NCO"]
+    F --> G["500 点带直流项最小二乘测相<br/>双音联合拟合"]
+    G --> H["PI PLL<br/>相位校正 + 步进校正"]
     H --> I["按绝对样点时间预测相位"]
     I --> J["DAC DMA 双缓冲<br/>PA4 / PA5"]
-    J -. "持续输出" .-> F
+    J -. "持续输出" .-> G
 ```
 
 ## 2. 输入、输出和默认模式
@@ -41,9 +40,9 @@ flowchart LR
 | DAC1 输出 | PA4 / DAC1_OUT1 |
 | DAC2 输出 | PA5 / DAC1_OUT2 |
 | ADC/DAC 共同触发 | TIM2 TRGO，2.5 MHz |
-| 工作模式 | `SIGSEP_MODE_SINGLE` |
+| 工作模式 | `SIGSEP_MODE_DUAL_MIXED` |
 | 判频模式 | `SIGSEP_FREQ_MODE_PRECISE_FFT` |
-| 默认判频范围 | 40 Hz～400 kHz |
+| 默认判频范围 | 1 kHz～250 kHz |
 | 双音最小建议间隔 | 4 kHz |
 
 单通道模式只使用 PA4，PA5 保持约 1.65 V 中点。双通道模式中 PA4 固定输出
@@ -97,35 +96,6 @@ FFT 频点间隔 = 2.5 MHz / 32768 ≈ 76.2939 Hz
 FFT 旋转因子、Hann 窗和相位相关振荡器都使用 M7 单精度 FPU 递推。为了避免
 32768 点递推产生模长漂移，代码每 256 点归一化一次。
 
-### 3.3 40 Hz 低频记录与 1～4 kHz 波形分类修复
-
-原始 32768 点只有 13.1072 ms，40 Hz 仅覆盖 0.524 周期；所以不能只把搜索
-下限宏改成 40。单信号模式在接收原始数据时，同时把每 32 点做一次盒式平均：
-
-```text
-低频采样率 = 2.5 MHz / 32 = 78.125 kSPS
-低频观察时间 = 32768 / 78.125 kSPS = 419.4304 ms
-低频 FFT 间隔 = 78.125 kSPS / 32768 ≈ 2.3842 Hz
-```
-
-原始记录搜索 1.2～400 kHz，抽取记录分析 40～1.5 kHz；最终只在抽取结果不高于
-1.2 kHz 且基波幅值足够可信时选择低频路径。0.3～1.2 kHz 方波在原始短记录中
-可能先出现 3、5、31 次谐波，这个“双路径幅值比较”可避免把谐波当成高频基波。
-
-旧代码虽然用 32768 点判频，最终却仍在最后 500 点上测 H3/H5。1、2、3、4 kHz
-分别只有 0.2、0.4、0.6、0.8 周期，纯正弦也会因非正交泄漏产生虚假 H3。
-现在 `fill_harmonic_profile()` 在同一段长记录上测量：
-
-```text
-正弦：H3/H1 ≈ 0
-三角：H3/H1 = 1/9，H5/H1 = 1/25
-方波：H3/H1 = 1/3，H5/H1 = 1/5
-```
-
-`frequency_estimator_result_t` 同时返回频率、最后一个原始 DMA 块首点相位、
-基波幅值、直流中心以及 H3/H1、H5/H1。低频 32 点平均的 15.5 样点群延迟也在
-`phase_at_last_raw_block()` 中补偿，因此首次 NCO 相位仍对应原始 ADC 时间轴。
-
 ## 4. 第二步：把频率初值送入 Q32 NCO
 
 代码入口：
@@ -164,8 +134,6 @@ static uint32_t phase_step_q32_millihz(uint32_t frequency_millihz)
 - `phase_from_iq()`
 - `track_component_independent()`
 - `track_components_independent_dual()`
-- `track_component_low_frequency()`
-- `low_lock_accept_crossing()`
 
 每个 ADC DMA 半区为 512 点，PLL 每 204.8 μs 更新一次：
 
@@ -178,7 +146,7 @@ PLL 更新频率 = 2.5 MHz / 512 ≈ 4.8828 kHz
 直接使用原相关公式，直流项和另一分量会泄漏进相位，造成低频相位偏差或双路
 PLL 相互拉扯。
 
-现在 1 kHz 以上的单通道每帧拟合：
+现在单通道每帧拟合：
 
 ```text
 x[n] = a × sin(ωn) + b × cos(ωn) + dc
@@ -188,8 +156,7 @@ phase = atan2(b, a)
 ```
 
 代码通过中心化 2×2 正规方程消去 `dc`。在原 5 kHz 正交频点上，它会自然
-退化为原相关结果；1 kHz 的 0.2 周期仍可工作，但到 40 Hz 时只有 0.008 周期，
-矩阵接近奇异，不能再靠降低行列式门限硬算。
+退化为原相关结果；在低频不足一个周期时仍能分开直流、正弦和余弦系数。
 
 双通道不是先后做两次独立相关，而是在同一个混合帧联合拟合：
 
@@ -205,21 +172,6 @@ x[n] =
 10 kHz + 14 kHz 等非正交双音不会把一个分量的相位泄漏到另一个 PLL。双路
 测相完成后，两个 PI/NCO 仍完全独立。若矩阵因异常配置接近奇异，本帧会被
 标为无效并冻结 PLL，不会退回已知会产生双音串扰的两次独立拟合。
-
-### 5.1 40 Hz～1 kHz 的上升中点过零锁相
-
-低频单信号使用输入长记录的直流均值作为中心，迟滞半宽初始取基波幅值的 8%：
-
-1. 样点先低于 `center - hysteresis`，检测器才进入 armed 状态；
-2. 上升穿过 `center` 时，在相邻 ADC 样点间做线性插值，保存 Q16 过零时刻；
-3. 随后必须达到 `center + hysteresis`，本次过零才确认，抑制中心附近噪声抖动；
-4. 相邻确认过零的 Q16 时间差给出周期，四分之一 IIR 平滑后换算 NCO 步进；
-5. 正弦、三角、方波的上升中点统一定义为相位 0，用该时刻校正 Q32 NCO 相位；
-6. 每个完整周期的最大/最小 ADC 值继续缓慢更新中心、迟滞和 DAC 幅值；
-7. 约 2.5 个预计周期没有确认过零，自动调用 `signal_separation_restart_identify()`。
-
-频率步进更新前，代码先用旧步进把 NCO 相位重基准到本次过零，再改变
-`step_correction`，避免把新频率错误地追溯应用到过去整个周期而产生相跳。
 
 ## 6. 第四步：PI 型数字 PLL
 
@@ -378,8 +330,6 @@ phase(play_sample) =
 | `prepare_spectrum()` | 去直流、Hann 窗、FFT |
 | `find_strongest_peak()` | 单/双主峰搜索 |
 | `refine_frequency_phase_millihz()` | 前后半段相位斜率细化 |
-| `fill_harmonic_profile()` | 长记录基波幅相和 H3/H1、H5/H1 |
-| `phase_at_last_raw_block()` | 抽取群延迟补偿并映射到原始 ADC 时间轴 |
 | `analyze_frame()` | 在三种判频模式之间分发 |
 | `nco_init()` | 用首次频率和相位初始化 NCO |
 | `measure_component_with_step()` | 单信号带直流项 2×2 最小二乘测幅、测相 |
@@ -388,8 +338,6 @@ phase(play_sample) =
 | `nco_update_lock()` | PI PLL、积分泄漏和限幅 |
 | `update_tracked_component()` | 有效幅度门控、PLL 更新和幅度平滑 |
 | `track_component_independent()` | 单通道闭环更新 |
-| `track_component_low_frequency()` | 40 Hz～1 kHz 迟滞/插值上升过零检测 |
-| `low_lock_accept_crossing()` | 低频周期平滑、NCO 步进和相位校正 |
 | `track_components_independent_dual()` | 双通道联合测相、独立闭环更新 |
 | `service_dac_halves()` | DAC 事件时间轴与安全半区选择 |
 | `fill_dac_half_signal()` | 按未来播放时刻生成 PA4/PA5 数据 |
@@ -407,9 +355,6 @@ nco_state[0].nominal_step
 nco_state[0].step_correction
 nco_state[0].last_error
 nco_state[0].integrator
-low_lock_state.center_adc
-low_lock_state.hysteresis_adc
-low_lock_state.filtered_period_q16
 adc_frame_overrun
 dac_half_overrun
 ```
@@ -434,11 +379,8 @@ signal_separation_restart_identify();
 
 - 2.5 MSPS 的理论奈奎斯特上限为 1.25 MHz，不存在不受采样率和模拟带宽限制的
   “无限任意频率”。
-- 单信号软件范围为 40 Hz～400 kHz。三类波形分类要求 H3 低于奈奎斯特，
-  因而理论统一上限约为 416.7 kHz；400 kHz 时 DAC 仅有 6.25 点/周期，实际
-  模拟带宽、H3 衰减和阶梯失真必须上板验证。
-- 40 Hz～1.2 kHz 首次识别使用约 419 ms 抽取记录；低频实时锁相只覆盖到
-  `SIGSEP_LOW_LOCK_MAX_HZ=1000`，1～1.2 kHz 仍可用长记录判频/分类并走原 PLL。
+- 默认把上限设为 250 kHz，使重建仍约有 10 点/周期；继续提高上限会明显降低
+  三角波和方波质量。
 - `frequency_millihz` 是数值分辨率，不等于实板绝对精度。内部 HSI 的频差、
   温漂、ADC 时钟误差、前端噪声和波形失真都会进入实际误差。
 - 双音相距小于 4 kHz、幅度差过大或输入削顶时，第二峰仍可能误判，需要更长

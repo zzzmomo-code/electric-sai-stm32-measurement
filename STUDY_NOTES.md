@@ -41,7 +41,7 @@ TIM2 (2.5MHz TRGO) ──┬─触发─> ADC1 (16-bit, PC0)
 |---|---|---|---|---|
 | `GRID_5KHZ` | 5kHz 栅格相关检测，4 帧平均 | ±2.5kHz | 小 | 已验证方案，5kHz 整数倍信号 |
 | `CONTINUOUS` | 5kHz 粗搜 + 4096 点细搜 + 250Hz 步进 + 抛物线插值 | ±125Hz | 中 | 任意频率，快速 |
-| `PRECISE_FFT` ⭐默认 | 原始/32 倍抽取两条 32768 点记录 + Hann FFT + 插值 + 相位斜率 | 结果格式 0.001 Hz | 大 | 40 Hz～400 kHz 高精度首次判频 |
+| `PRECISE_FFT` ⭐默认 | 32768 点 Hann 窗 FFT + 三点对数谱峰插值 + 前后相位斜率细化 | 结果格式 0.001 Hz | 大 | 高精度首次判频 |
 
 ### 2.3 锁相环（PLL）
 
@@ -49,14 +49,13 @@ TIM2 (2.5MHz TRGO) ──┬─触发─> ADC1 (16-bit, PC0)
 - **PI 型数字 PLL**：测相位误差 -> Kp + Ki 积分（带泄漏）-> 修正 phase_step
 - **捕获范围 ±2%**（HSI 精度差，扩大范围）
 - **积分限幅**：避免长期频差饱和
-- **单信号测相**：1kHz 以上用 500 点 2×2 中心化最小二乘；40Hz～1kHz 用迟滞/插值上升过零
+- **单信号测相**：500 点带直流项的 2×2 中心化最小二乘
 - **双信号测相**：同一混合帧 4×4 联合最小二乘，先消除双音非正交串扰，再分别更新两个 PLL
 - **低幅度门控**：信号低于有效阈值时冻结 PLL，避免积分噪声相位
 - **幅度平滑**：`amp += (measured - amp) / 8`（一阶低通）
 
 ### 2.4 波形识别
 
-- **单信号判波形记录**：与判频共用完整 32768 点长记录，不再使用最后 500 点
 - **正弦波**：三次/五次谐波幅度低于阈值
 - **三角波**：三次谐波 > 基波 × 6%（或五次 > 2.5%）
 - **方波**（仅单信号模式）：三次谐波 > 基波 × 22%
@@ -199,16 +198,14 @@ while (1) { system_process(); }
 
 | 宏 | 默认值 | 作用 |
 |---|---|---|
-| `SIGSEP_OPERATION_MODE` | `SINGLE` | 单信号/双信号模式 |
+| `SIGSEP_OPERATION_MODE` | `DUAL_MIXED` | 单信号/双信号模式 |
 | `SIGSEP_FREQUENCY_MODE` | `PRECISE_FFT` | 频率识别算法 |
 | `SIGSEP_SAMPLE_RATE_HZ` | `2500000` | 2.5 MSPS |
 | `SIGSEP_PHASE_OFFSET_DEFAULT_DEG` | `150` | DAC2 额外相位（0-180, 步进 5） |
 | `SIGSEP_COMMON_SOURCE_LOCK` | `0` | 0=双 PLL 独立；1=主从同源 |
 | `SIGSEP_PLL_MAX_CORR_DIV` | `50` | PLL 捕获范围 ±2% |
 | `SIGSEP_PRECISE_FFT_LEN` | `32768` | FFT 点数 |
-| `SIGSEP_PRECISE_FREQ_MIN_HZ` | `40` | 单信号搜索下限 |
-| `SIGSEP_PRECISE_FREQ_MAX_HZ` | `400000` | 三类波形统一实用候选上限 |
-| `SIGSEP_LOW_FREQ_DECIMATION` | `32` | 低频记录抽取倍数 |
+| `SIGSEP_PRECISE_FREQ_MAX_HZ` | `250000` | 搜索上限 |
 
 ## 9. 之前 phase_locking_test 修复路线图
 

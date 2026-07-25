@@ -20,7 +20,7 @@
 #define SIGSEP_MODE_DUAL_MIXED                 1U
 #define SIGSEP_MODE_SINGLE                     2U
 #ifndef SIGSEP_OPERATION_MODE
-#define SIGSEP_OPERATION_MODE                  SIGSEP_MODE_SINGLE
+#define SIGSEP_OPERATION_MODE                  SIGSEP_MODE_DUAL_MIXED
 #endif
 
 /*
@@ -89,24 +89,12 @@
 #define SIGSEP_DUAL_MIN_SEPARATION_HZ          4000U
 
 /*
- * 单信号高精度判频范围。
- * - 40 Hz～1 kHz 使用 32 倍抽取后的 32768 点长记录，观察时间约 0.419 s；
- * - 1 kHz 以上使用原始 2.5 MSPS 的 32768 点记录，观察时间约 13.1 ms；
- * - 400 kHz 时 DAC 仍有 6.25 点/周期，且三次谐波 1.2 MHz 尚未超过奈奎斯特频率，
- *   因此把需要区分正弦/三角/方波的统一实用上限设为 400 kHz。
- * 双混合信号模式仍从 1 kHz 开始，避免改变原题模式的频率搜索边界。
+ * 高精度首次判频范围。2.5 MSPS 的理论奈奎斯特上限为 1.25 MHz，但为了让
+ * 三角波/方波重建仍有至少约 10 个样点/周期，默认上限保守设为 250 kHz。
+ * 可按硬件带宽修改，但必须满足 0 < MIN < MAX < Fs/2。
  */
-#define SIGSEP_PRECISE_FREQ_MIN_HZ             40U
-#define SIGSEP_PRECISE_FREQ_MAX_HZ             400000U
-#define SIGSEP_DUAL_PRECISE_FREQ_MIN_HZ        1000U
-#define SIGSEP_DUAL_PRECISE_FREQ_MAX_HZ        250000U
-#define SIGSEP_LOW_FREQ_DECIMATION             32U
-#define SIGSEP_LOW_FREQ_SAMPLE_RATE_HZ         \
-  (SIGSEP_SAMPLE_RATE_HZ / SIGSEP_LOW_FREQ_DECIMATION)
-#define SIGSEP_LOW_FREQ_SWITCH_HZ              1200U
-#define SIGSEP_LOW_FREQ_ANALYSIS_MAX_HZ        1500U
-#define SIGSEP_LOW_LOCK_MAX_HZ                 1000U
-#define SIGSEP_LOW_PATH_MIN_DOMINANCE          0.25f
+#define SIGSEP_PRECISE_FREQ_MIN_HZ             1000U
+#define SIGSEP_PRECISE_FREQ_MAX_HZ             250000U
 
 /*
  * 32768 点对应 13.1072 ms 观测时间、76.2939 Hz 原始频点间隔。Hann 窗降低

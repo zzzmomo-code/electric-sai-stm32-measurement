@@ -15,12 +15,6 @@ typedef struct
 {
   uint8_t component_count;          /* 本次识别到的有效基波数量。 */
   uint32_t frequency_millihz[2];    /* 按频率升序排列，单位 0.001 Hz。 */
-  uint32_t phase_q32[2];            /* 输入在最后一块原始 ADC 数据首点处的 Q32 基波相位。 */
-  float amplitude_adc[2];           /* 长记录测得的基波峰值，单位为 ADC 码。 */
-  float harmonic3_ratio[2];         /* 三次谐波幅值与基波幅值之比。 */
-  float harmonic5_ratio[2];         /* 五次谐波幅值与基波幅值之比。 */
-  float mean_adc;                   /* 长记录直流平均值，供低频过零锁相设置中心门限。 */
-  uint8_t low_frequency_path;       /* 1 表示使用 32 倍抽取低频记录，0 表示原始采样记录。 */
 } frequency_estimator_result_t;
 
 /**
