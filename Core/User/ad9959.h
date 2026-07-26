@@ -31,11 +31,17 @@
 /** AD9959读寄存器时单次最大字节数，用于防止越界。 */
 #define AD9959_READ_MAX_BYTES 8u
 
-/** 临时总线探针开关：1表示每100ms重复固定CSR写入和FR1读取。 */
+/** 临时总线探针开关：1表示周期性重复固定CSR写入和FR1读取。 */
 #define AD9959_BUS_PROBE_ENABLE 1u
 
 /** 临时总线探针重复周期，单位ms。 */
-#define AD9959_BUS_PROBE_PERIOD_MS 100u
+#define AD9959_BUS_PROBE_PERIOD_MS 200u
+
+/** 临时总线探针每周期保持CS低电平的时间，单位ms，便于示波器和万用表确认。 */
+#define AD9959_BUS_PROBE_CS_LOW_MS 40u
+
+/** 临时总线探针固件签名，ASCII为“CS40”，用于确认目标板与当前ELF一致。 */
+#define AD9959_BUS_PROBE_SIGNATURE 0x43533430u
 
 /** 初始化回读不一致位：FR1 全局寄存器。 */
 #define AD9959_READBACK_MISMATCH_FR1      0x01u
@@ -88,6 +94,15 @@ typedef struct
     uint32_t bus_probe_count;            /**< 临时总线探针已执行的周期数。 */
     int32_t bus_probe_last_hal_status;   /**< 临时总线探针最近一次HAL SPI状态。 */
     uint8_t bus_probe_fr1[3];            /**< 临时总线探针最近一次读回的FR1字节。 */
+    uint32_t bus_probe_signature;        /**< 固件签名，必须等于AD9959_BUS_PROBE_SIGNATURE。 */
+    uint32_t bus_probe_cs_low_count;     /**< 已实际下达PD5拉低命令的次数。 */
+    uint32_t bus_probe_cs_low_tick;      /**< 最近一次PD5拉低命令的HAL毫秒时刻。 */
+    uint32_t bus_probe_cs_high_tick;     /**< 最近一次PD5恢复高电平的HAL毫秒时刻。 */
+    uint8_t bus_probe_state;             /**< 0=等待下一周期，1=正在保持CS低电平。 */
+    uint8_t bus_probe_cs_low_odr;        /**< 拉低后PD5的GPIO ODR位，期望为0。 */
+    uint8_t bus_probe_cs_low_idr;        /**< 拉低后PD5的GPIO IDR位，期望为0。 */
+    uint8_t bus_probe_cs_high_odr;       /**< 拉高后PD5的GPIO ODR位，期望为1。 */
+    uint8_t bus_probe_cs_high_idr;       /**< 拉高后PD5的GPIO IDR位，期望为1。 */
 } ad9959_diagnostics_t;
 
 /** AD9959运行诊断快照。 */
@@ -150,8 +165,8 @@ ad9959_status_t ad9959_read_register(uint8_t address, uint8_t *data,
  * @brief 周期执行便于示波器触发的固定SPI写入和读取。
  * @param 无。
  * @return 无，执行次数、HAL状态和FR1数据保存在ad9959_diagnostics。
- * @note 启用AD9959_BUS_PROBE_ENABLE后每100ms发送一次CSR写帧00 12，
- *       随后发送FR1读指令81并读取3字节；仅在主循环调用。
+ * @note 启用AD9959_BUS_PROBE_ENABLE后每200ms先把CS保持低电平40ms，
+ *       再发送CSR写帧00 12，随后发送FR1读指令81并读取3字节；仅在主循环调用。
  */
 void ad9959_bus_probe_process(void);
 

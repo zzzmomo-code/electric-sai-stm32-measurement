@@ -139,7 +139,9 @@ class DdsContractTest(unittest.TestCase):
             "#define AD9959_MAX_OUTPUT_HZ 200000000u",
             "#define AD9959_AMPLITUDE_MAX 1023u",
             "#define AD9959_BUS_PROBE_ENABLE 1u",
-            "#define AD9959_BUS_PROBE_PERIOD_MS 100u",
+            "#define AD9959_BUS_PROBE_PERIOD_MS 200u",
+            "#define AD9959_BUS_PROBE_CS_LOW_MS 40u",
+            "#define AD9959_BUS_PROBE_SIGNATURE 0x43533430u",
             "#define AD9959_READBACK_MISMATCH_FR1      0x01u",
             "#define AD9959_READBACK_MISMATCH_CH1_FTW  0x10u",
             "extern volatile ad9959_diagnostics_t ad9959_diagnostics;",
@@ -190,6 +192,11 @@ class DdsContractTest(unittest.TestCase):
             "void ad9959_bus_probe_process(void)",
             "uint8_t csr_frame[2] = {",
             "HAL_SPI_Transmit(&hspi4, csr_frame, 2u,",
+            "ad9959_diagnostics.bus_probe_cs_low_count++;",
+            "ad9959_diagnostics.bus_probe_cs_low_odr",
+            "ad9959_diagnostics.bus_probe_cs_low_idr",
+            "ad9959_diagnostics.bus_probe_cs_high_odr",
+            "ad9959_diagnostics.bus_probe_cs_high_idr",
             "ad9959_diagnostics.bus_probe_count++;",
         )
         for text in required:
@@ -223,6 +230,43 @@ class DdsContractTest(unittest.TestCase):
 
         system_source = read_text("Core/User/system.c")
         self.assertIn("ad9959_bus_probe_process();", system_source)
+
+    def test_ad9959_bus_probe_stretches_cs_and_samples_pd5(self) -> None:
+        header = read_text("Core/User/ad9959.h")
+        source = read_text("Core/User/ad9959.c")
+        probe_source = source.split("void ad9959_bus_probe_process(void)", 1)[1]
+
+        for text in (
+            "uint32_t bus_probe_signature;",
+            "uint32_t bus_probe_cs_low_count;",
+            "uint32_t bus_probe_cs_low_tick;",
+            "uint32_t bus_probe_cs_high_tick;",
+            "uint8_t bus_probe_state;",
+            "uint8_t bus_probe_cs_low_odr;",
+            "uint8_t bus_probe_cs_low_idr;",
+            "uint8_t bus_probe_cs_high_odr;",
+            "uint8_t bus_probe_cs_high_idr;",
+        ):
+            self.assertIn(text, header)
+
+        for text in (
+            "ad9959_bus_probe_state == AD9959_BUS_PROBE_STATE_CS_LOW",
+            "< AD9959_BUS_PROBE_CS_LOW_MS",
+            "HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);",
+            "AD9959_CS_GPIO_Port->ODR",
+            "AD9959_CS_GPIO_Port->IDR",
+            "__DSB();",
+        ):
+            self.assertIn(text, probe_source)
+
+        initial_low = probe_source.rindex(
+            "HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);"
+        )
+        low_state = probe_source.index(
+            "ad9959_bus_probe_state = AD9959_BUS_PROBE_STATE_CS_LOW;",
+            initial_low,
+        )
+        self.assertLess(initial_low, low_state)
 
     def test_ad9959_guide_keeps_power_down_control_low(self) -> None:
         guide = read_text("docs/AD9959上板测试指南.md")

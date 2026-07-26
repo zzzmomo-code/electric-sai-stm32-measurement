@@ -30,6 +30,12 @@
 /** SPI 阻塞超时，单位 ms */
 #define AD9959_SPI_TIMEOUT_MS 10u
 
+/** 临时总线探针状态：等待下一次可观测脉冲。 */
+#define AD9959_BUS_PROBE_STATE_WAITING 0u
+
+/** 临时总线探针状态：CS已经拉低，正在保持可观测低电平。 */
+#define AD9959_BUS_PROBE_STATE_CS_LOW 1u
+
 /** ACR 寄存器中 bit12 启用手动幅度控制 */
 #define AD9959_ACR_AMPLITUDE_ENABLE 0x10u
 
@@ -60,6 +66,12 @@ volatile ad9959_diagnostics_t ad9959_diagnostics;
 
 /** 临时总线探针最近一次执行时刻，单位ms，仅由主循环访问。 */
 static uint32_t ad9959_bus_probe_last_ms;
+
+/** 临时总线探针最近一次拉低CS的时刻，单位ms，仅由主循环访问。 */
+static uint32_t ad9959_bus_probe_cs_low_started_ms;
+
+/** 临时总线探针状态，仅由主循环访问。 */
+static uint8_t ad9959_bus_probe_state;
 
 /**
  * @brief 产生 IO_UPDATE 上升沿，将影子寄存器内容加载到实际工作寄存器。
@@ -346,7 +358,19 @@ ad9959_status_t ad9959_init(void)
     ad9959_diagnostics.bus_probe_fr1[0] = 0u;
     ad9959_diagnostics.bus_probe_fr1[1] = 0u;
     ad9959_diagnostics.bus_probe_fr1[2] = 0u;
-    ad9959_bus_probe_last_ms = HAL_GetTick();
+    ad9959_diagnostics.bus_probe_signature = AD9959_BUS_PROBE_SIGNATURE;
+    ad9959_diagnostics.bus_probe_cs_low_count = 0u;
+    ad9959_diagnostics.bus_probe_cs_low_tick = 0u;
+    ad9959_diagnostics.bus_probe_cs_high_tick = 0u;
+    ad9959_diagnostics.bus_probe_state = AD9959_BUS_PROBE_STATE_WAITING;
+    ad9959_diagnostics.bus_probe_cs_low_odr = 1u;
+    ad9959_diagnostics.bus_probe_cs_low_idr = 1u;
+    ad9959_diagnostics.bus_probe_cs_high_odr = 1u;
+    ad9959_diagnostics.bus_probe_cs_high_idr = 1u;
+    ad9959_bus_probe_state = AD9959_BUS_PROBE_STATE_WAITING;
+    ad9959_bus_probe_cs_low_started_ms = 0u;
+    /* 让system_process()第一次调用时立即开始40ms低电平，避免上电后再等待一个周期。 */
+    ad9959_bus_probe_last_ms = HAL_GetTick() - AD9959_BUS_PROBE_PERIOD_MS;
     for (index = 0u; index < 3u; index++)
     {
         ad9959_diagnostics.fr1_readback[index] = 0u;
@@ -626,8 +650,10 @@ ad9959_status_t ad9959_read_register(uint8_t address, uint8_t *data,
  * @brief 周期发送固定SPI帧，便于示波器稳定触发并逐线检查总线。
  * @param 无。
  * @return 无，诊断结果写入ad9959_diagnostics。
- * @note 每100ms先在一个CS低脉冲内发送00 12（CSR地址+CH0三线模式），
- *       再在下一个CS低脉冲内发送81并读取3字节FR1。探针写入不计入write_count。
+ * @note 每200ms先把CS保持低电平40ms，再发送00 12（CSR地址+CH0三线模式），
+ *       随后在下一个CS低脉冲内发送81并读取3字节FR1。拉低/拉高后分别采样
+ *       GPIOD ODR和IDR，用于区分固件、GPIO配置、外部电平冲突与测点问题。
+ *       探针写入不计入write_count。
  */
 void ad9959_bus_probe_process(void)
 {
@@ -642,6 +668,64 @@ void ad9959_bus_probe_process(void)
     uint8_t dummy[3] = { 0u, 0u, 0u };
     uint8_t readback[3] = { 0u, 0u, 0u };
 
+    if (ad9959_bus_probe_state == AD9959_BUS_PROBE_STATE_CS_LOW)
+    {
+        /* 在整个保持窗口内持续记录实际寄存器状态，确认PD5没有被其他代码改回高电平。 */
+        ad9959_diagnostics.bus_probe_cs_low_odr =
+            ((AD9959_CS_GPIO_Port->ODR & (uint32_t)AD9959_CS_Pin) != 0u)
+            ? 1u : 0u;
+        ad9959_diagnostics.bus_probe_cs_low_idr =
+            ((AD9959_CS_GPIO_Port->IDR & (uint32_t)AD9959_CS_Pin) != 0u)
+            ? 1u : 0u;
+
+        if ((uint32_t)(now_ms - ad9959_bus_probe_cs_low_started_ms)
+            < AD9959_BUS_PROBE_CS_LOW_MS)
+        {
+            return;
+        }
+
+        /* CS已经稳定保持低电平40ms；此时发送固定写帧，再恢复高电平。 */
+        hal_status = HAL_SPI_Transmit(&hspi4, csr_frame, 2u,
+                                      AD9959_SPI_TIMEOUT_MS);
+        HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_SET);
+        if (hal_status == HAL_OK)
+        {
+            ad9959_io_update();
+
+            HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin,
+                              GPIO_PIN_RESET);
+            hal_status = HAL_SPI_Transmit(&hspi4, &read_header, 1u,
+                                          AD9959_SPI_TIMEOUT_MS);
+            if (hal_status == HAL_OK)
+            {
+                hal_status = HAL_SPI_TransmitReceive(&hspi4, dummy, readback,
+                                                     3u,
+                                                     AD9959_SPI_TIMEOUT_MS);
+            }
+            HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin,
+                              GPIO_PIN_SET);
+        }
+
+        /* 确保所有外设寄存器写入在采样ODR/IDR之前完成。 */
+        __DSB();
+        ad9959_diagnostics.bus_probe_cs_high_tick = HAL_GetTick();
+        ad9959_diagnostics.bus_probe_cs_high_odr =
+            ((AD9959_CS_GPIO_Port->ODR & (uint32_t)AD9959_CS_Pin) != 0u)
+            ? 1u : 0u;
+        ad9959_diagnostics.bus_probe_cs_high_idr =
+            ((AD9959_CS_GPIO_Port->IDR & (uint32_t)AD9959_CS_Pin) != 0u)
+            ? 1u : 0u;
+        ad9959_bus_probe_state = AD9959_BUS_PROBE_STATE_WAITING;
+        ad9959_diagnostics.bus_probe_state =
+            AD9959_BUS_PROBE_STATE_WAITING;
+        ad9959_diagnostics.bus_probe_last_hal_status = (int32_t)hal_status;
+        ad9959_diagnostics.bus_probe_fr1[0] = readback[0];
+        ad9959_diagnostics.bus_probe_fr1[1] = readback[1];
+        ad9959_diagnostics.bus_probe_fr1[2] = readback[2];
+        ad9959_diagnostics.bus_probe_count++;
+        return;
+    }
+
     if ((uint32_t)(now_ms - ad9959_bus_probe_last_ms)
         < AD9959_BUS_PROBE_PERIOD_MS)
     {
@@ -649,29 +733,22 @@ void ad9959_bus_probe_process(void)
     }
     ad9959_bus_probe_last_ms = now_ms;
 
+    /*
+     * 先只拉低CS并立即返回主循环，下一阶段至少40ms后才发送SPI。
+     * 这样PD5不是微秒脉冲，单次下降沿触发和普通万用表都能观察到。
+     */
     HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);
-    hal_status = HAL_SPI_Transmit(&hspi4, csr_frame, 2u,
-                                  AD9959_SPI_TIMEOUT_MS);
-    HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_SET);
-    if (hal_status == HAL_OK)
-    {
-        ad9959_io_update();
-
-        HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);
-        hal_status = HAL_SPI_Transmit(&hspi4, &read_header, 1u,
-                                      AD9959_SPI_TIMEOUT_MS);
-        if (hal_status == HAL_OK)
-        {
-            hal_status = HAL_SPI_TransmitReceive(&hspi4, dummy, readback, 3u,
-                                                 AD9959_SPI_TIMEOUT_MS);
-        }
-        HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_SET);
-    }
-
-    ad9959_diagnostics.bus_probe_last_hal_status = (int32_t)hal_status;
-    ad9959_diagnostics.bus_probe_fr1[0] = readback[0];
-    ad9959_diagnostics.bus_probe_fr1[1] = readback[1];
-    ad9959_diagnostics.bus_probe_fr1[2] = readback[2];
-    ad9959_diagnostics.bus_probe_count++;
+    __DSB();
+    ad9959_bus_probe_cs_low_started_ms = now_ms;
+    ad9959_bus_probe_state = AD9959_BUS_PROBE_STATE_CS_LOW;
+    ad9959_diagnostics.bus_probe_state = AD9959_BUS_PROBE_STATE_CS_LOW;
+    ad9959_diagnostics.bus_probe_cs_low_tick = now_ms;
+    ad9959_diagnostics.bus_probe_cs_low_odr =
+        ((AD9959_CS_GPIO_Port->ODR & (uint32_t)AD9959_CS_Pin) != 0u)
+        ? 1u : 0u;
+    ad9959_diagnostics.bus_probe_cs_low_idr =
+        ((AD9959_CS_GPIO_Port->IDR & (uint32_t)AD9959_CS_Pin) != 0u)
+        ? 1u : 0u;
+    ad9959_diagnostics.bus_probe_cs_low_count++;
 #endif
 }
