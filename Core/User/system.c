@@ -7,10 +7,10 @@
  * 模块用途：集中调用用户模块初始化函数，避免在 main.c 中堆放业务逻辑。
  * GPIO 引脚映射：PA4/DAC1_OUT1、PC4/ADC1_INP4、PB1/ADC2_INP5、PA0/TIM5_CH1，
  * PB12/AD9834_FSYNC、PB13/SPI2_SCK、PB15/SPI2_MOSI、
- * PB14/AD9834_FSELECT、PD8/AD9834_PSELECT；第二块AD9834使用PB3/SPI6_SCK、
- * PB5/SPI6_MOSI、PD5/FSYNC、PD6/FSELECT、PD7/PSELECT和PB4/RESET。
+ * PB14/AD9834_FSELECT、PD8/AD9834_PSELECT；AD9959 使用 PE2/SPI4_SCK、
+ * PE5/SPI4_MISO、PE6/SPI4_MOSI、PD5/CS、PD4/IO_UPDATE 和 PB4/RESET。
  * 依赖的外设和 CubeIDE 配置：依赖DAC1、ADC1/ADC2、TIM2、TIM3、TIM5、SPI2、
- * SPI6、DMA和NVIC；
+ * SPI4、DMA和NVIC；
  * 串口屏继续依赖 USART1，9600 8N1，接收使用全局中断,轮询发送且不使用 USART DMA。
  * 初始化方法：在 main.c 的 USER CODE BEGIN 2 区域调用 system_init()。
  * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
@@ -71,8 +71,8 @@ static void hmi_tjc_publish_self_test(void)
  * @brief 初始化全部用户功能模块。
  * @param 无。
  * @return 无。
- * @note 先初始化FFT的DWT诊断，再启动频率测量和两块AD9834；
- * 第二块初始化失败时由ad9834_2_diagnostics记录并保持硬件复位。
+ * @note 先初始化FFT的DWT诊断，再启动频率测量、第一块AD9834和AD9959；
+ * AD9959初始化结果保存在ad9959_diagnostics，回读失败不会阻塞其他模块。
  */
 void system_init(void)
 {
@@ -81,7 +81,7 @@ void system_init(void)
     measurement_fft_init();
     frequency_measure_init();
     dds_control_init();
-    (void)ad9834_2_init(900000u);
+    (void)ad9959_init();
     hmi_tjc_init();
 #if defined(SYSTEM_USART1_AVAILABLE)
     hmi_tjc_bind_uart(&huart1);

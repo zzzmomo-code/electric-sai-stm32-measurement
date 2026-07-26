@@ -54,7 +54,7 @@ class DdsContractTest(unittest.TestCase):
             self.assertEqual([], excluded_hal)
 
     def test_ioc_matches_ad9834_spi_contract(self) -> None:
-        ioc = read_text("h743_pre1.ioc")
+        ioc = read_text("dds2.ioc")
 
         required_lines = (
             "PB12.GPIO_Label=DDS_FSYNC",
@@ -93,73 +93,131 @@ class DdsContractTest(unittest.TestCase):
         self.assertNotIn("DDS_SetFrequency", first_header)
         self.assertNotIn("DDS_SetFrequency", first_source)
 
-    def test_ioc_matches_second_ad9834_spi6_contract(self) -> None:
-        ioc = read_text("h743_pre1.ioc")
+    def test_project_and_ioc_names_are_both_dds2(self) -> None:
+        project = read_text(".project")
+        cproject = read_text(".cproject")
+        ioc = read_text("dds2.ioc")
+
+        self.assertIn("<name>dds2</name>", project)
+        self.assertIn('name="dds2"', cproject)
+        self.assertIn("ProjectManager.ProjectFileName=dds2.ioc", ioc)
+        self.assertIn("ProjectManager.ProjectName=dds2", ioc)
+        self.assertIn("ProjectManager.TargetToolchain=STM32CubeIDE", ioc)
+        self.assertFalse((ROOT / "EWARM").exists())
+        self.assertNotIn("workspace_loc:/h743_pre1", cproject)
+
+    def test_ioc_matches_ad9959_spi4_contract(self) -> None:
+        ioc = read_text("dds2.ioc")
         spi_source = read_text("Core/Src/spi.c")
         main = read_text("Core/Src/main.c")
 
         required_lines = (
-            "PB3\\ (JTDO/TRACESWO).Signal=SPI6_SCK",
-            "PB4\\ (NJTRST).GPIO_Label=DDS2_RST",
-            "PB5.Signal=SPI6_MOSI",
-            "PD5.GPIO_Label=DDS2_FSYNC",
+            "Mcu.CPN=STM32H743VIT6",
+            "PE2.Signal=SPI4_SCK",
+            "PE5.Signal=SPI4_MISO",
+            "PE6.Signal=SPI4_MOSI",
+            "PE2.GPIO_Speed=GPIO_SPEED_FREQ_MEDIUM",
+            "PE5.GPIO_Speed=GPIO_SPEED_FREQ_MEDIUM",
+            "PE6.GPIO_Speed=GPIO_SPEED_FREQ_MEDIUM",
+            "PB4\\ (NJTRST).GPIO_Label=AD9959_RESET",
+            "PD4.GPIO_Label=AD9959_IO_UPDATE",
+            "PD5.GPIO_Label=AD9959_CS",
             "PD5.PinState=GPIO_PIN_SET",
-            "PD6.GPIO_Label=DDS2_FS",
-            "PD7.GPIO_Label=DDS2_PS",
-            "SPI6.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_4",
-            "SPI6.CLKPolarity=SPI_POLARITY_HIGH",
-            "SPI6.DataSize=SPI_DATASIZE_16BIT",
-            "SPI6.Direction=SPI_DIRECTION_2LINES_TXONLY",
+            "SPI4.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_8",
+            "SPI4.CalculateBaudRate=15.0 MBits/s",
+            "SPI4.DataSize=SPI_DATASIZE_8BIT",
+            "SPI4.Direction=SPI_DIRECTION_2LINES",
+            "SPI4.MasterKeepIOState=SPI_MASTER_KEEP_IO_STATE_ENABLE",
         )
         for line in required_lines:
             self.assertIn(line, ioc)
-        self.assertIn("hspi6.Init.CLKPhase = SPI_PHASE_1EDGE;", spi_source)
-        self.assertLess(main.index("MX_SPI6_Init();"), main.index("system_init();"))
+        self.assertNotIn("SPI6.", ioc)
+        self.assertNotIn(".Signal=SPI6_", ioc)
+        self.assertNotIn("PD6.GPIO_Label=DDS2_FS", ioc)
+        self.assertNotIn("PD7.GPIO_Label=DDS2_PS", ioc)
+        self.assertIn("hspi4.Init.CLKPolarity = SPI_POLARITY_LOW;", spi_source)
+        self.assertIn("hspi4.Init.CLKPhase = SPI_PHASE_1EDGE;", spi_source)
+        self.assertIn("hspi4.Init.DataSize = SPI_DATASIZE_8BIT;", spi_source)
+        self.assertIn("GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_MEDIUM;", spi_source)
+        self.assertIn(
+            "hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;",
+            spi_source,
+        )
+        self.assertNotIn("MX_SPI6_Init", spi_source)
+        self.assertLess(main.index("MX_SPI4_Init();"), main.index("system_init();"))
 
-    def test_second_driver_declares_independent_public_api(self) -> None:
-        header_path = ROOT / "Core/User/ad9834_2.h"
+    def test_second_ad9834_spi6_driver_is_removed(self) -> None:
+        self.assertFalse((ROOT / "Core/User/ad9834_2.h").exists())
+        self.assertFalse((ROOT / "Core/User/ad9834_2.c").exists())
 
-        self.assertTrue(header_path.is_file(), "第二块 AD9834 头文件尚未创建")
+        active_sources = "\n".join(
+            read_text(path)
+            for path in (
+                "Core/User/system.h",
+                "Core/User/system.c",
+                "Core/Src/main.c",
+                "Core/Src/spi.c",
+                "Core/Inc/spi.h",
+            )
+        )
+        for obsolete in ("ad9834_2", "hspi6", "MX_SPI6_Init", "DDS2_"):
+            self.assertNotIn(obsolete, active_sources)
+
+    def test_ad9959_driver_declares_dual_channel_bidirectional_api(self) -> None:
+        header_path = ROOT / "Core/User/ad9959.h"
+
+        self.assertTrue(header_path.is_file(), "AD9959 头文件尚未创建")
         header = header_path.read_text(encoding="utf-8")
         required = (
-            "#define AD9834_2_MCLK_HZ 75000000u",
-            "#define AD9834_2_MAX_OUTPUT_HZ 30000000u",
-            "extern volatile ad9834_2_diagnostics_t ad9834_2_diagnostics;",
-            "ad9834_2_status_t ad9834_2_init(uint32_t initial_frequency_hz);",
-            "ad9834_2_status_t ad9834_2_set_frequency_hz(uint32_t frequency_hz);",
-            "ad9834_2_set_frequency_register_hz",
-            "ad9834_2_set_phase_register_degrees",
-            "ad9834_2_select_frequency_register",
-            "ad9834_2_select_phase_register",
-            "ad9834_2_calculate_tuning_word",
-            "ad9834_2_status_t dds2_set_frequency(uint32_t frequency_hz);",
+            "#define AD9959_SYSTEM_CLOCK_HZ 500000000u",
+            "#define AD9959_INITIAL_FREQUENCY_HZ 1000000u",
+            "ad9959_channel_0 = 0",
+            "ad9959_channel_1 = 1",
+            "extern volatile ad9959_diagnostics_t ad9959_diagnostics;",
+            "ad9959_status_t ad9959_init(void);",
+            "ad9959_set_frequency",
+            "ad9959_set_phase_degrees",
+            "ad9959_set_amplitude",
+            "ad9959_read_register",
+            "ad9959_verify_configuration",
         )
         for text in required:
             self.assertIn(text, header)
 
-    def test_second_driver_uses_spi6_and_dedicated_gpio(self) -> None:
-        source_path = ROOT / "Core/User/ad9834_2.c"
+    def test_ad9959_driver_uses_one_complete_hal_transaction_per_frame(self) -> None:
+        source_path = ROOT / "Core/User/ad9959.c"
 
-        self.assertTrue(source_path.is_file(), "第二块 AD9834 源文件尚未创建")
+        self.assertTrue(source_path.is_file(), "AD9959 源文件尚未创建")
         source = source_path.read_text(encoding="utf-8")
         required = (
-            "HAL_SPI_Transmit(&hspi6",
-            "DDS2_FSYNC_GPIO_Port",
-            "DDS2_FSYNC_Pin",
-            "DDS2_FS_GPIO_Port",
-            "DDS2_FS_Pin",
-            "DDS2_PS_GPIO_Port",
-            "DDS2_PS_Pin",
-            "DDS2_RST_GPIO_Port",
-            "DDS2_RST_Pin",
-            "AD9834_2_FREQ0_ADDRESS  0x4000u",
-            "AD9834_2_FREQ1_ADDRESS  0x8000u",
-            "AD9834_2_PHASE0_ADDRESS 0xC000u",
-            "AD9834_2_PHASE1_ADDRESS 0xE000u",
+            "HAL_SPI_Transmit(&hspi4, frame, length",
+            "HAL_SPI_TransmitReceive(&hspi4",
+            "AD9959_READ_INSTRUCTION",
+            "0x12u, 0x22u, 0x42u, 0x82u",
+            "{0x00u, 0x03u, 0xC2u}",
+            "ad9959_csr_all_channels = 0xF2u",
+            "ad9959_delay_us(2u);",
         )
         for text in required:
             self.assertIn(text, source)
-        self.assertNotIn("&hspi2", source)
+        self.assertEqual(1, source.count("HAL_SPI_Transmit(&hspi4"))
+        self.assertEqual(1, source.count("HAL_SPI_TransmitReceive(&hspi4"))
+        self.assertNotIn("HAL_SPI_Transmit(&hspi4, &", source)
+        self.assertNotIn("&hspi6", source)
+
+    def test_ad9959_math_contract(self) -> None:
+        ftw_1mhz = (
+            1_000_000 * (1 << 32) + 500_000_000 // 2
+        ) // 500_000_000
+        phase_90 = (90 * 16384 + 180) // 360
+
+        self.assertEqual(0x0083126F, ftw_1mhz)
+        self.assertEqual(0x1000, phase_90)
+
+        source = read_text("Core/User/ad9959.c")
+        self.assertIn("UINT64_C(0x100000000)", source)
+        self.assertIn("(AD9959_SYSTEM_CLOCK_HZ / 2u)", source)
+        self.assertIn("((uint32_t)phase_degrees * 16384u) + 180u", source)
 
     def test_driver_uses_75mhz_ftw_and_manual_fsync(self) -> None:
         header = read_text("Core/User/ad9834.h")
@@ -557,14 +615,14 @@ int main(void)
             init_body.group("body").index("dds_control_init();"),
         )
 
-    def test_system_initializes_second_ad9834_after_spi6(self) -> None:
+    def test_system_initializes_ad9959_after_spi4(self) -> None:
         main = read_text("Core/Src/main.c")
         system_header = read_text("Core/User/system.h")
         system_source = read_text("Core/User/system.c")
 
-        self.assertLess(main.index("MX_SPI6_Init();"), main.index("system_init();"))
-        self.assertIn('#include "ad9834_2.h"', system_header)
-        self.assertIn("(void)ad9834_2_init(900000u);", system_source)
+        self.assertLess(main.index("MX_SPI4_Init();"), main.index("system_init();"))
+        self.assertIn('#include "ad9959.h"', system_header)
+        self.assertIn("(void)ad9959_init();", system_source)
 
 
 if __name__ == "__main__":

@@ -116,7 +116,6 @@ int main(void)
   MX_SPI3_Init();
   MX_USART2_UART_Init();
   MX_TIM1_Init();
-  MX_SPI6_Init();
   MX_TIM4_Init();
   MX_SPI4_Init();
   MX_TIM8_Init();

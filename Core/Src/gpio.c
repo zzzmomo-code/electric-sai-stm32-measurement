@@ -58,15 +58,14 @@ void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(DDS_FSYNC_GPIO_Port, DDS_FSYNC_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, FS_Pin|DDS2_RST_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, FS_Pin|AD9959_RESET_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, PS_Pin|DDS_RST_Pin|relay3_Pin|relay_1_Pin
-                          |relay_2_Pin|ADS8688_DAISY_Pin|update9959_Pin|DDS2_FS_Pin
-                          |DDS2_PS_Pin, GPIO_PIN_RESET);
+                          |relay_2_Pin|ADS8688_DAISY_Pin|AD9959_IO_UPDATE_Pin, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOD, ADS8688_RST_Pin|DDS2_FSYNC_Pin, GPIO_PIN_SET);
+  HAL_GPIO_WritePin(GPIOD, ADS8688_RST_Pin|AD9959_CS_Pin, GPIO_PIN_SET);
 
   /*Configure GPIO pins : LED_Pin CS_Pin relay_4_Pin */
   GPIO_InitStruct.Pin = LED_Pin|CS_Pin|relay_4_Pin;
@@ -88,19 +87,19 @@ void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
   HAL_GPIO_Init(DDS_FSYNC_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : FS_Pin DDS2_RST_Pin */
-  GPIO_InitStruct.Pin = FS_Pin|DDS2_RST_Pin;
+  /*Configure GPIO pins : FS_Pin AD9959_RESET_Pin */
+  GPIO_InitStruct.Pin = FS_Pin|AD9959_RESET_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pins : PS_Pin DDS_RST_Pin relay3_Pin relay_1_Pin
-                           relay_2_Pin ADS8688_DAISY_Pin ADS8688_RST_Pin update9959_Pin
-                           DDS2_FSYNC_Pin DDS2_FS_Pin DDS2_PS_Pin */
+                           relay_2_Pin ADS8688_DAISY_Pin ADS8688_RST_Pin AD9959_IO_UPDATE_Pin
+                           AD9959_CS_Pin */
   GPIO_InitStruct.Pin = PS_Pin|DDS_RST_Pin|relay3_Pin|relay_1_Pin
-                          |relay_2_Pin|ADS8688_DAISY_Pin|ADS8688_RST_Pin|update9959_Pin
-                          |DDS2_FSYNC_Pin|DDS2_FS_Pin|DDS2_PS_Pin;
+                          |relay_2_Pin|ADS8688_DAISY_Pin|ADS8688_RST_Pin|AD9959_IO_UPDATE_Pin
+                          |AD9959_CS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;

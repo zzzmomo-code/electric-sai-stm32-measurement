@@ -185,7 +185,7 @@ class VgaControlContractTest(unittest.TestCase):
         self.assertTrue(dac_header.exists())
         self.assertTrue(dac_source.exists())
 
-        ioc = (ROOT / "h743_pre1.ioc").read_text(encoding="utf-8")
+        ioc = (ROOT / "dds2.ioc").read_text(encoding="utf-8")
         hal_config = (ROOT / "Core/Inc/stm32h7xx_hal_conf.h").read_text(
             encoding="utf-8"
         )

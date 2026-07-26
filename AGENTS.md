@@ -113,7 +113,7 @@ system_init();
 
 ## 11. 启用、关闭和修改本规则
 
-- 启用：保留本文件名 `D:\CubeIDE\h743_pre1\AGENTS.md`，并从 `D:\CubeIDE` 或其项目目录启动新的 Codex 任务。
+- 启用：保留本文件名 `C:\Users\48747\STM32CubeIDE\workspace_1.19.0\dds2\AGENTS.md`，并从该项目目录启动新的 Codex 任务。
 - 临时整体关闭：将本文件改名为 `AGENTS.md.disabled`，然后启动新的 Codex 任务。
 - 临时关闭单条：用户在当前任务中明确说明暂停的规则编号和范围；用户当前直接指令优先。
 - 永久增加、删除或修改：直接编辑本文件的对应编号条款。

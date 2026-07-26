@@ -3,10 +3,10 @@
  * @brief 用户代码统一头文件入口。
  *
  * 模块用途：集中包含 HAL 生成头文件与全部用户模块头文件。
- * GPIO 引脚映射：统一入口无直接 GPIO；第二块AD9834使用PB3/PB5/PD5/PD6/PD7/PB4，
+ * GPIO 引脚映射：统一入口无直接 GPIO；AD9959 使用 PE2/PE5/PE6/PD5/PD4/PB4，
  * VGA模块使用PA4/DAC1_OUT1，其他映射见对应模块说明。
  * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h、dac.h、adc.h、tim.h、spi.h，
- * 启用串口屏时还依赖usart.h。第二块AD9834依赖已初始化的SPI6，DAC1_OUT1配置为
+ * 启用串口屏时还依赖usart.h。AD9959依赖已初始化的SPI4，DAC1_OUT1配置为
  * 无触发并开启输出缓冲。
  * ADS8688 与片上双 ADC 均参加构建，由 measurement_input 在运行时选择。
  * 初始化方法：HAL 与 MX_* 初始化完成后调用 system_init()。
@@ -26,7 +26,7 @@
 #include "adc_dual.h"
 #include "frequency_measure.h"
 #include "ad9834.h"
-#include "ad9834_2.h"
+#include "ad9959.h"
 #include "dds_control.h"
 #include "vga_control.h"
 #include "measurement_conversion.h"

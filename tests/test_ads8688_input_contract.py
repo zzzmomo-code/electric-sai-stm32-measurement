@@ -12,7 +12,7 @@ def read(path: str) -> str:
 
 class Ads8688HardwareContract(unittest.TestCase):
     def test_spi3_and_dma_match_ads8688(self):
-        ioc = read("h743_pre1.ioc")
+        ioc = read("dds2.ioc")
         required = (
             "PA15\\ (JTDI).Signal=SPI3_NSS",
             "PC10.Signal=SPI3_SCK",
