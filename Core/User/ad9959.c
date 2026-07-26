@@ -33,8 +33,14 @@
 /** ACR 寄存器中 bit12 启用手动幅度控制 */
 #define AD9959_ACR_AMPLITUDE_ENABLE 0x10u
 
-/** CSR 通道使能位，bit4=CH0，bit5=CH1，bit6=CH2，bit7=CH3 */
-static const uint8_t ad9959_csr_channel_enable[2] = { 0x10u, 0x20u };
+/** CSR[2:1]=01：单位串行三线模式，SDIO_0输入、SDIO_2输出。 */
+#define AD9959_CSR_THREE_WIRE_MODE 0x02u
+
+/** CSR 通道使能位叠加三线模式，bit4=CH0，bit5=CH1。 */
+static const uint8_t ad9959_csr_channel_enable[2] = {
+    0x10u | AD9959_CSR_THREE_WIRE_MODE,
+    0x20u | AD9959_CSR_THREE_WIRE_MODE
+};
 
 /** FR1 默认值：PLL 20 倍频（25MHz×20=500MHz）、VCO 高范围、charge pump=75uA 默认。
  *  字节顺序：byte0=MSB（含 VCO gain、PLL enable、PLL ratio 高 5 位），byte2=LSB。
@@ -159,7 +165,7 @@ static ad9959_status_t ad9959_read_register_raw(uint8_t address,
 }
 
 /**
- * @brief 通过写 CSR 寄存器选择目标通道。
+ * @brief 通过写 CSR 寄存器选择目标通道并保持SDIO_0/SDIO_2三线模式。
  * @param channel 要选择的通道（ad9959_channel_0 或 ad9959_channel_1）。
  * @return 驱动状态。
  * @note 非法通道直接返回错误，不发起 SPI 操作。
@@ -173,6 +179,7 @@ static ad9959_status_t ad9959_select_channel(ad9959_channel_t channel)
         return ad9959_status_invalid_channel;
     }
 
+    /* 每次选择通道都必须同时保持CSR[2:1]=01，否则SDIO_2会恢复为高阻态。 */
     csr = ad9959_csr_channel_enable[channel];
     return ad9959_write_register(AD9959_REG_CSR, &csr, 1u);
 }

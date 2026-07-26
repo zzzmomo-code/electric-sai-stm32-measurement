@@ -176,6 +176,9 @@ class DdsContractTest(unittest.TestCase):
             "ad9959_fr1_default[3] = { 0xD0u, 0x00u, 0x00u }",
             "ad9959_cfr_default[3] = { 0x00u, 0x03u, 0x02u }",
             "AD9959_ACR_AMPLITUDE_ENABLE 0x10u",
+            "#define AD9959_CSR_THREE_WIRE_MODE 0x02u",
+            "0x10u | AD9959_CSR_THREE_WIRE_MODE",
+            "0x20u | AD9959_CSR_THREE_WIRE_MODE",
             "ad9959_io_update()",
             "ad9959_hardware_reset()",
             "ad9959_capture_init_readback()",
@@ -184,6 +187,11 @@ class DdsContractTest(unittest.TestCase):
         )
         for text in required:
             self.assertIn(text, source)
+
+        self.assertNotIn(
+            "ad9959_csr_channel_enable[2] = { 0x10u, 0x20u }",
+            source,
+        )
 
     def test_ad9959_init_readback_has_debugger_contract(self) -> None:
         header = read_text("Core/User/ad9959.h")

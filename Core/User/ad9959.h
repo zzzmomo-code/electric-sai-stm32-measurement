@@ -54,7 +54,7 @@ typedef enum
     ad9959_status_spi_error
 } ad9959_status_t;
 
-/** AD9959通道选择，对应CSR寄存器bit4/bit5。 */
+/** AD9959通道选择，对应CSR寄存器bit4/bit5；驱动同时保持CSR[2:1]三线模式。 */
 typedef enum
 {
     ad9959_channel_0 = 0,
