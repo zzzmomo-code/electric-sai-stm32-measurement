@@ -6,6 +6,8 @@
  * 相位和幅度。同时提供读寄存器能力，便于数字锁相环闭环验证。
  * GPIO引脚映射：PE2/SPI4_SCK，PE5/SPI4_MISO，PE6/SPI4_MOSI，
  * PD4/IO_UPDATE，PD5/CS（低有效），PB4/RESET（高有效复位）。
+ * 模块固定电平：PDC、SDIO_3/SYNC_I/O及P0～P3必须从模块端接GND；
+ * SDIO_1未使用。SDIO_3在单位串行模式下禁止浮空。
  * 依赖的外设和CubeIDE配置：SPI4主机Full-Duplex、8bit、MSB优先、
  * CPOL=Low、CPHA=1 Edge、1.875 Mbit/s；CS和RESET由软件控制，
  * IO_UPDATE上升沿刷新寄存器；25MHz外部晶振经片内PLL 20倍频得到500MHz系统时钟。

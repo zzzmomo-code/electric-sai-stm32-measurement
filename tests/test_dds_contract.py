@@ -111,6 +111,7 @@ class DdsContractTest(unittest.TestCase):
             "SPI4.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_64",
             "SPI4.DataSize=SPI_DATASIZE_8BIT",
             "SPI4.Direction=SPI_DIRECTION_2LINES",
+            "SPI4.MasterKeepIOState=SPI_MASTER_KEEP_IO_STATE_ENABLE",
         )
         for line in required_lines:
             self.assertIn(line, ioc)
@@ -119,6 +120,10 @@ class DdsContractTest(unittest.TestCase):
         self.assertIn("hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;", spi_source)
         self.assertIn(
             "hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;",
+            spi_source,
+        )
+        self.assertIn(
+            "hspi4.Init.MasterKeepIOState = SPI_MASTER_KEEP_IO_STATE_ENABLE;",
             spi_source,
         )
         self.assertRegex(
@@ -207,6 +212,24 @@ class DdsContractTest(unittest.TestCase):
             source,
         )
 
+    def test_ad9959_io_update_covers_pre_pll_sync_clock_period(self) -> None:
+        source = read_text("Core/User/ad9959.c")
+        update_source = source.split(
+            "static void ad9959_io_update(void)", 1
+        )[1].split("/**", 1)[0]
+
+        high_index = update_source.index(
+            "HAL_GPIO_WritePin(update9959_GPIO_Port, update9959_Pin, GPIO_PIN_SET);"
+        )
+        delay_index = update_source.index("HAL_Delay(1u);")
+        final_low_index = update_source.index(
+            "HAL_GPIO_WritePin(update9959_GPIO_Port, update9959_Pin, GPIO_PIN_RESET);",
+            high_index,
+        )
+
+        self.assertLess(high_index, delay_index)
+        self.assertLess(delay_index, final_low_index)
+
     def test_ad9959_init_readback_has_debugger_contract(self) -> None:
         header = read_text("Core/User/ad9959.h")
         source = read_text("Core/User/ad9959.c")
@@ -272,7 +295,11 @@ class DdsContractTest(unittest.TestCase):
         guide = read_text("docs/AD9959上板测试指南.md")
 
         self.assertIn("| GND | PDC | PWR_DWN_CTL |", guide)
+        self.assertIn("| GND | SD3 | SDIO_3 / SYNC_I/O |", guide)
+        self.assertIn("| GND | P0, P1, P2, P3 | profile输入 |", guide)
         self.assertNotIn("| PDC | PWR_DWN_CTL | 浮空", guide)
+        self.assertNotIn("| SD3 | SDIO_3 | 浮空", guide)
+        self.assertNotIn("| P0, P1, P2, P3 | profile 引脚 | 浮空", guide)
 
     def test_ad9959_uses_500mhz_ftw(self) -> None:
         compiler = find_host_c_compiler()

@@ -41,6 +41,10 @@ STM32CubeIDE 1.19.0、STM32Cube FW_H7 V1.12.1。当前工程组合了以下功�
 `PB1 / ADC2_INP5`。MCU、比较器、AD9834、模拟前端、VGA 和串口屏必须共地。
 PC4 与 PB1 的模拟电压必须保持在 VSSA～VDDA 允许范围内。
 
+AD9959模块使用独立5V单路供电并与STM32共地；除上表SPI与控制信号外，
+模块 `PDC`、`SD3/SDIO_3` 以及 `P0～P3` 均接GND。尤其SDIO_3在单位串行模式下兼作
+SYNC_I/O，数据手册明确要求未使用时保持逻辑0，禁止浮空。
+
 ## STM32CubeMX 配置
 
 打开 `h743_pre1.ioc` 后，在 STM32CubeIDE 1.19.0 中核对以下配置。重新生成代码前，
@@ -84,13 +88,17 @@ PC4 与 PB1 的模拟电压必须保持在 VSSA～VDDA 允许范围内。
 - SPI4：Master、Full-Duplex、Motorola、8 bit、MSB First。
 - CPOL Low，CPHA 1 Edge（SPI Mode 0），软件 NSS；CS 由 PD5 手动控制。
 - SPI45 内核时钟为 120 MHz，诊断阶段 Prescaler=64，SCLK=1.875 MHz，以提高杜邦线连接下的信号完整性并验证SPI通信。
+- SPI4 启用 `MasterKeepIOState`：H7 HAL 每次阻塞传输结束都会暂时关闭 SPI 外设，
+  该配置可让 PE2/SCLK 在地址与数据两次传输的间隙继续保持 Mode 0 的低电平，避免 CS 低电平期间出现悬空伪上升沿。
 - PE5/SPI4_MISO 在诊断阶段启用内部下拉；若关键寄存器从全 `0xFF` 变成全 `0x00`，说明模块 SDIO_2 没有驱动该线路，应检查 PE5→SD2 连线或串行端口模式。
 - 临时总线探针每200ms先把PD5/CS保持低电平40ms，再发送CSR写帧 `00 12` 和FR1读帧 `81 + 3字节`；诊断结构同时记录PD5的ODR/IDR及固件签名 `0x43533430`，用于确认实际烧录固件和GPIO电平，实板通信确认后应关闭 `AD9959_BUS_PROBE_ENABLE`。
 - AD9959 板载 25 MHz 晶振经片内 PLL 20 倍频得到 500 MHz 系统时钟。
 - PE6/MOSI 接 SDIO_0 用于写入，PE5/MISO 接 SDIO_2 用于读回；PD4 产生 IO_UPDATE
 - 驱动每次写 CSR 都设置 `CSR[2:1]=01` 三线模式（CH0=`0x12`、CH1=`0x22`），使 SDIO_0 作为输入、SDIO_2 作为读回输出。
   上升沿刷新影子寄存器，PB4 控制硬件 RESET。
-- 不使用 SPI DMA 和 SPI 中断；每次写寄存器后自动产生一个 IO_UPDATE 脉冲。
+- 不使用 SPI DMA 和 SPI 中断；每次写寄存器后自动产生一个 IO_UPDATE 脉冲。AD9959复位后PLL尚未启用，
+  `SYNC_CLK=25MHz/4=6.25MHz`、周期约160ns；诊断固件把IO_UPDATE高电平固定保持1ms，
+  保证首次FR1更新以及后续更新均满足“脉宽大于一个SYNC_CLK周期”的数据手册要求。
 
 ### DAC1 与 VGA
 

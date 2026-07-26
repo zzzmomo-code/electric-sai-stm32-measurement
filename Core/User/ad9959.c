@@ -6,6 +6,8 @@
  * 幅度寄存器写入与读回。两路通道可独立配置，便于外差式测量与数字锁相环闭环。
  * GPIO引脚映射：PE2/SPI4_SCK，PE5/SPI4_MISO，PE6/SPI4_MOSI，
  * PD4/IO_UPDATE，PD5/CS，PB4/RESET。
+ * 模块固定电平：PDC、SDIO_3/SYNC_I/O及P0～P3必须从模块端接GND；
+ * SDIO_1未使用。SDIO_3在单位串行模式下禁止浮空。
  * 依赖的外设和CubeIDE配置：SPI4主机Full-Duplex、8bit、MSB优先、
  * CPOL=Low、CPHA=1 Edge、1.875 Mbit/s；CS低有效，RESET高有效复位，
  * IO_UPDATE上升沿刷新寄存器；25MHz外部晶振经片内PLL 20倍频得到500MHz系统时钟。
@@ -77,9 +79,10 @@ static uint8_t ad9959_bus_probe_state;
  * @brief 产生 IO_UPDATE 上升沿，将影子寄存器内容加载到实际工作寄存器。
  * @param 无。
  * @return 无。
- * @note SYNC_CLK = SYSCLK/4 = 125MHz，对应周期 8ns；
- *       IO_UPDATE 高电平至少 1 个 SYNC_CLK 周期，这里用 16 个 __NOP() 保留充足余量
- *       （约 33ns @ 480MHz CPU），并考虑 PD4 引脚上升/下降沿时间。
+ * @note AD9959复位后PLL尚未启用，SYSCLK=25MHz且SYNC_CLK=6.25MHz，
+ *       此时一个SYNC_CLK周期为160ns。数据手册要求IO_UPDATE高脉冲大于
+ *       一个SYNC_CLK周期，因此诊断阶段固定保持1ms，确保首次FR1更新以及
+ *       后续全部更新均不依赖PLL是否已经生效。
  */
 static void ad9959_io_update(void)
 {
@@ -87,8 +90,7 @@ static void ad9959_io_update(void)
     __NOP(); __NOP(); __NOP(); __NOP();
     __NOP(); __NOP(); __NOP(); __NOP();
     HAL_GPIO_WritePin(update9959_GPIO_Port, update9959_Pin, GPIO_PIN_SET);
-    __NOP(); __NOP(); __NOP(); __NOP();
-    __NOP(); __NOP(); __NOP(); __NOP();
+    HAL_Delay(1u);
     HAL_GPIO_WritePin(update9959_GPIO_Port, update9959_Pin, GPIO_PIN_RESET);
 }
 
