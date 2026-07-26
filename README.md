@@ -28,12 +28,12 @@ STM32CubeIDE 1.19.0、STM32Cube FW_H7 V1.12.1。当前工程组合了以下功�
 | PB15 | SPI2_MOSI | AD9834 SDATA |
 | PB14 | GPIO_Output | AD9834 FSELECT，低电平选择 FREQ0 |
 | PD8 | GPIO_Output | AD9834 PSELECT，低电平选择 PHASE0 |
-| PB3 | SPI6_SCK | 第二块 AD9834 SCLK |
-| PB5 | SPI6_MOSI | 第二块 AD9834 SDATA |
-| PB4 | GPIO_Output | 第二块 AD9834 RESET，正常运行时为低电平 |
-| PD5 | GPIO_Output | 第二块 AD9834 FSYNC，空闲为高电平 |
-| PD6 | GPIO_Output | 第二块 AD9834 FSELECT，低电平选择 FREQ0 |
-| PD7 | GPIO_Output | 第二块 AD9834 PSELECT，低电平选择 PHASE0 |
+| PE2 | SPI4_SCK | AD9959 SCLK |
+| PE5 | SPI4_MISO | AD9959 SDIO_2，读回数据 |
+| PE6 | SPI4_MOSI | AD9959 SDIO_0，写入数据 |
+| PD4 | GPIO_Output | AD9959 IO_UPDATE，上升沿刷新寄存器 |
+| PD5 | GPIO_Output | AD9959 CS，空闲为高电平 |
+| PB4 | GPIO_Output | AD9959 RESET，正常运行时为低电平 |
 | PA9 | USART1_TX | 接淘晶驰串口屏 RX |
 | PA10 | USART1_RX | 接淘晶驰串口屏 TX |
 
@@ -79,13 +79,15 @@ PC4 与 PB1 的模拟电压必须保持在 VSSA～VDDA 允许范围内。
 - AD9834 MCLK 为 75 MHz，FSYNC 由 PB12 手动控制。
 - 不使用 SPI DMA 和 SPI 中断。
 
-### SPI6 与第二块 AD9834
+### SPI4 与 AD9959
 
-- SPI6：Master、Transmit Only、Motorola、16 bit、MSB First。
-- CPOL High，CPHA 1 Edge，软件 NSS；FSYNC 由 PD5 手动控制。
-- SPI6 内核时钟为 120 MHz，Prescaler=4，SCLK=30 MHz，不超过 AD9834 的 40 MHz 上限。
-- 第二块 AD9834 MCLK 为 75 MHz；PB4/RESET 在初始化完成后拉低。
-- 不使用 SPI DMA 和 SPI 中断；每个 FSYNC 低电平窗口发送一个 16 位字。
+- SPI4：Master、Full-Duplex、Motorola、8 bit、MSB First。
+- CPOL Low，CPHA 1 Edge（SPI Mode 0），软件 NSS；CS 由 PD5 手动控制。
+- SPI45 内核时钟为 120 MHz，Prescaler=8，SCLK=15 MHz，低于 AD9959 的 25 MHz 典型上限。
+- AD9959 板载 25 MHz 晶振经片内 PLL 20 倍频得到 500 MHz 系统时钟。
+- PE6/MOSI 接 SDIO_0 用于写入，PE5/MISO 接 SDIO_2 用于读回；PD4 产生 IO_UPDATE
+  上升沿刷新影子寄存器，PB4 控制硬件 RESET。
+- 不使用 SPI DMA 和 SPI 中断；每次写寄存器后自动产生一个 IO_UPDATE 脉冲。
 
 ### DAC1 与 VGA
 
@@ -146,31 +148,26 @@ ad9834_select_phase_register(ad9834_phase_register_1);
 `dds_set_frequency()` 用于第一块 AD9834 的无中断交替更新：先写入非活动频率寄存器，
 两个 16 位字均成功后才切换 FSELECT；参数或 SPI 写入失败时保持当前输出。
 
-第二块 AD9834 使用独立的 `ad9834_2.c/.h` 和 SPI6。`system_init()` 将其 FREQ0、
-FREQ1 都初始化为 900 kHz，将 PHASE0、PHASE1 初始化为 0°，最后解除 PB4/RESET
-并选择 FREQ0 和 PHASE0。初始化失败时 RESET 保持高电平，可通过
-`ad9834_2_diagnostics` 查看错误。
+AD9959 使用独立的 `ad9959.c/.h` 和 SPI4，提供双通道（CH0+CH1）输出能力。
+`system_init()` 调用 `ad9959_init()` 后，两个通道默认输出 1 MHz 正弦波，相位 0
+度，幅度满量程。AD9959 系统时钟为 500 MHz，32 位频率字分辨率约 0.12 Hz。初始化
+失败时由 `ad9959_diagnostics` 记录错误。
 
-第二块寄存器可独立设置：
-
-```c
-ad9834_2_set_frequency_register_hz(
-    ad9834_2_frequency_register_1,
-    2000000u);
-ad9834_2_set_phase_register_degrees(
-    ad9834_2_phase_register_1,
-    90u);
-ad9834_2_select_frequency_register(ad9834_2_frequency_register_1);
-ad9834_2_select_phase_register(ad9834_2_phase_register_1);
-```
-
-需要连续无中断更新第二块输出时调用：
+两个通道可独立设置：
 
 ```c
-dds2_set_frequency(1000000u);
+ad9959_set_frequency(ad9959_channel_0, 1000000u);
+ad9959_set_frequency(ad9959_channel_1, 2000000u);
+ad9959_set_phase(ad9959_channel_1, 90u);
+ad9959_set_amplitude(ad9959_channel_0, 512u);  /* 0-1023，512 为半量程 */
 ```
 
-该函数同样先写非活动频率寄存器，完整成功后才切换 PD6/FSELECT。
+数字锁相环闭环验证时，可通过 `ad9959_read_register()` 读回寄存器确认写入：
+
+```c
+uint8_t cfr[3];
+ad9959_read_register(0x03u, cfr, 3u);  /* 读 CFR 验证 */
+```
 
 收到 `M` 后，系统先请求 TIM5 立即测频，并按粗测结果设置一次 DDS 初值：
 
@@ -340,7 +337,7 @@ CubeMX 完成时钟和 `MX_*` 初始化后，`system_init()` 按当前顺序调�
 3. `measurement_fft_init()`；
 4. `frequency_measure_init()`；
 5. `dds_control_init()`；
-6. `ad9834_2_init(900000u)`；
+6. `ad9959_init()`；
 7. `hmi_tjc_init()` 并绑定 USART1；
 8. 初始化当前选择的 ADC 输入模块。
 
@@ -353,7 +350,7 @@ FFT 采集期间暂停低速串口屏发送，完成一帧后在显示空档刷�
 - `Core/User/system.c/.h`：用户模块统一入口。
 - `Core/User/frequency_measure.c/.h`：TIM5+DWT 外部频率测量。
 - `Core/User/ad9834.c/.h`：AD9834 双频率、双相位寄存器 SPI 驱动。
-- `Core/User/ad9834_2.c/.h`：第二块 AD9834 的 SPI6 独立驱动和硬件复位控制。
+- `Core/User/ad9959.c/.h`：AD9959 双通道 DDS SPI 驱动，支持频率/相位/幅度和读回。
 - `Core/User/dds_control.c/.h`：低侧本振规划和更新控制。
 - `Core/User/adc_dual.c/.h`：ADC1/ADC2 双重同步 DMA 采集。
 - `Core/User/fft_f32_65536.c/.h`：65536 点 F32 FFT 实现。
@@ -385,8 +382,9 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 1. 向 PA0 输入已知频率的整形方波，检查 `frequency_measure_hz`。
 2. 测量第一块 AD9834 输出，确认 `fDDS = fin - 100 kHz`。
-3. 检查第二块 AD9834 上电输出为 900 kHz；用逻辑分析仪确认 PD5 每次拉低期间
-   PB3 恰有 16 个时钟，并验证连续调用 `dds2_set_frequency()` 时 PD6 交替切换。
+3. 检查 AD9959 上电两路输出为 1 MHz 正弦波；用示波器确认 PE6/MOSI 每次拉低 CS
+   期间按"指令字节 + 数据字节"顺序发送，PD4/IO_UPDATE 在每次写后产生上升沿；
+   可通过 `ad9959_read_register()` 读回 CFR/FTW 验证写入是否正确。
 4. 向 PC4 和 PB1 输入安全范围内的同步信号，检查 DMA 半满/满计数持续增加且错误计数不增长。
 5. 对比 `raw_peak_frequency_hz`、`peak_frequency_hz` 以及第二通道对应字段。
 6. 用高精度直流源和万用表重新确认两个 ADC 通道的 `volts_per_code` 与 `offset_v`。
@@ -398,7 +396,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - `frequency_measure_hz`：TIM5 粗测频率。
 - `dds_control_diagnostics`：DDS 目标、状态和更新次数。
 - `ad9834_diagnostics`：SPI 写入、两组频率/相位、当前选择和 HAL 状态。
-- `ad9834_2_diagnostics`：第二块 DDS 的 SPI6 写入、RESET、寄存器和 HAL 状态。
+- `ad9959_diagnostics`：AD9959 SPI4 写入、错误计数、两通道频率/相位/幅度和 HAL 状态。
 - `adc_dual_stats`：DMA、溢出、错误和近期原始码统计。
 - `measurement_fft_diagnostics`：双通道 raw/校准频率、电压、THD、相位和质量状态。
 - `vga_control_diagnostics`：档位、DAC 指令电压、PA4 实测模型电压、VG 和增益。

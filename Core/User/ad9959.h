@@ -1,0 +1,131 @@
+/**
+ * @file ad9959.h
+ * @brief AD9959 DDS底层驱动接口。
+ *
+ * 模块用途：通过SPI4向AD9959写入寄存器，分别设置两个通道（CH0+CH1）的频率、
+ * 相位和幅度。同时提供读寄存器能力，便于数字锁相环闭环验证。
+ * GPIO引脚映射：PE2/SPI4_SCK，PE5/SPI4_MISO，PE6/SPI4_MOSI，
+ * PD4/IO_UPDATE，PD5/CS（低有效），PB4/RESET（高有效复位）。
+ * 依赖的外设和CubeIDE配置：SPI4主机Full-Duplex、8bit、MSB优先、
+ * CPOL=Low、CPHA=1 Edge、15 Mbit/s；CS和RESET由软件控制，
+ * IO_UPDATE上升沿刷新寄存器；25MHz外部晶振经片内PLL 20倍频得到500MHz系统时钟。
+ * 初始化方法：由system_init()调用ad9959_init()，初始化两个通道为1 MHz正弦波、
+ * 相位0度、幅度满量程。
+ * 调用方法：主循环中可分别设置两个通道的频率、相位和幅度；禁止在中断中调用。
+ */
+
+#ifndef AD9959_H
+#define AD9959_H
+
+#include <stdint.h>
+
+/** AD9959板载25MHz晶振经片内PLL 20倍频后的系统时钟，单位Hz。 */
+#define AD9959_MCLK_HZ 500000000u
+
+/** 本项目允许的最高DDS输出频率，单位Hz（取SYSCLK/2的保守值）。 */
+#define AD9959_MAX_OUTPUT_HZ 200000000u
+
+/** AD9959幅度量程上限（10位分辨率，0-1023）。 */
+#define AD9959_AMPLITUDE_MAX 1023u
+
+/** AD9959读寄存器时单次最大字节数，用于防止越界。 */
+#define AD9959_READ_MAX_BYTES 8u
+
+/** AD9959驱动返回状态。 */
+typedef enum
+{
+    ad9959_status_ok = 0,
+    ad9959_status_invalid_frequency,
+    ad9959_status_invalid_phase,
+    ad9959_status_invalid_amplitude,
+    ad9959_status_invalid_channel,
+    ad9959_status_invalid_length,
+    ad9959_status_spi_error
+} ad9959_status_t;
+
+/** AD9959通道选择，对应CSR寄存器bit4/bit5。 */
+typedef enum
+{
+    ad9959_channel_0 = 0,
+    ad9959_channel_1 = 1
+} ad9959_channel_t;
+
+/** AD9959运行诊断，便于在调试器Expressions中观察。 */
+typedef struct
+{
+    uint32_t write_count;                /**< 成功完成的SPI写寄存器次数。 */
+    uint32_t error_count;                /**< SPI发送失败次数。 */
+    int32_t last_hal_status;             /**< 最近一次HAL SPI返回值。 */
+    uint8_t initialized;                 /**< 完整初始化成功后为1。 */
+    uint8_t last_channel;                /**< 最近成功写入的通道编号。 */
+    uint32_t frequency_hz[2];            /**< 两个通道最近成功写入的频率。 */
+    uint32_t frequency_tuning_word[2];   /**< 两个通道的32位频率字。 */
+    uint16_t phase_degrees[2];           /**< 两个通道最近成功写入的整数角度。 */
+    uint16_t phase_word[2];              /**< 两个通道的14位相位字。 */
+    uint16_t amplitude[2];               /**< 两个通道的10位幅度值。 */
+} ad9959_diagnostics_t;
+
+/** AD9959运行诊断快照。 */
+extern volatile ad9959_diagnostics_t ad9959_diagnostics;
+
+/**
+ * @brief 初始化AD9959并输出默认1 MHz正弦波。
+ * @return 驱动状态。
+ * @note 执行硬件RESET、配置PLL 20倍频、初始化CH0和CH1为1MHz/0度/满幅度。
+ *       任一SPI写入失败时保持硬件复位状态，禁止在中断中调用。
+ */
+ad9959_status_t ad9959_init(void);
+
+/**
+ * @brief 设置指定通道的输出频率。
+ * @param channel 目标通道，ad9959_channel_0或ad9959_channel_1。
+ * @param frequency_hz 目标输出频率，单位Hz。
+ * @return 驱动状态。
+ * @note 先写CSR选择通道，再写4字节CFTW0寄存器，最后产生IO_UPDATE刷新。
+ *       阻塞式SPI调用，禁止在中断中调用。
+ */
+ad9959_status_t ad9959_set_frequency(ad9959_channel_t channel,
+                                     uint32_t frequency_hz);
+
+/**
+ * @brief 设置指定通道的输出相位。
+ * @param channel 目标通道。
+ * @param phase_degrees 目标相位，范围0至359度。
+ * @return 驱动状态。
+ * @note 先写CSR选择通道，再写2字节CPOW0寄存器，最后产生IO_UPDATE刷新。
+ *       阻塞式SPI调用，禁止在中断中调用。
+ */
+ad9959_status_t ad9959_set_phase(ad9959_channel_t channel,
+                                 uint16_t phase_degrees);
+
+/**
+ * @brief 设置指定通道的输出幅度。
+ * @param channel 目标通道。
+ * @param amplitude 目标幅度，范围0至1023（0=零输出，1023=满量程）。
+ * @return 驱动状态。
+ * @note 先写CSR选择通道，再写3字节ACR寄存器（bit12置1启用手动幅度控制），
+ *       最后产生IO_UPDATE刷新。阻塞式SPI调用，禁止在中断中调用。
+ */
+ad9959_status_t ad9959_set_amplitude(ad9959_channel_t channel,
+                                     uint16_t amplitude);
+
+/**
+ * @brief 通过SPI读回AD9959的寄存器值。
+ * @param address 寄存器地址（0x00-0x06）。
+ * @param data 存放读回数据的缓冲区，调用者保证容量不少于length字节。
+ * @param length 要读的字节数，范围1至AD9959_READ_MAX_BYTES。
+ * @return 驱动状态。
+ * @note 指令字节bit7置1表示读，随后通过MISO读回数据。读操作不产生IO_UPDATE。
+ *       阻塞式SPI调用，禁止在中断中调用。
+ */
+ad9959_status_t ad9959_read_register(uint8_t address, uint8_t *data,
+                                     uint8_t length);
+
+/**
+ * @brief 计算AD9959的32位频率控制字。
+ * @param frequency_hz 目标输出频率，单位Hz。
+ * @return 按500MHz MCLK四舍五入后的32位频率控制字。
+ */
+uint32_t ad9959_calculate_tuning_word(uint32_t frequency_hz);
+
+#endif /* AD9959_H */
