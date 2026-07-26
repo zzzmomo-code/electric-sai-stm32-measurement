@@ -7,7 +7,7 @@
  * GPIO引脚映射：PE2/SPI4_SCK，PE5/SPI4_MISO，PE6/SPI4_MOSI，
  * PD4/IO_UPDATE，PD5/CS，PB4/RESET。
  * 依赖的外设和CubeIDE配置：SPI4主机Full-Duplex、8bit、MSB优先、
- * CPOL=Low、CPHA=1 Edge、15 Mbit/s；CS低有效，RESET高有效复位，
+ * CPOL=Low、CPHA=1 Edge、1.875 Mbit/s；CS低有效，RESET高有效复位，
  * IO_UPDATE上升沿刷新寄存器；25MHz外部晶振经片内PLL 20倍频得到500MHz系统时钟。
  * 初始化方法：由system_init()调用ad9959_init()，默认输出1MHz正弦波。
  * 调用方法：主循环中独立设置两个通道的频率/相位/幅度；禁止在中断中调用。

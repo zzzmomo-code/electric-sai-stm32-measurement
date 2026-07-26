@@ -107,7 +107,7 @@ class DdsContractTest(unittest.TestCase):
             "PE2.Signal=SPI4_SCK",
             "PE5.Signal=SPI4_MISO",
             "PE6.Signal=SPI4_MOSI",
-            "SPI4.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_8",
+            "SPI4.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_64",
             "SPI4.DataSize=SPI_DATASIZE_8BIT",
             "SPI4.Direction=SPI_DIRECTION_2LINES",
         )
@@ -116,6 +116,10 @@ class DdsContractTest(unittest.TestCase):
         self.assertIn("hspi4.Init.CLKPolarity = SPI_POLARITY_LOW;", spi_source)
         self.assertIn("hspi4.Init.CLKPhase = SPI_PHASE_1EDGE;", spi_source)
         self.assertIn("hspi4.Init.FirstBit = SPI_FIRSTBIT_MSB;", spi_source)
+        self.assertIn(
+            "hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;",
+            spi_source,
+        )
         self.assertLess(main.index("MX_SPI4_Init();"), main.index("system_init();"))
 
     def test_ad9959_driver_declares_public_api(self) -> None:
