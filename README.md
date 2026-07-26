@@ -102,6 +102,143 @@ SYNC_I/O，数据手册明确要求未使用时保持逻辑0，禁止浮空。
   `SYNC_CLK=25MHz/4=6.25MHz`、周期约160ns；诊断固件把IO_UPDATE高电平固定保持40ms，
   保证首次FR1更新以及后续更新均满足“脉宽大于一个SYNC_CLK周期”的数据手册要求。
 
+## AD9959 迁移、排错与当前交接状态
+
+> **交接结论（2026-07-26）**
+>
+> AD9959 的数字配置链路已经在实板上闭环：PLL 已工作在 500 MHz，CH0/CH1 的
+> FR1、CFR、CFTW0、ACR 全部可以正确回读，`readback_mismatch_mask=0x00`。
+> 但模拟输出尚未闭环：两路 SMA 当前仍只看到约 2 mVpp、25/50 MHz 的参考时钟相关杂波，
+> 没有看到目标 1 MHz、数百 mVpp 正弦波。因此当前状态不是“驱动已全部成功”，而是
+> **数字寄存器链路已验证，IO_UPDATE 到模块焊盘的物理到达和 DAC 模拟电流通路仍待实板确认**。
+
+### 正常信号通路
+
+```mermaid
+flowchart LR
+    A["模块 5 V 输入"] --> B["板载 1.8 V / 3.3 V 电源"]
+    C["板载 25 MHz 晶振"] --> D["PLL ×20 / SYSCLK 500 MHz"]
+    E["STM32 串行写入"] --> F["AD9959 I/O 缓冲寄存器"]
+    F -->|"IO_UPDATE 上升沿"| G["活动寄存器"]
+    D --> H["相位累加器与正弦查表"]
+    G --> H
+    H --> I["DAC 电流输出"]
+    B --> I
+    I --> J["RSET、电阻与低通网络"]
+    J --> K["CH0 / CH1 SMA 输出"]
+```
+
+这条链路必须逐段成立：
+
+1. 5 V 输入和板载稳压正常，AD9959 数字核、PLL 和 DAC 才能工作。
+2. 25 MHz 参考时钟经 PLL 20 倍频得到 500 MHz；模块 `SYNC_CLK` 为 SYSCLK/4，
+   因而正常读到约 125 MHz。
+3. SPI/模拟串行接口把数据写进 I/O 缓冲寄存器；寄存器回读只证明这一段。
+4. IO_UPDATE 上升沿把缓冲值装入活动寄存器；没有有效上升沿时，即使回读正确，DDS 也可能仍使用旧值。
+5. 活动寄存器、DAC 电源、RSET 和输出滤波网络共同决定 SMA 上的模拟波形。
+
+因此，**寄存器回读正确不等于模拟输出正确**；同样，125 MHz SYNC_CLK 只证明参考时钟、
+PLL 和数字核心工作，不证明 DAC 电流或输出网络正常。
+
+### 当前寄存器证据
+
+| 项目 | 实板回读 | 含义 |
+|---|---:|---|
+| CSR CH0 / CH1 | `0x12` / `0x22` | 选择对应通道，并启用三线模式：SDIO_0 写、SDIO_2 读 |
+| FR1 | `D0 00 00` | 25 MHz 参考时钟、PLL ×20，SYSCLK=500 MHz |
+| CFR CH0 / CH1 | `00 03 02` | 单音正弦配置，通道未处于 DAC power-down |
+| CFTW0 CH0 / CH1 | `00 83 12 6F` | `0x0083126F=8589935`，在 500 MHz SYSCLK 下对应约 1 MHz |
+| ACR CH0 / CH1 | `00 13 FF` | 幅度缩放启用，10 位幅度值为 1023（满量程） |
+| 综合结果 | `readback_mismatch_mask=0x00` | 上述期望值与两通道实测回读全部一致 |
+
+`FTW = round(fout × 2^32 / SYSCLK)`，所以 1 MHz、500 MHz 时：
+
+```text
+FTW = round(1,000,000 × 2^32 / 500,000,000)
+    = 8,589,935
+    = 0x0083126F
+```
+
+### 排错过程与每一步为什么做
+
+| 阶段现象 | 当时检查的内容 | 为什么检查 | 结论或修复 |
+|---|---|---|---|
+| 两路完全 0 V | 5 V、共地、PDC、RESET、CS | 先排除整片掉电、复位或 power-down | 修正供电方式；外部 5 V 与 STM32 共地，禁止和 ST-Link 5 V 并联 |
+| 约 3 mV、50 MHz 畸变 | 25 MHz 晶振、PLL、输出端 | 极小幅度且与参考时钟谐波相关，通常是串扰而非 DDS 输出 | 将其定义为“参考时钟泄漏”，不再误判为目标信号 |
+| 回读全 `FF` | CSR 串行模式 | 默认二线模式下 SDIO_2 不输出，MISO 浮空会读成 `FF` | CSR 改为 CH0=`0x12`、CH1=`0x22`，启用三线读回 |
+| 回读全 `00` | CS、SCLK、SDIO_0、SDIO_2 与下拉 | 判断 MCU 是否真的发帧，以及模块是否驱动读回线 | 增加总线探针、GPIO ODR/IDR 和读回快照 |
+| CS 看不到脉冲 | 周期探针宏、暂停/运行状态、单次触发 | 初始化帧很短，晚开示波器会错过 | 临时启用周期探针验证 CS；确认后现已关闭，避免干扰输出 |
+| PLL 始终像未启用 | IO_UPDATE 高电平宽度 | 上电默认 SYSCLK=25 MHz，首次更新至少要跨过一个 160 ns SYNC_CLK 周期 | 把诊断版 IO_UPDATE 高电平扩展为 40 ms，完全消除脉宽裕量疑问 |
+| H7 硬件 SPI 不稳定 | 数据宽度、相邻事务、长线速率 | 早期 IOC 曾为 4-bit/60 Mbit/s，且指令与数据被拆成相邻事务 | 改为 8-bit/1.875 Mbit/s；硬件回退路径把指令和数据合成一个完整事务 |
+| 仍需隔离 HAL/SPI4 | GPIO 模拟串行 | 用最直接的 Mode 0、MSB-first GPIO时序排除 H7 SPI 外设状态机影响 | 当前 `AD9959_USE_GPIO_BITBANG=1`，数字寄存器链路最终全部通过 |
+| FTW 末字节一度为 `6E` | 读数据采样沿 | 只差最低位说明不是公式或字节序问题，而是位级采样边沿 | 调整 GPIO 模拟读时序后，稳定回读 `00 83 12 6F` |
+| 回读全部正确但仍 2 mV | UPDATE 模块端、RSET、AVDD、输出网络 | 数字缓冲正确后，剩余故障必须沿“装载→DAC→模拟网络”继续定位 | 当前尚未闭环，见下一节 |
+
+### 成功参考工程对照
+
+已对照相邻成功工程 `H7dds2,adc2,dacqudong3`。该工程的工程元数据和编译宏实际为
+STM32H750VBT6/`STM32H750xx`，不是可直接覆盖本工程配置的 H743 工程，但 AD9959 算法具有参考价值：
+
+- 同样使用 25 MHz ×20、`FR1=D0 00 00`；
+- 同样按 MSB-first 写 `CFTW0=00 83 12 6F` 和 `ACR=00 13 FF`；
+- 每个寄存器的“指令字节+全部数据字节”在同一次 CS 低电平窗口内完成；
+- 初始化完成后总线保持静止。
+
+当前驱动已经吸收这些关键做法，同时保留本工程自己的 H743 引脚、三线回读和诊断信息；
+没有把 H750 的 `.ioc`、启动文件或引脚配置复制进来。
+
+### 当前固件行为
+
+- 功能基线提交：`1297fa3 diagnose: stabilize AD9959 output state`。
+- `AD9959_USE_GPIO_BITBANG=1`：当前仍使用 GPIO 模拟串行，作为已验证的诊断路径。
+- `AD9959_BUS_PROBE_ENABLE=0`：周期总线探针关闭，初始化结束后 CS/SCLK/SDIO_0 保持静止。
+- 每个寄存器写完产生一次约 40 ms 的 IO_UPDATE 高脉冲。
+- 硬件 SPI 回退路径已改成单一完整帧，但尚未作为当前实板主路径重新验证。
+
+烧录当前分支后，初始化完成并继续运行时应看到：
+
+| 调试变量 | 期望 |
+|---|---:|
+| `ad9959_diagnostics.initialized` | `1` |
+| `ad9959_diagnostics.write_count` | `20` |
+| `ad9959_diagnostics.error_count` | `0` |
+| `ad9959_diagnostics.readback_complete` | `1` |
+| `ad9959_diagnostics.readback_mismatch_mask` | `0` |
+| `ad9959_diagnostics.bus_probe_count` | `0`，并保持不变 |
+| `ad9959_diagnostics.io_update_count` | 初始化后约 `20`，并保持不变 |
+| `ad9959_diagnostics.bitbang_clock_edges` | 非零，初始化后保持不变 |
+
+如果 `bus_probe_count` 或 `bitbang_clock_edges` 持续增加，说明烧录的不是当前静默版本，或宏配置已被修改。
+
+### 下一位接手者的实板验证顺序
+
+不要重新从 SPI 猜起。只要 `readback_mismatch_mask=0` 且上述寄存器值一致，就先沿后半段链路排查：
+
+1. **先确认探头位置。** AD9959 模块 P2 为 2×8 排针，方形焊盘是 1 脚；IO_UPDATE 是
+   P2-10。MCU 侧为 PD4。先测 PD4，再测模块 P2-10，二者必须看到同一个脉冲。
+2. **观察 IO_UPDATE。** 示波器使用单次上升沿触发、阈值约 1.5 V、时基 10～100 ms/div，
+   然后按 MCU RESET。正常应看到 `0 V → 3.3 V → 0 V`，高电平约 40 ms。
+   若模块 P2-10 上看到连续 125 MHz，它不是合法 IO_UPDATE，通常意味着测错点、连线开路后拾取
+   SYNC_CLK，或模块排针方向数错。
+3. **观察目标输出。** CH0/CH1 使用 1 MΩ 输入、10×探头，先用约 100 mV/div、
+   200～500 ns/div 搜索 1 MHz。正常模块低频输出应为数百 mVpp 量级，而不是 2 mVpp。
+4. **若 PD4 正常而 P2-10 不正常，** 检查 PD4→导线→P2-10 的逐段导通、排针方向和焊点。
+5. **若 P2-10 正常但仍无输出，断电检查** DAC_RSET/R22 到 GND 是否约 1.8 kΩ；上电检查
+   AD9959 AVDD 去耦点是否约 1.8 V，并记录模块 5 V 总电流。正常模块资料标称工作电流通常
+   大于 300 mA，明显偏低意味着 DAC/模拟电源可能未工作。
+6. **交叉替换。** 在接线、供电和 UPDATE 均确认后，用相邻成功工程的已知良好模块交叉替换。
+   若故障随模块移动，则优先检查模块损坏；此前出现过 USB 过流提示，不能排除硬件受损。
+
+### 观测值的证据边界
+
+| 观测 | 能证明 | 不能证明 |
+|---|---|---|
+| `SYNC_CLK≈125 MHz` | 25 MHz 参考、PLL ×20、数字核心基本工作 | DAC 已输出、幅度正确 |
+| FR1/CFR/FTW/ACR 回读正确 | 串行写入、通道选择和寄存器缓冲正确 | IO_UPDATE 已到模块焊盘、模拟输出正确 |
+| PD4 ODR/IDR 高低正确 | MCU 引脚内部状态和管脚电平正确 | 线材另一端 P2-10 一定收到 |
+| CH0/CH1 仅 2 mV、25/50 MHz | 输出口存在参考时钟耦合/谐波 | DDS 正在输出 25/50 MHz |
+| CH0/CH1 约 1 MHz、数百 mVpp | DDS 数字与模拟链路基本贯通 | 全频段幅频、杂散和相位指标已达标 |
+
 ### DAC1 与 VGA
 
 - PA4 配置为 DAC1_OUT1、Analog、No pull。
@@ -395,10 +532,11 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 1. 向 PA0 输入已知频率的整形方波，检查 `frequency_measure_hz`。
 2. 测量第一块 AD9834 输出，确认 `fDDS = fin - 100 kHz`。
-3. 检查 AD9959 上电两路输出为 1 MHz 正弦波；用示波器确认 PE6/SDIO_0 每次拉低 CS
-   期间按"指令字节 + 数据字节"顺序发送，PD4/IO_UPDATE 在每次写后产生上升沿；
-   `bus_probe_signature=0x42424731`、`bitbang_gpio_ready=1`、`bitbang_clock_edges` 持续增加后，
-   再通过 `ad9959_read_register()` 读回 CFR/FTW 验证芯片是否真正接收。
+3. AD9959 当前数字回读已经全部通过，但两路模拟输出仍只有约 2 mVpp 的 25/50 MHz
+   参考时钟相关杂波。烧录当前静默版后确认 `bus_probe_signature=0x52444531`、
+   `readback_mismatch_mask=0`、`bus_probe_count=0`，且 `bitbang_clock_edges` 初始化后不再增加；
+   再按“AD9959 迁移、排错与当前交接状态”一节依次检查模块 P2-10 的 IO_UPDATE、RSET、
+   AVDD、5 V 总电流和模块交叉替换。
 4. 向 PC4 和 PB1 输入安全范围内的同步信号，检查 DMA 半满/满计数持续增加且错误计数不增长。
 5. 对比 `raw_peak_frequency_hz`、`peak_frequency_hz` 以及第二通道对应字段。
 6. 用高精度直流源和万用表重新确认两个 ADC 通道的 `volts_per_code` 与 `offset_v`。
@@ -423,6 +561,12 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - FFT、ADC 电压、DAC 实测电压和整机幅频关系均可能随时钟、VDDA、温度和模拟前端变化，需要重新实板标定。
 - 当前 VGA 增益使用 PA4 实测控制电压和理论 Rf/RG 模型，不能替代 VGA 器件的整机增益标定。
 - USART1 为 9600 bit/s，刷新被安排在 FFT 显示空档；增加控件或频谱发送量时需重新评估时序。
+- AD9959 数字寄存器链路已经实板验证，但 CH0/CH1 模拟输出尚未通过：当前仍是约 2 mVpp、
+  25/50 MHz 参考时钟相关杂波。不能把 `readback_mismatch_mask=0` 当作整机输出验证完成。
+- AD9959 当前使用 GPIO 模拟串行作为诊断路径；硬件 SPI4 单帧回退实现已通过编译和静态测试，
+  但切回前必须重新做实板寄存器回读和输出验证。
+- PD4 的 GPIO ODR/IDR 已验证，但 IO_UPDATE 脉冲是否以正确幅度到达模块 P2-10 仍需在静默版
+  复位瞬间用单次上升沿触发确认。
 - Debug 目录是当前工程交付的一部分；重新构建后其中的 ELF、MAP、LIST 和对象文件会变化。
 
 ## ADS8688 与动态采集源
