@@ -21,6 +21,91 @@ STM32CubeIDE 1.19.0、STM32Cube FW_H7 V1.12.1。当前工程组合了以下功�
 IOC 文件名统一为 `dds2`。原工程和失败参考工程均未覆盖。AD9959 的完整方案论证、
 接线和上板检查见 [`docs/AD9959移植方案与上板检查.md`](docs/AD9959移植方案与上板检查.md)。
 
+## 队友交接摘要（2026-07-26）
+
+### 获取方式与分支边界
+
+- GitHub：`https://github.com/zzzmomo-code/electric-sai-stm32-measurement.git`
+- 本次交接分支：`codex/ad9959-h743`
+- 基线分支：`h743_pre1`
+- 基线提交：`6c1ece63a1645c16b0f28667c0d7a6a27fb39629`
+- AD9959 迁移实现提交：`2564cf16bff773b10f8cb98260090aa8467769d1`
+
+本分支只比 `origin/h743_pre1` 增加 AD9959 迁移和交接文档，不会覆盖
+`h743_pre1`、`main` 或其他已经验证的功能分支。队友可使用：
+
+```powershell
+git fetch origin
+git switch --create codex/ad9959-h743 --track origin/codex/ad9959-h743
+```
+
+如果本地已经存在同名分支，则执行：
+
+```powershell
+git switch codex/ad9959-h743
+git pull --ff-only
+```
+
+在完成本 README 的 AD9959 阶段 A～E 实板验收前，不建议把本分支直接合并到稳定分支。
+
+### 本次迁移思路
+
+1. 保留 SPI2 上的第一块 AD9834，不改动现有外差测量和五次中频补偿链路。
+2. 删除原第二块 AD9834 的 SPI6、`ad9834_2.c/.h` 和 PB3/PB5/PD6/PD7 功能。
+3. 在不占用 SPI2、SPI3 的前提下，使用 SPI4 的 PE2/PE5/PE6 接 AD9959。
+4. 使用 AD9959 单比特三线模式：SDIO_0 专门写入，SDIO_2 专门回读。
+5. 只开放 CH0、CH1，初始化时明确关闭 CH2、CH3 的数字核和 DAC。
+6. 指令与数据始终在一次 CS 低电平和一次 HAL SPI 调用内完成，并加入 H743 SPI
+   勘误所需的帧间等待。
+7. 初始化和每次参数更新后回读配置寄存器，用数字自检先区分 SPI 问题与模拟输出问题。
+
+对照过的隔壁成功工程文件实际配置为 STM32H750VBT6、SPI6 TX-only、
+0.9375 Mbit/s、四通道全部开启。它使用的 `FR1=D0 00 00`、1 MHz
+`FTW=00 83 12 6F` 和满幅 ACR 与本工程一致，因此可用于交叉验证 AD9959
+寄存器值，但不能直接作为 H743VI 的 IOC 或双向 SPI 模板。本工程保留 SPI4
+全双工和寄存器回读，不照搬其单向接口。
+
+### 当前验证状态
+
+| 检查项 | 当前结果 |
+|---|---|
+| MCU、工程名、IOC | STM32H743VIT6；工程名和 IOC 均为 `dds2` |
+| AD9959 主机模拟测试 | 已通过，覆盖四通道寄存器模型、双向 SPI、回读不一致和 HAL 错误 |
+| 全项目 Python 测试 | 74 项全部通过 |
+| CubeIDE Debug 全量编译 | CubeIDE 1.19 自带 GCC 13.3，121 条编译/链接命令，0 error、0 warning |
+| 固件产物 | 已生成本地 `Debug/dds2.elf`；`Debug/` 被 Git 忽略，不上传构建产物 |
+| AD9959 实际 SPI 波形 | 待 H743VI + V2.6 模块实板验证 |
+| CH0/CH1 模拟输出 | 待实板验证 |
+| 实际模拟锁相 | 尚未实现；寄存器回读不能替代模拟相位反馈 |
+
+当前分支的软件和编译检查已经完成，但不能据此宣称 AD9959 模块已经在实板输出。
+此前失败工程出现的“约 50 MHz、3 mV、半个正弦”没有被当作本工程的有效输出证据。
+
+### 第一次上板的强制检查点
+
+1. 模块排针 `PDC` 即芯片 `PWR_DWN_CTL`，低电平为正常工作；本方案直接接 GND，
+   不占用 H743 GPIO。
+2. 模块 `SDIO_3/SYNC_I/O`、P0～P3 接 GND，SDIO_1 悬空；SDIO_0 接 PE6，
+   SDIO_2 接 PE5。
+3. 当前固件没有单独等待 1 s 的模块电源稳定延时。第一次测试必须先给 AD9959
+   模块上电并等待至少 1 s，再复位或启动 H743。
+4. 在 `system_init()` 的 `ad9959_init()` 返回后暂停，正常初始化应满足：
+   - `initialized == 1`
+   - `verified == 1`
+   - `last_status == ad9959_status_ok`
+   - `last_hal_status == HAL_OK`
+   - `readback_mismatch_mask == 0`
+   - `error_count == 0`
+   - `write_count == 23`
+   - `read_count == 12`
+   - `update_count == 2`
+5. 数字回读全部通过后，再检查 CH0、CH1 的 1 MHz 输出。若回读通过但没有模拟输出，
+   应转查模块 5 V/3.3 V/1.8 V、25 MHz 时钟、DAC 偏置和输出变压器/滤波网络，
+   不要继续盲改 SPI 寄存器。
+
+若后续要求 MCU 与模块同时自动上电，建议在独立实板分支中把 AD9959 初始化前的
+电源稳定等待、复位恢复和 PLL 等待做成明确常量，并在逻辑分析仪和示波器复验后再合并。
+
 ## 硬件连接
 
 | MCU 引脚 | 外设功能 | 连接与用途 |
@@ -43,8 +128,9 @@ IOC 文件名统一为 `dds2`。原工程和失败参考工程均未覆盖。AD9
 | PA9 | USART1_TX | 接淘晶驰串口屏 RX |
 | PA10 | USART1_RX | 接淘晶驰串口屏 TX |
 
-AD9959 模块端的 `PDC`、`SDIO_3/SYNC_I/O`、`P0`～`P3` 直接接 GND，
-`SDIO_1` 悬空不用。模块使用独立 5 V、建议具备 1 A 余量的电源，并与 MCU 共地；
+AD9959 模块端的 `PDC` 是芯片第 4 脚 `PWR_DWN_CTL` 的模块丝印，低电平表示外部
+掉电控制无效、芯片正常工作；本方案将 `PDC`、`SDIO_3/SYNC_I/O`、`P0`～`P3`
+直接接 GND，`SDIO_1` 悬空不用。模块使用独立 5 V、建议具备 1 A 余量的电源，并与 MCU 共地；
 只连接 CH0、CH1 输出。关键测量映射可简写为 `PA4 / DAC1_OUT1`、
 `PC4 / ADC1_INP4` 和 `PB1 / ADC2_INP5`。MCU、比较器、AD9834、AD9959、
 模拟前端、VGA 和串口屏必须共地。
@@ -402,10 +488,12 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 1. 向 PA0 输入已知频率的整形方波，检查 `frequency_measure_hz`。
 2. 测量第一块 AD9834 输出，确认 `fDDS = fin - 100 kHz`。
-3. 检查 AD9959 的 5 V、共地和固定接地脚；用逻辑分析仪确认 PD5 拉低期间，
+3. 先给 AD9959 模块上电并等待至少 1 s，再复位或启动 H743。检查 AD9959 的
+   5 V、共地和固定接地脚；用逻辑分析仪确认 PD5 拉低期间，
    PE2 产生 Mode 0 时钟，PE6 发出完整指令与数据，PE5 能返回寄存器值。
 4. 检查 `ad9959_diagnostics.initialized=1`、`verified=1`、
-   `readback_mismatch_mask=0`，再用示波器 1 MΩ 输入确认 CH0、CH1 各输出 1 MHz。
+   `readback_mismatch_mask=0`、`write_count=23`、`read_count=12`、
+   `update_count=2`，再用示波器 1 MΩ 输入确认 CH0、CH1 各输出 1 MHz。
 5. 向 PC4 和 PB1 输入安全范围内的同步信号，检查 DMA 半满/满计数持续增加且错误计数不增长。
 6. 对比 `raw_peak_frequency_hz`、`peak_frequency_hz` 以及第二通道对应字段。
 7. 用高精度直流源和万用表重新确认两个 ADC 通道的 `volts_per_code` 与 `offset_v`。
