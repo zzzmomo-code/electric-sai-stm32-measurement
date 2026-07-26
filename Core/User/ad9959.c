@@ -32,6 +32,9 @@
 /** SPI 阻塞超时，单位 ms */
 #define AD9959_SPI_TIMEOUT_MS 10u
 
+/** AD9959可写寄存器的最大数据长度，不含1字节指令。 */
+#define AD9959_WRITE_MAX_BYTES 4u
+
 /** GPIO模拟串行每个半周期的保守延时循环数，确保示波器易于观察。 */
 #define AD9959_BITBANG_DELAY_LOOPS 100u
 
@@ -288,24 +291,37 @@ static ad9959_status_t ad9959_write_register(uint8_t address,
                                              uint8_t length)
 {
     HAL_StatusTypeDef hal_status;
-    uint8_t header = (uint8_t)(address & 0x7Fu);
+    uint8_t frame[AD9959_WRITE_MAX_BYTES + 1u];
     uint8_t index;
+
+    if ((data == (const uint8_t *)0)
+        || (length == 0u)
+        || (length > AD9959_WRITE_MAX_BYTES))
+    {
+        return ad9959_status_invalid_length;
+    }
+
+    frame[0] = (uint8_t)(address & 0x7Fu);
+    for (index = 0u; index < length; index++)
+    {
+        frame[index + 1u] = data[index];
+    }
 
     HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);
 #if (AD9959_USE_GPIO_BITBANG != 0u)
     ad9959_bitbang_delay();
-    ad9959_bitbang_write_byte(header);
-    for (index = 0u; index < length; index++)
+    for (index = 0u; index <= length; index++)
     {
-        ad9959_bitbang_write_byte(data[index]);
+        ad9959_bitbang_write_byte(frame[index]);
     }
     hal_status = HAL_OK;
 #else
-    hal_status = HAL_SPI_Transmit(&hspi4, &header, 1u, AD9959_SPI_TIMEOUT_MS);
-    if (hal_status == HAL_OK)
-    {
-        hal_status = HAL_SPI_Transmit(&hspi4, data, length, AD9959_SPI_TIMEOUT_MS);
-    }
+    /*
+     * H7硬件SPI路径把指令和数据放进同一事务。CS低期间不拆分HAL调用，
+     * 与已验证工程一致，也规避低SCLK下相邻EOT/CSTART事务的风险。
+     */
+    hal_status = HAL_SPI_Transmit(&hspi4, frame, (uint16_t)(length + 1u),
+                                  AD9959_SPI_TIMEOUT_MS);
 #endif
     HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
                       GPIO_PIN_RESET);
@@ -340,28 +356,32 @@ static ad9959_status_t ad9959_read_register_raw(uint8_t address,
                                                uint8_t length)
 {
     HAL_StatusTypeDef hal_status;
-    uint8_t header = (uint8_t)(address | AD9959_READ_BIT);
-#if (AD9959_USE_GPIO_BITBANG != 0u)
     uint8_t index;
-#else
-    static uint8_t dummy[AD9959_READ_MAX_BYTES] = {0};
+#if (AD9959_USE_GPIO_BITBANG == 0u)
+    uint8_t tx_frame[AD9959_READ_MAX_BYTES + 1u] = {0};
+    uint8_t rx_frame[AD9959_READ_MAX_BYTES + 1u] = {0};
 #endif
 
     HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);
 #if (AD9959_USE_GPIO_BITBANG != 0u)
     ad9959_bitbang_delay();
-    ad9959_bitbang_write_byte(header);
+    ad9959_bitbang_write_byte((uint8_t)(address | AD9959_READ_BIT));
     for (index = 0u; index < length; index++)
     {
         data[index] = ad9959_bitbang_read_byte();
     }
     hal_status = HAL_OK;
 #else
-    hal_status = HAL_SPI_Transmit(&hspi4, &header, 1u, AD9959_SPI_TIMEOUT_MS);
+    tx_frame[0] = (uint8_t)(address | AD9959_READ_BIT);
+    hal_status = HAL_SPI_TransmitReceive(&hspi4, tx_frame, rx_frame,
+                                         (uint16_t)(length + 1u),
+                                         AD9959_SPI_TIMEOUT_MS);
     if (hal_status == HAL_OK)
     {
-        hal_status = HAL_SPI_TransmitReceive(&hspi4, dummy, data, length,
-                                            AD9959_SPI_TIMEOUT_MS);
+        for (index = 0u; index < length; index++)
+        {
+            data[index] = rx_frame[index + 1u];
+        }
     }
 #endif
     HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,

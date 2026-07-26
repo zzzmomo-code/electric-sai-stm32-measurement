@@ -88,16 +88,18 @@ SYNC_I/O，数据手册明确要求未使用时保持逻辑0，禁止浮空。
 - SPI4：Master、Full-Duplex、Motorola、8 bit、MSB First。
 - CPOL Low，CPHA 1 Edge（SPI Mode 0），软件 NSS；CS 由 PD5 手动控制。
 - SPI45 内核时钟为 120 MHz，保留 Prescaler=64、SCLK=1.875 MHz 的硬件SPI回退配置。
-- SPI4 启用 `MasterKeepIOState`：H7 HAL 每次阻塞传输结束都会暂时关闭 SPI 外设，
-  该配置可让 PE2/SCLK 在地址与数据两次传输的间隙继续保持 Mode 0 的低电平，避免 CS 低电平期间出现悬空伪上升沿。
+- SPI4 启用 `MasterKeepIOState`；硬件SPI回退路径把“指令字节+全部数据字节”拼成一次
+  `HAL_SPI_Transmit`/`HAL_SPI_TransmitReceive`，CS低期间不再拆成相邻的H7 SPI事务。
 - 当前 `AD9959_USE_GPIO_BITBANG=1`：`ad9959_init()` 暂时关闭SPI4并把PE2/PE6配置为推挽输出、PE5配置为下拉输入，按商家例程相同的Mode 0、MSB优先顺序模拟串行时序。该版本只用于隔离H7硬件SPI/HAL传输层，不改变寄存器值、复位、IO_UPDATE或外部接线。
-- 临时总线探针每200ms先把PD5/CS保持低电平40ms，再以GPIO发送CSR写帧 `00 12` 和FR1读帧 `81 + 3字节`；诊断结构记录GPIO空闲电平、时钟边沿总数、PD5的ODR/IDR及固件签名 `0x42424731`（ASCII `BBG1`，十进制 `1111639857`）。实板通信确认后应关闭 `AD9959_BUS_PROBE_ENABLE` 并恢复最终传输方案。
+- 两路FR1/CFR/CFTW0/ACR实板回读已经全部一致，当前
+  `AD9959_BUS_PROBE_ENABLE=0`：初始化完成后总线保持静止，避免周期性诊断帧干扰模拟输出判断。
+  如需重新观察总线，可临时开启探针；固件签名为 `0x52444531`（ASCII `RDE1`）。
 - AD9959 板载 25 MHz 晶振经片内 PLL 20 倍频得到 500 MHz 系统时钟。
 - PE6/SDIO_0 用于写入，PE5/SDIO_2 用于读回；PD4 产生 IO_UPDATE
 - 驱动每次写 CSR 都设置 `CSR[2:1]=01` 三线模式（CH0=`0x12`、CH1=`0x22`），使 SDIO_0 作为输入、SDIO_2 作为读回输出。
   上升沿刷新影子寄存器，PB4 控制硬件 RESET。
 - 不使用 SPI DMA 和 SPI 中断；每次写寄存器后自动产生一个 IO_UPDATE 脉冲。AD9959复位后PLL尚未启用，
-  `SYNC_CLK=25MHz/4=6.25MHz`、周期约160ns；诊断固件把IO_UPDATE高电平固定保持1ms，
+  `SYNC_CLK=25MHz/4=6.25MHz`、周期约160ns；诊断固件把IO_UPDATE高电平固定保持40ms，
   保证首次FR1更新以及后续更新均满足“脉宽大于一个SYNC_CLK周期”的数据手册要求。
 
 ### DAC1 与 VGA

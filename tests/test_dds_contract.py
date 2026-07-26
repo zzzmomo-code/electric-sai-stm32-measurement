@@ -144,7 +144,7 @@ class DdsContractTest(unittest.TestCase):
             "#define AD9959_MAX_OUTPUT_HZ 200000000u",
             "#define AD9959_AMPLITUDE_MAX 1023u",
             "#define AD9959_USE_GPIO_BITBANG 1u",
-            "#define AD9959_BUS_PROBE_ENABLE 1u",
+            "#define AD9959_BUS_PROBE_ENABLE 0u",
             "#define AD9959_BUS_PROBE_PERIOD_MS 200u",
             "#define AD9959_BUS_PROBE_CS_LOW_MS 40u",
             "#define AD9959_IO_UPDATE_HIGH_MS 40u",
@@ -229,6 +229,27 @@ class DdsContractTest(unittest.TestCase):
             source.index("ad9959_serial_gpio_init();"),
             source.index("ad9959_hardware_reset();"),
         )
+
+    def test_ad9959_hardware_spi_fallback_uses_one_complete_frame(self) -> None:
+        source = read_text("Core/User/ad9959.c")
+        write_source = source.split(
+            "static ad9959_status_t ad9959_write_register", 1
+        )[1].split("/**", 1)[0]
+        read_source = source.split(
+            "static ad9959_status_t ad9959_read_register_raw", 1
+        )[1].split("/**", 1)[0]
+
+        self.assertIn("uint8_t frame[AD9959_WRITE_MAX_BYTES + 1u];", write_source)
+        self.assertIn(
+            "HAL_SPI_Transmit(&hspi4, frame, (uint16_t)(length + 1u),",
+            write_source,
+        )
+        self.assertNotIn("HAL_SPI_Transmit(&hspi4, &header, 1u", write_source)
+        self.assertIn(
+            "HAL_SPI_TransmitReceive(&hspi4, tx_frame, rx_frame,",
+            read_source,
+        )
+        self.assertNotIn("HAL_SPI_Transmit(&hspi4, &header, 1u", read_source)
 
     def test_ad9959_bitbang_read_samples_on_sclk_low_phase(self) -> None:
         source = read_text("Core/User/ad9959.c")

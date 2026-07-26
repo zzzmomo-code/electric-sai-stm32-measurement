@@ -37,8 +37,11 @@
 /** 串行传输选择：1表示临时使用与商家例程同序的GPIO模拟串行接口。 */
 #define AD9959_USE_GPIO_BITBANG 1u
 
-/** 临时总线探针开关：1表示周期性重复固定CSR写入和FR1读取。 */
-#define AD9959_BUS_PROBE_ENABLE 1u
+/**
+ * 临时总线探针开关：完成串行链路验证后保持为0，使初始化后的AD9959总线静止。
+ * 需要重新观察CS/SCLK/SDIO时可临时改为1，验证结束后必须恢复为0。
+ */
+#define AD9959_BUS_PROBE_ENABLE 0u
 
 /** 临时总线探针重复周期，单位ms。 */
 #define AD9959_BUS_PROBE_PERIOD_MS 200u
