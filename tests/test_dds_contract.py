@@ -143,10 +143,11 @@ class DdsContractTest(unittest.TestCase):
             "#define AD9959_MCLK_HZ 500000000u",
             "#define AD9959_MAX_OUTPUT_HZ 200000000u",
             "#define AD9959_AMPLITUDE_MAX 1023u",
+            "#define AD9959_USE_GPIO_BITBANG 1u",
             "#define AD9959_BUS_PROBE_ENABLE 1u",
             "#define AD9959_BUS_PROBE_PERIOD_MS 200u",
             "#define AD9959_BUS_PROBE_CS_LOW_MS 40u",
-            "#define AD9959_BUS_PROBE_SIGNATURE 0x43533430u",
+            "#define AD9959_BUS_PROBE_SIGNATURE 0x42424731u",
             "#define AD9959_READBACK_MISMATCH_FR1      0x01u",
             "#define AD9959_READBACK_MISMATCH_CH1_FTW  0x10u",
             "extern volatile ad9959_diagnostics_t ad9959_diagnostics;",
@@ -164,7 +165,7 @@ class DdsContractTest(unittest.TestCase):
         for text in required:
             self.assertIn(text, header)
 
-    def test_ad9959_driver_uses_spi4_and_dedicated_gpio(self) -> None:
+    def test_ad9959_driver_supports_gpio_bitbang_diagnostic_transport(self) -> None:
         source_path = ROOT / "Core/User/ad9959.c"
 
         self.assertTrue(source_path.is_file(), "AD9959 源文件尚未创建")
@@ -172,6 +173,16 @@ class DdsContractTest(unittest.TestCase):
         required = (
             "HAL_SPI_Transmit(&hspi4",
             "HAL_SPI_TransmitReceive(&hspi4",
+            "static void ad9959_serial_gpio_init(void)",
+            "static void ad9959_bitbang_write_byte(uint8_t value)",
+            "static uint8_t ad9959_bitbang_read_byte(void)",
+            "#define AD9959_SCLK_Pin GPIO_PIN_2",
+            "#define AD9959_SDIO2_Pin GPIO_PIN_5",
+            "#define AD9959_SDIO0_Pin GPIO_PIN_6",
+            "__HAL_SPI_DISABLE(&hspi4);",
+            "GPIO_MODE_OUTPUT_PP",
+            "GPIO_MODE_INPUT",
+            "ad9959_diagnostics.bitbang_clock_edges += 8u;",
             "AD9959_CS_GPIO_Port",
             "AD9959_CS_Pin",
             "AD9959_RST_GPIO_Port",
@@ -210,6 +221,10 @@ class DdsContractTest(unittest.TestCase):
         self.assertNotIn(
             "ad9959_csr_channel_enable[2] = { 0x10u, 0x20u }",
             source,
+        )
+        self.assertLess(
+            source.index("ad9959_serial_gpio_init();"),
+            source.index("ad9959_hardware_reset();"),
         )
 
     def test_ad9959_io_update_covers_pre_pll_sync_clock_period(self) -> None:
@@ -261,6 +276,11 @@ class DdsContractTest(unittest.TestCase):
 
         for text in (
             "uint32_t bus_probe_signature;",
+            "uint32_t bitbang_clock_edges;",
+            "uint8_t bitbang_gpio_ready;",
+            "uint8_t bitbang_sclk_idle_odr;",
+            "uint8_t bitbang_sdio0_idle_odr;",
+            "uint8_t bitbang_sdio2_idle_idr;",
             "uint32_t bus_probe_cs_low_count;",
             "uint32_t bus_probe_cs_low_tick;",
             "uint32_t bus_probe_cs_high_tick;",

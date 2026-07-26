@@ -87,13 +87,13 @@ SYNC_I/O，数据手册明确要求未使用时保持逻辑0，禁止浮空。
 
 - SPI4：Master、Full-Duplex、Motorola、8 bit、MSB First。
 - CPOL Low，CPHA 1 Edge（SPI Mode 0），软件 NSS；CS 由 PD5 手动控制。
-- SPI45 内核时钟为 120 MHz，诊断阶段 Prescaler=64，SCLK=1.875 MHz，以提高杜邦线连接下的信号完整性并验证SPI通信。
+- SPI45 内核时钟为 120 MHz，保留 Prescaler=64、SCLK=1.875 MHz 的硬件SPI回退配置。
 - SPI4 启用 `MasterKeepIOState`：H7 HAL 每次阻塞传输结束都会暂时关闭 SPI 外设，
   该配置可让 PE2/SCLK 在地址与数据两次传输的间隙继续保持 Mode 0 的低电平，避免 CS 低电平期间出现悬空伪上升沿。
-- PE5/SPI4_MISO 在诊断阶段启用内部下拉；若关键寄存器从全 `0xFF` 变成全 `0x00`，说明模块 SDIO_2 没有驱动该线路，应检查 PE5→SD2 连线或串行端口模式。
-- 临时总线探针每200ms先把PD5/CS保持低电平40ms，再发送CSR写帧 `00 12` 和FR1读帧 `81 + 3字节`；诊断结构同时记录PD5的ODR/IDR及固件签名 `0x43533430`，用于确认实际烧录固件和GPIO电平，实板通信确认后应关闭 `AD9959_BUS_PROBE_ENABLE`。
+- 当前 `AD9959_USE_GPIO_BITBANG=1`：`ad9959_init()` 暂时关闭SPI4并把PE2/PE6配置为推挽输出、PE5配置为下拉输入，按商家例程相同的Mode 0、MSB优先顺序模拟串行时序。该版本只用于隔离H7硬件SPI/HAL传输层，不改变寄存器值、复位、IO_UPDATE或外部接线。
+- 临时总线探针每200ms先把PD5/CS保持低电平40ms，再以GPIO发送CSR写帧 `00 12` 和FR1读帧 `81 + 3字节`；诊断结构记录GPIO空闲电平、时钟边沿总数、PD5的ODR/IDR及固件签名 `0x42424731`（ASCII `BBG1`，十进制 `1111639857`）。实板通信确认后应关闭 `AD9959_BUS_PROBE_ENABLE` 并恢复最终传输方案。
 - AD9959 板载 25 MHz 晶振经片内 PLL 20 倍频得到 500 MHz 系统时钟。
-- PE6/MOSI 接 SDIO_0 用于写入，PE5/MISO 接 SDIO_2 用于读回；PD4 产生 IO_UPDATE
+- PE6/SDIO_0 用于写入，PE5/SDIO_2 用于读回；PD4 产生 IO_UPDATE
 - 驱动每次写 CSR 都设置 `CSR[2:1]=01` 三线模式（CH0=`0x12`、CH1=`0x22`），使 SDIO_0 作为输入、SDIO_2 作为读回输出。
   上升沿刷新影子寄存器，PB4 控制硬件 RESET。
 - 不使用 SPI DMA 和 SPI 中断；每次写寄存器后自动产生一个 IO_UPDATE 脉冲。AD9959复位后PLL尚未启用，
@@ -159,7 +159,7 @@ ad9834_select_phase_register(ad9834_phase_register_1);
 `dds_set_frequency()` 用于第一块 AD9834 的无中断交替更新：先写入非活动频率寄存器，
 两个 16 位字均成功后才切换 FSELECT；参数或 SPI 写入失败时保持当前输出。
 
-AD9959 使用独立的 `ad9959.c/.h` 和 SPI4，提供双通道（CH0+CH1）输出能力。
+AD9959 使用独立的 `ad9959.c/.h`，提供双通道（CH0+CH1）输出能力；当前排障提交临时使用GPIO模拟串行传输，SPI4配置保留为回退路径。
 `system_init()` 调用 `ad9959_init()` 后，两个通道默认输出 1 MHz 正弦波，相位 0
 度，幅度满量程。AD9959 系统时钟为 500 MHz，32 位频率字分辨率约 0.12 Hz。初始化
 失败时由 `ad9959_diagnostics` 记录错误。
@@ -393,9 +393,10 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 
 1. 向 PA0 输入已知频率的整形方波，检查 `frequency_measure_hz`。
 2. 测量第一块 AD9834 输出，确认 `fDDS = fin - 100 kHz`。
-3. 检查 AD9959 上电两路输出为 1 MHz 正弦波；用示波器确认 PE6/MOSI 每次拉低 CS
+3. 检查 AD9959 上电两路输出为 1 MHz 正弦波；用示波器确认 PE6/SDIO_0 每次拉低 CS
    期间按"指令字节 + 数据字节"顺序发送，PD4/IO_UPDATE 在每次写后产生上升沿；
-   可通过 `ad9959_read_register()` 读回 CFR/FTW 验证写入是否正确。
+   `bus_probe_signature=0x42424731`、`bitbang_gpio_ready=1`、`bitbang_clock_edges` 持续增加后，
+   再通过 `ad9959_read_register()` 读回 CFR/FTW 验证芯片是否真正接收。
 4. 向 PC4 和 PB1 输入安全范围内的同步信号，检查 DMA 半满/满计数持续增加且错误计数不增长。
 5. 对比 `raw_peak_frequency_hz`、`peak_frequency_hz` 以及第二通道对应字段。
 6. 用高精度直流源和万用表重新确认两个 ADC 通道的 `volts_per_code` 与 `offset_v`。
@@ -407,7 +408,7 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - `frequency_measure_hz`：TIM5 粗测频率。
 - `dds_control_diagnostics`：DDS 目标、状态和更新次数。
 - `ad9834_diagnostics`：SPI 写入、两组频率/相位、当前选择和 HAL 状态。
-- `ad9959_diagnostics`：AD9959 SPI4 写入、错误计数、两通道频率/相位/幅度和 HAL 状态。
+- `ad9959_diagnostics`：AD9959 GPIO模拟串行/SPI4回退路径、错误计数、总线边沿、两通道配置和寄存器读回。
 - `adc_dual_stats`：DMA、溢出、错误和近期原始码统计。
 - `measurement_fft_diagnostics`：双通道 raw/校准频率、电压、THD、相位和质量状态。
 - `vga_control_diagnostics`：档位、DAC 指令电压、PA4 实测模型电压、VG 和增益。

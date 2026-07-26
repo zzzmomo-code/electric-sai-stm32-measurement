@@ -2,14 +2,15 @@
  * @file ad9959.h
  * @brief AD9959 DDS底层驱动接口。
  *
- * 模块用途：通过SPI4向AD9959写入寄存器，分别设置两个通道（CH0+CH1）的频率、
- * 相位和幅度。同时提供读寄存器能力，便于数字锁相环闭环验证。
+ * 模块用途：向AD9959写入寄存器，分别设置两个通道（CH0+CH1）的频率、相位和
+ * 幅度。同时提供读寄存器能力，便于数字链路验证。
  * GPIO引脚映射：PE2/SPI4_SCK，PE5/SPI4_MISO，PE6/SPI4_MOSI，
  * PD4/IO_UPDATE，PD5/CS（低有效），PB4/RESET（高有效复位）。
  * 模块固定电平：PDC、SDIO_3/SYNC_I/O及P0～P3必须从模块端接GND；
  * SDIO_1未使用。SDIO_3在单位串行模式下禁止浮空。
- * 依赖的外设和CubeIDE配置：SPI4主机Full-Duplex、8bit、MSB优先、
- * CPOL=Low、CPHA=1 Edge、1.875 Mbit/s；CS和RESET由软件控制，
+ * 依赖的外设和CubeIDE配置：保留SPI4主机配置；当前排障版本在ad9959_init()
+ * 中临时接管PE2/PE5/PE6为GPIO并模拟Mode 0串行时序，以隔离H7 SPI外设问题。
+ * CS和RESET由软件控制，
  * IO_UPDATE上升沿刷新寄存器；25MHz外部晶振经片内PLL 20倍频得到500MHz系统时钟。
  * 初始化方法：由system_init()调用ad9959_init()，初始化两个通道为1 MHz正弦波、
  * 相位0度、幅度满量程。
@@ -33,6 +34,9 @@
 /** AD9959读寄存器时单次最大字节数，用于防止越界。 */
 #define AD9959_READ_MAX_BYTES 8u
 
+/** 串行传输选择：1表示临时使用与商家例程同序的GPIO模拟串行接口。 */
+#define AD9959_USE_GPIO_BITBANG 1u
+
 /** 临时总线探针开关：1表示周期性重复固定CSR写入和FR1读取。 */
 #define AD9959_BUS_PROBE_ENABLE 1u
 
@@ -42,8 +46,8 @@
 /** 临时总线探针每周期保持CS低电平的时间，单位ms，便于示波器和万用表确认。 */
 #define AD9959_BUS_PROBE_CS_LOW_MS 40u
 
-/** 临时总线探针固件签名，ASCII为“CS40”，用于确认目标板与当前ELF一致。 */
-#define AD9959_BUS_PROBE_SIGNATURE 0x43533430u
+/** 临时总线探针固件签名，ASCII为“BBG1”，用于确认GPIO模拟串行固件。 */
+#define AD9959_BUS_PROBE_SIGNATURE 0x42424731u
 
 /** 初始化回读不一致位：FR1 全局寄存器。 */
 #define AD9959_READBACK_MISMATCH_FR1      0x01u
@@ -78,9 +82,9 @@ typedef enum
 /** AD9959运行诊断，便于在调试器Expressions中观察。 */
 typedef struct
 {
-    uint32_t write_count;                /**< 成功完成的SPI写寄存器次数。 */
-    uint32_t error_count;                /**< SPI发送失败次数。 */
-    int32_t last_hal_status;             /**< 最近一次HAL SPI返回值。 */
+    uint32_t write_count;                /**< 成功完成的串行写寄存器次数。 */
+    uint32_t error_count;                /**< 串行传输流程失败次数。 */
+    int32_t last_hal_status;             /**< 最近一次传输状态；GPIO模拟路径完成时为HAL_OK。 */
     uint8_t initialized;                 /**< 完整初始化成功后为1。 */
     uint8_t last_channel;                /**< 最近成功写入的通道编号。 */
     uint32_t frequency_hz[2];            /**< 两个通道最近成功写入的频率。 */
@@ -88,15 +92,20 @@ typedef struct
     uint16_t phase_degrees[2];           /**< 两个通道最近成功写入的整数角度。 */
     uint16_t phase_word[2];              /**< 两个通道的14位相位字。 */
     uint16_t amplitude[2];               /**< 两个通道的10位幅度值。 */
-    uint8_t readback_complete;           /**< 初始化末尾5项寄存器均完成SPI回读后为1。 */
+    uint8_t readback_complete;           /**< 初始化末尾5项寄存器均完成串行回读流程后为1。 */
     uint8_t readback_mismatch_mask;      /**< 回读值不一致位，使用AD9959_READBACK_MISMATCH_*解析。 */
     uint8_t fr1_readback[3];             /**< 初始化末尾读回的FR1原始字节。 */
     uint8_t cfr_readback[2][3];          /**< 初始化末尾分别读回的CH0/CH1 CFR原始字节。 */
     uint8_t ftw_readback[2][4];          /**< 初始化末尾分别读回的CH0/CH1 CFTW0原始字节。 */
     uint32_t bus_probe_count;            /**< 临时总线探针已执行的周期数。 */
-    int32_t bus_probe_last_hal_status;   /**< 临时总线探针最近一次HAL SPI状态。 */
+    int32_t bus_probe_last_hal_status;   /**< 临时总线探针最近一次传输状态。 */
     uint8_t bus_probe_fr1[3];            /**< 临时总线探针最近一次读回的FR1字节。 */
     uint32_t bus_probe_signature;        /**< 固件签名，必须等于AD9959_BUS_PROBE_SIGNATURE。 */
+    uint32_t bitbang_clock_edges;        /**< GPIO模拟串行已产生的SCLK上升沿总数。 */
+    uint8_t bitbang_gpio_ready;          /**< PE2/PE5/PE6完成GPIO接管后为1。 */
+    uint8_t bitbang_sclk_idle_odr;       /**< 最近事务结束后PE2输出锁存值，期望为0。 */
+    uint8_t bitbang_sdio0_idle_odr;      /**< 最近事务结束后PE6输出锁存值，期望为0。 */
+    uint8_t bitbang_sdio2_idle_idr;      /**< 最近事务结束后PE5实际输入值。 */
     uint32_t bus_probe_cs_low_count;     /**< 已实际下达PD5拉低命令的次数。 */
     uint32_t bus_probe_cs_low_tick;      /**< 最近一次PD5拉低命令的HAL毫秒时刻。 */
     uint32_t bus_probe_cs_high_tick;     /**< 最近一次PD5恢复高电平的HAL毫秒时刻。 */

@@ -2,14 +2,14 @@
  * @file ad9959.c
  * @brief AD9959 DDS底层驱动实现。
  *
- * 模块用途：使用SPI4和手动CS/RESET/IO_UPDATE完成AD9959双通道的频率、相位、
- * 幅度寄存器写入与读回。两路通道可独立配置，便于外差式测量与数字锁相环闭环。
- * GPIO引脚映射：PE2/SPI4_SCK，PE5/SPI4_MISO，PE6/SPI4_MOSI，
+ * 模块用途：完成AD9959双通道的频率、相位、幅度寄存器写入与读回。当前诊断版本
+ * 临时使用GPIO模拟串行时序，隔离STM32H7硬件SPI传输层；两路通道仍可独立配置。
+ * GPIO引脚映射：PE2/SCLK，PE5/SDIO_2输入，PE6/SDIO_0输出，
  * PD4/IO_UPDATE，PD5/CS，PB4/RESET。
  * 模块固定电平：PDC、SDIO_3/SYNC_I/O及P0～P3必须从模块端接GND；
  * SDIO_1未使用。SDIO_3在单位串行模式下禁止浮空。
- * 依赖的外设和CubeIDE配置：SPI4主机Full-Duplex、8bit、MSB优先、
- * CPOL=Low、CPHA=1 Edge、1.875 Mbit/s；CS低有效，RESET高有效复位，
+ * 依赖的外设和CubeIDE配置：SPI4仍保留为回退路径；诊断版本在初始化时将
+ * PE2/PE5/PE6接管为普通GPIO并按Mode 0、MSB优先发送。CS低有效，RESET高有效复位，
  * IO_UPDATE上升沿刷新寄存器；25MHz外部晶振经片内PLL 20倍频得到500MHz系统时钟。
  * 初始化方法：由system_init()调用ad9959_init()，默认输出1MHz正弦波。
  * 调用方法：主循环中独立设置两个通道的频率/相位/幅度；禁止在中断中调用。
@@ -31,6 +31,21 @@
 
 /** SPI 阻塞超时，单位 ms */
 #define AD9959_SPI_TIMEOUT_MS 10u
+
+/** GPIO模拟串行每个半周期的保守延时循环数，确保示波器易于观察。 */
+#define AD9959_BITBANG_DELAY_LOOPS 100u
+
+/** AD9959串行时钟：原SPI4_SCK引脚PE2。 */
+#define AD9959_SCLK_GPIO_Port GPIOE
+#define AD9959_SCLK_Pin GPIO_PIN_2
+
+/** AD9959三线模式读数据：SDIO_2连接PE5。 */
+#define AD9959_SDIO2_GPIO_Port GPIOE
+#define AD9959_SDIO2_Pin GPIO_PIN_5
+
+/** AD9959三线模式写数据：SDIO_0连接PE6。 */
+#define AD9959_SDIO0_GPIO_Port GPIOE
+#define AD9959_SDIO0_Pin GPIO_PIN_6
 
 /** 临时总线探针状态：等待下一次可观测脉冲。 */
 #define AD9959_BUS_PROBE_STATE_WAITING 0u
@@ -76,6 +91,140 @@ static uint32_t ad9959_bus_probe_cs_low_started_ms;
 static uint8_t ad9959_bus_probe_state;
 
 /**
+ * @brief 为GPIO模拟串行时序提供与CPU频率无关的保守短延时。
+ * @param 无。
+ * @return 无。
+ * @note volatile循环变量防止-O3删除循环；该诊断版本优先保证边沿清晰，不追求吞吐率。
+ */
+static void ad9959_bitbang_delay(void)
+{
+    volatile uint32_t loop;
+
+    for (loop = 0u; loop < AD9959_BITBANG_DELAY_LOOPS; loop++)
+    {
+        __NOP();
+    }
+}
+
+/**
+ * @brief 保存GPIO模拟串行三根信号线的空闲电平快照。
+ * @param 无。
+ * @return 无。
+ * @note 快照用于调试器确认PE2/PE6已经回到低电平，以及PE5当前实际输入电平。
+ */
+static void ad9959_update_serial_gpio_snapshot(void)
+{
+    __DSB();
+    ad9959_diagnostics.bitbang_sclk_idle_odr =
+        ((AD9959_SCLK_GPIO_Port->ODR & (uint32_t)AD9959_SCLK_Pin) != 0u)
+        ? 1u : 0u;
+    ad9959_diagnostics.bitbang_sdio0_idle_odr =
+        ((AD9959_SDIO0_GPIO_Port->ODR & (uint32_t)AD9959_SDIO0_Pin) != 0u)
+        ? 1u : 0u;
+    ad9959_diagnostics.bitbang_sdio2_idle_idr =
+        ((AD9959_SDIO2_GPIO_Port->IDR & (uint32_t)AD9959_SDIO2_Pin) != 0u)
+        ? 1u : 0u;
+}
+
+/**
+ * @brief 接管PE2/PE5/PE6并配置为AD9959 GPIO模拟串行接口。
+ * @param 无。
+ * @return 无。
+ * @note PE2和PE6为推挽输出且空闲低；PE5为下拉输入。硬件SPI4在诊断期间关闭，
+ *       但CubeMX配置和HAL回退代码保留，便于验证后恢复。
+ */
+static void ad9959_serial_gpio_init(void)
+{
+#if (AD9959_USE_GPIO_BITBANG != 0u)
+    GPIO_InitTypeDef gpio_init = {0};
+
+    __HAL_SPI_DISABLE(&hspi4);
+    __HAL_RCC_GPIOE_CLK_ENABLE();
+
+    HAL_GPIO_WritePin(GPIOE, AD9959_SCLK_Pin | AD9959_SDIO0_Pin,
+                      GPIO_PIN_RESET);
+
+    gpio_init.Pin = AD9959_SCLK_Pin | AD9959_SDIO0_Pin;
+    gpio_init.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio_init.Pull = GPIO_PULLDOWN;
+    gpio_init.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOE, &gpio_init);
+
+    gpio_init.Pin = AD9959_SDIO2_Pin;
+    gpio_init.Mode = GPIO_MODE_INPUT;
+    gpio_init.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(GPIOE, &gpio_init);
+
+    ad9959_diagnostics.bitbang_gpio_ready = 1u;
+    ad9959_update_serial_gpio_snapshot();
+#else
+    ad9959_diagnostics.bitbang_gpio_ready = 0u;
+#endif
+}
+
+/**
+ * @brief 以Mode 0、MSB优先方式向AD9959发送一个字节。
+ * @param value 要发送的8位数据。
+ * @return 无。
+ * @note 每一位严格执行SCLK低电平设置SDIO_0、SCLK上升沿锁存、再回到低电平。
+ */
+static void ad9959_bitbang_write_byte(uint8_t value)
+{
+    uint8_t bit_index;
+
+    for (bit_index = 0u; bit_index < 8u; bit_index++)
+    {
+        HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                          GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(AD9959_SDIO0_GPIO_Port, AD9959_SDIO0_Pin,
+                          ((value & 0x80u) != 0u)
+                          ? GPIO_PIN_SET : GPIO_PIN_RESET);
+        ad9959_bitbang_delay();
+        HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                          GPIO_PIN_SET);
+        ad9959_bitbang_delay();
+        value <<= 1u;
+    }
+
+    HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                      GPIO_PIN_RESET);
+    ad9959_diagnostics.bitbang_clock_edges += 8u;
+}
+
+/**
+ * @brief 以Mode 0、MSB优先方式从AD9959的SDIO_2读取一个字节。
+ * @param 无。
+ * @return 读取到的8位数据。
+ * @note AD9959在SCLK下降沿更新输出，本函数在下一次上升沿后的稳定窗口采样PE5。
+ */
+static uint8_t ad9959_bitbang_read_byte(void)
+{
+    uint8_t bit_index;
+    uint8_t value = 0u;
+
+    for (bit_index = 0u; bit_index < 8u; bit_index++)
+    {
+        HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                          GPIO_PIN_RESET);
+        ad9959_bitbang_delay();
+        HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                          GPIO_PIN_SET);
+        ad9959_bitbang_delay();
+        value <<= 1u;
+        if (HAL_GPIO_ReadPin(AD9959_SDIO2_GPIO_Port,
+                            AD9959_SDIO2_Pin) == GPIO_PIN_SET)
+        {
+            value |= 1u;
+        }
+    }
+
+    HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                      GPIO_PIN_RESET);
+    ad9959_diagnostics.bitbang_clock_edges += 8u;
+    return value;
+}
+
+/**
  * @brief 产生 IO_UPDATE 上升沿，将影子寄存器内容加载到实际工作寄存器。
  * @param 无。
  * @return 无。
@@ -110,13 +259,13 @@ static void ad9959_hardware_reset(void)
 }
 
 /**
- * @brief 通过 SPI4 向 AD9959 写入一个寄存器。
+ * @brief 通过当前串行传输层向 AD9959 写入一个寄存器。
  * @param address 寄存器地址（0x00-0x06）。
  * @param data 待写入数据缓冲区指针，按 MSB first 排列。
  * @param length 数据字节数。
  * @return 驱动状态。
  * @note 顺序：CS 拉低 -> 发指令字节（bit7=0 表示写）-> 发数据 -> CS 拉高 -> IO_UPDATE。
- *       无论 SPI 成功或失败，退出前都会恢复 CS 为高。
+ *       无论传输成功或失败，退出前都会恢复 CS 为高。
  */
 static ad9959_status_t ad9959_write_register(uint8_t address,
                                              const uint8_t *data,
@@ -124,14 +273,30 @@ static ad9959_status_t ad9959_write_register(uint8_t address,
 {
     HAL_StatusTypeDef hal_status;
     uint8_t header = (uint8_t)(address & 0x7Fu);
+    uint8_t index;
 
     HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);
+#if (AD9959_USE_GPIO_BITBANG != 0u)
+    ad9959_bitbang_delay();
+    ad9959_bitbang_write_byte(header);
+    for (index = 0u; index < length; index++)
+    {
+        ad9959_bitbang_write_byte(data[index]);
+    }
+    hal_status = HAL_OK;
+#else
     hal_status = HAL_SPI_Transmit(&hspi4, &header, 1u, AD9959_SPI_TIMEOUT_MS);
     if (hal_status == HAL_OK)
     {
         hal_status = HAL_SPI_Transmit(&hspi4, data, length, AD9959_SPI_TIMEOUT_MS);
     }
+#endif
+    HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                      GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(AD9959_SDIO0_GPIO_Port, AD9959_SDIO0_Pin,
+                      GPIO_PIN_RESET);
     HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_SET);
+    ad9959_update_serial_gpio_snapshot();
 
     ad9959_diagnostics.last_hal_status = (int32_t)hal_status;
     if (hal_status != HAL_OK)
@@ -146,7 +311,7 @@ static ad9959_status_t ad9959_write_register(uint8_t address,
 }
 
 /**
- * @brief 通过 SPI4 读回 AD9959 一个寄存器的值。
+ * @brief 通过当前串行传输层读回 AD9959 一个寄存器的值。
  * @param address 寄存器地址（0x00-0x06）。
  * @param data 存放读回数据的缓冲区。
  * @param length 要读的字节数。
@@ -160,16 +325,35 @@ static ad9959_status_t ad9959_read_register_raw(uint8_t address,
 {
     HAL_StatusTypeDef hal_status;
     uint8_t header = (uint8_t)(address | AD9959_READ_BIT);
+#if (AD9959_USE_GPIO_BITBANG != 0u)
+    uint8_t index;
+#else
     static uint8_t dummy[AD9959_READ_MAX_BYTES] = {0};
+#endif
 
     HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);
+#if (AD9959_USE_GPIO_BITBANG != 0u)
+    ad9959_bitbang_delay();
+    ad9959_bitbang_write_byte(header);
+    for (index = 0u; index < length; index++)
+    {
+        data[index] = ad9959_bitbang_read_byte();
+    }
+    hal_status = HAL_OK;
+#else
     hal_status = HAL_SPI_Transmit(&hspi4, &header, 1u, AD9959_SPI_TIMEOUT_MS);
     if (hal_status == HAL_OK)
     {
         hal_status = HAL_SPI_TransmitReceive(&hspi4, dummy, data, length,
                                             AD9959_SPI_TIMEOUT_MS);
     }
+#endif
+    HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                      GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(AD9959_SDIO0_GPIO_Port, AD9959_SDIO0_Pin,
+                      GPIO_PIN_RESET);
     HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_SET);
+    ad9959_update_serial_gpio_snapshot();
 
     ad9959_diagnostics.last_hal_status = (int32_t)hal_status;
     if (hal_status != HAL_OK)
@@ -227,7 +411,7 @@ static uint8_t ad9959_bytes_equal(const uint8_t *actual,
 /**
  * @brief 在初始化末尾回读关键寄存器并保存原始快照。
  * @param 无。
- * @return SPI事务状态；读回内容不一致不会伪装成HAL错误，而由mismatch掩码报告。
+ * @return 串行事务状态；读回内容不一致不会伪装成HAL错误，而由mismatch掩码报告。
  * @note 依次验证全局FR1、CH0/CH1的CFR和CFTW0，用于区分“MCU已发送”与
  *       “AD9959已接收”。该数字回读不能证明模拟输出幅度或波形正确。
  */
@@ -329,7 +513,7 @@ uint32_t ad9959_calculate_tuning_word(uint32_t frequency_hz)
  * @brief 初始化 AD9959 并输出默认 1MHz 正弦波。
  * @return 驱动状态。
  * @note 步骤：硬件复位 -> 写 FR1（PLL 20倍频）-> 等待 PLL 锁定 -> 写 FR2 ->
- *       两个通道分别写 CFR、默认频率、相位、幅度。任一 SPI 失败立即返回错误，
+ *       两个通道分别写 CFR、默认频率、相位、幅度。任一传输失败立即返回错误，
  *       退出前保证 CS 为高；initialized 标志只在全部步骤成功后置 1。
  */
 ad9959_status_t ad9959_init(void)
@@ -361,6 +545,11 @@ ad9959_status_t ad9959_init(void)
     ad9959_diagnostics.bus_probe_fr1[1] = 0u;
     ad9959_diagnostics.bus_probe_fr1[2] = 0u;
     ad9959_diagnostics.bus_probe_signature = AD9959_BUS_PROBE_SIGNATURE;
+    ad9959_diagnostics.bitbang_clock_edges = 0u;
+    ad9959_diagnostics.bitbang_gpio_ready = 0u;
+    ad9959_diagnostics.bitbang_sclk_idle_odr = 0u;
+    ad9959_diagnostics.bitbang_sdio0_idle_odr = 0u;
+    ad9959_diagnostics.bitbang_sdio2_idle_idr = 0u;
     ad9959_diagnostics.bus_probe_cs_low_count = 0u;
     ad9959_diagnostics.bus_probe_cs_low_tick = 0u;
     ad9959_diagnostics.bus_probe_cs_high_tick = 0u;
@@ -392,6 +581,7 @@ ad9959_status_t ad9959_init(void)
     /* 上电等待电源稳定：商家建议 500ms，让模块 5V LDO 和 25MHz 晶振充分稳定 */
     HAL_Delay(500);
 
+    ad9959_serial_gpio_init();
     ad9959_hardware_reset();
 
     status = ad9959_write_register(AD9959_REG_FR1, ad9959_fr1_default, 3u);
@@ -621,7 +811,7 @@ ad9959_status_t ad9959_set_amplitude(ad9959_channel_t channel,
 }
 
 /**
- * @brief 通过 SPI 读回 AD9959 寄存器值。
+ * @brief 通过当前串行传输层读回 AD9959 寄存器值。
  * @param address 寄存器地址（0x00-0x06）。
  * @param data 存放读回数据的缓冲区，调用者保证容量不少于 length 字节。
  * @param length 要读的字节数，范围 1 至 AD9959_READ_MAX_BYTES。
@@ -667,8 +857,11 @@ void ad9959_bus_probe_process(void)
         (uint8_t)(0x10u | AD9959_CSR_THREE_WIRE_MODE)
     };
     uint8_t read_header = (uint8_t)(AD9959_REG_FR1 | AD9959_READ_BIT);
+#if (AD9959_USE_GPIO_BITBANG == 0u)
     uint8_t dummy[3] = { 0u, 0u, 0u };
+#endif
     uint8_t readback[3] = { 0u, 0u, 0u };
+    uint8_t index;
 
     if (ad9959_bus_probe_state == AD9959_BUS_PROBE_STATE_CS_LOW)
     {
@@ -687,8 +880,18 @@ void ad9959_bus_probe_process(void)
         }
 
         /* CS已经稳定保持低电平40ms；此时发送固定写帧，再恢复高电平。 */
+#if (AD9959_USE_GPIO_BITBANG != 0u)
+        ad9959_bitbang_write_byte(csr_frame[0]);
+        ad9959_bitbang_write_byte(csr_frame[1]);
+        hal_status = HAL_OK;
+#else
         hal_status = HAL_SPI_Transmit(&hspi4, csr_frame, 2u,
                                       AD9959_SPI_TIMEOUT_MS);
+#endif
+        HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                          GPIO_PIN_RESET);
+        HAL_GPIO_WritePin(AD9959_SDIO0_GPIO_Port, AD9959_SDIO0_Pin,
+                          GPIO_PIN_RESET);
         HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_SET);
         if (hal_status == HAL_OK)
         {
@@ -696,6 +899,15 @@ void ad9959_bus_probe_process(void)
 
             HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin,
                               GPIO_PIN_RESET);
+#if (AD9959_USE_GPIO_BITBANG != 0u)
+            ad9959_bitbang_delay();
+            ad9959_bitbang_write_byte(read_header);
+            for (index = 0u; index < 3u; index++)
+            {
+                readback[index] = ad9959_bitbang_read_byte();
+            }
+            hal_status = HAL_OK;
+#else
             hal_status = HAL_SPI_Transmit(&hspi4, &read_header, 1u,
                                           AD9959_SPI_TIMEOUT_MS);
             if (hal_status == HAL_OK)
@@ -704,9 +916,15 @@ void ad9959_bus_probe_process(void)
                                                      3u,
                                                      AD9959_SPI_TIMEOUT_MS);
             }
+#endif
+            HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                              GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(AD9959_SDIO0_GPIO_Port, AD9959_SDIO0_Pin,
+                              GPIO_PIN_RESET);
             HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin,
                               GPIO_PIN_SET);
         }
+        ad9959_update_serial_gpio_snapshot();
 
         /* 确保所有外设寄存器写入在采样ODR/IDR之前完成。 */
         __DSB();
