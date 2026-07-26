@@ -184,8 +184,10 @@ static ad9959_status_t ad9959_select_channel(ad9959_channel_t channel)
  */
 uint32_t ad9959_calculate_tuning_word(uint32_t frequency_hz)
 {
-    return (uint32_t)((((uint64_t)frequency_hz) << 32u)
-                       + (AD9959_MCLK_HZ / 2u)) / AD9959_MCLK_HZ;
+    /* 必须先完成 64 位除法再转为 32 位，否则分子提前截断会让常用频率字变成 0。 */
+    return (uint32_t)(((((uint64_t)frequency_hz) << 32u)
+                        + (AD9959_MCLK_HZ / 2u))
+                       / AD9959_MCLK_HZ);
 }
 
 /**

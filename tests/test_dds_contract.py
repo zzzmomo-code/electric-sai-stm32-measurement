@@ -170,12 +170,78 @@ class DdsContractTest(unittest.TestCase):
             self.assertIn(text, source)
 
     def test_ad9959_uses_500mhz_ftw(self) -> None:
+        compiler = find_host_c_compiler()
+        if compiler is None:
+            self.skipTest("host C compiler not available")
+
         header = read_text("Core/User/ad9959.h")
         source = read_text("Core/User/ad9959.c")
 
         self.assertIn("#define AD9959_MCLK_HZ 500000000u", header)
-        self.assertIn("((uint64_t)frequency_hz) << 32u", source)
-        self.assertIn("AD9959_MCLK_HZ / 2u", source)
+        function = re.search(
+            r"uint32_t ad9959_calculate_tuning_word\(uint32_t frequency_hz\)"
+            r"\s*\{.*?\n\}",
+            source,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(function)
+
+        harness_source = (
+            '#include <assert.h>\n'
+            '#include "ad9959.h"\n\n'
+            f"{function.group(0)}\n\n"
+            "int main(void)\n"
+            "{\n"
+            "    assert(ad9959_calculate_tuning_word(1u) == 9u);\n"
+            "    assert(ad9959_calculate_tuning_word(1000000u) == 8589935u);\n"
+            "    assert(ad9959_calculate_tuning_word(10000000u) == 85899346u);\n"
+            "    return 0;\n"
+            "}\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            build_directory = Path(temporary_directory)
+            (build_directory / "ad9959.h").write_text(
+                header, encoding="utf-8"
+            )
+            (build_directory / "harness.c").write_text(
+                harness_source, encoding="utf-8"
+            )
+            executable = build_directory / "ad9959_ftw_test.exe"
+            compile_result = subprocess.run(
+                compiler
+                + [
+                    "-std=c11",
+                    "-O3",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "harness.c",
+                    "-o",
+                    str(executable),
+                ],
+                cwd=build_directory,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                compile_result.returncode,
+                compile_result.stdout + compile_result.stderr,
+            )
+            run_result = subprocess.run(
+                [str(executable)],
+                cwd=build_directory,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                0,
+                run_result.returncode,
+                run_result.stdout + run_result.stderr,
+            )
 
     def test_driver_uses_75mhz_ftw_and_manual_fsync(self) -> None:
         header = read_text("Core/User/ad9834.h")
