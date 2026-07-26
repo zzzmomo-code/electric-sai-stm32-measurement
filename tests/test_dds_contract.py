@@ -169,6 +169,12 @@ class DdsContractTest(unittest.TestCase):
         for text in required:
             self.assertIn(text, source)
 
+    def test_ad9959_guide_keeps_power_down_control_low(self) -> None:
+        guide = read_text("docs/AD9959上板测试指南.md")
+
+        self.assertIn("| GND | PDC | PWR_DWN_CTL |", guide)
+        self.assertNotIn("| PDC | PWR_DWN_CTL | 浮空", guide)
+
     def test_ad9959_uses_500mhz_ftw(self) -> None:
         compiler = find_host_c_compiler()
         if compiler is None:
