@@ -147,7 +147,8 @@ class DdsContractTest(unittest.TestCase):
             "#define AD9959_BUS_PROBE_ENABLE 1u",
             "#define AD9959_BUS_PROBE_PERIOD_MS 200u",
             "#define AD9959_BUS_PROBE_CS_LOW_MS 40u",
-            "#define AD9959_BUS_PROBE_SIGNATURE 0x42424731u",
+            "#define AD9959_IO_UPDATE_HIGH_MS 40u",
+            "#define AD9959_BUS_PROBE_SIGNATURE 0x49555031u",
             "#define AD9959_READBACK_MISMATCH_FR1      0x01u",
             "#define AD9959_READBACK_MISMATCH_CH1_FTW  0x10u",
             "extern volatile ad9959_diagnostics_t ad9959_diagnostics;",
@@ -236,7 +237,9 @@ class DdsContractTest(unittest.TestCase):
         high_index = update_source.index(
             "HAL_GPIO_WritePin(update9959_GPIO_Port, update9959_Pin, GPIO_PIN_SET);"
         )
-        delay_index = update_source.index("HAL_Delay(1u);")
+        delay_index = update_source.index(
+            "HAL_Delay(AD9959_IO_UPDATE_HIGH_MS);"
+        )
         final_low_index = update_source.index(
             "HAL_GPIO_WritePin(update9959_GPIO_Port, update9959_Pin, GPIO_PIN_RESET);",
             high_index,
@@ -289,8 +292,23 @@ class DdsContractTest(unittest.TestCase):
             "uint8_t bus_probe_cs_low_idr;",
             "uint8_t bus_probe_cs_high_odr;",
             "uint8_t bus_probe_cs_high_idr;",
+            "uint32_t io_update_count;",
+            "uint8_t io_update_high_odr;",
+            "uint8_t io_update_high_idr;",
+            "uint8_t io_update_low_odr;",
+            "uint8_t io_update_low_idr;",
         ):
             self.assertIn(text, header)
+
+        update_source = source.split(
+            "static void ad9959_io_update(void)", 1
+        )[1].split("/**", 1)[0]
+        for text in (
+            "update9959_GPIO_Port->ODR",
+            "update9959_GPIO_Port->IDR",
+            "ad9959_diagnostics.io_update_count++;",
+        ):
+            self.assertIn(text, update_source)
 
         for text in (
             "ad9959_bus_probe_state == AD9959_BUS_PROBE_STATE_CS_LOW",

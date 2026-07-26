@@ -46,8 +46,11 @@
 /** 临时总线探针每周期保持CS低电平的时间，单位ms，便于示波器和万用表确认。 */
 #define AD9959_BUS_PROBE_CS_LOW_MS 40u
 
-/** 临时总线探针固件签名，ASCII为“BBG1”，用于确认GPIO模拟串行固件。 */
-#define AD9959_BUS_PROBE_SIGNATURE 0x42424731u
+/** IO_UPDATE诊断高电平时间，单位ms；40ms脉冲便于在模块排针处直接观察。 */
+#define AD9959_IO_UPDATE_HIGH_MS 40u
+
+/** 临时总线探针固件签名，ASCII为“IUP1”，用于确认IO_UPDATE诊断固件。 */
+#define AD9959_BUS_PROBE_SIGNATURE 0x49555031u
 
 /** 初始化回读不一致位：FR1 全局寄存器。 */
 #define AD9959_READBACK_MISMATCH_FR1      0x01u
@@ -114,6 +117,11 @@ typedef struct
     uint8_t bus_probe_cs_low_idr;        /**< 拉低后PD5的GPIO IDR位，期望为0。 */
     uint8_t bus_probe_cs_high_odr;       /**< 拉高后PD5的GPIO ODR位，期望为1。 */
     uint8_t bus_probe_cs_high_idr;       /**< 拉高后PD5的GPIO IDR位，期望为1。 */
+    uint32_t io_update_count;            /**< PD4已完成的IO_UPDATE高脉冲总数。 */
+    uint8_t io_update_high_odr;          /**< PD4置高后的GPIO ODR位，期望为1。 */
+    uint8_t io_update_high_idr;          /**< PD4置高后的GPIO IDR位，期望为1。 */
+    uint8_t io_update_low_odr;           /**< PD4恢复低电平后的GPIO ODR位，期望为0。 */
+    uint8_t io_update_low_idr;           /**< PD4恢复低电平后的GPIO IDR位，期望为0。 */
 } ad9959_diagnostics_t;
 
 /** AD9959运行诊断快照。 */

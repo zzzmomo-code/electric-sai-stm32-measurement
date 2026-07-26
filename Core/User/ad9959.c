@@ -230,8 +230,8 @@ static uint8_t ad9959_bitbang_read_byte(void)
  * @return 无。
  * @note AD9959复位后PLL尚未启用，SYSCLK=25MHz且SYNC_CLK=6.25MHz，
  *       此时一个SYNC_CLK周期为160ns。数据手册要求IO_UPDATE高脉冲大于
- *       一个SYNC_CLK周期，因此诊断阶段固定保持1ms，确保首次FR1更新以及
- *       后续全部更新均不依赖PLL是否已经生效。
+ *       一个SYNC_CLK周期，因此诊断阶段固定保持40ms，使模块排针处的脉冲可直接观察，
+ *       并记录PD4的ODR/IDR以区分软件命令、外部钳位和接线断点。
  */
 static void ad9959_io_update(void)
 {
@@ -239,8 +239,23 @@ static void ad9959_io_update(void)
     __NOP(); __NOP(); __NOP(); __NOP();
     __NOP(); __NOP(); __NOP(); __NOP();
     HAL_GPIO_WritePin(update9959_GPIO_Port, update9959_Pin, GPIO_PIN_SET);
-    HAL_Delay(1u);
+    __DSB();
+    ad9959_diagnostics.io_update_high_odr =
+        ((update9959_GPIO_Port->ODR & (uint32_t)update9959_Pin) != 0u)
+        ? 1u : 0u;
+    ad9959_diagnostics.io_update_high_idr =
+        ((update9959_GPIO_Port->IDR & (uint32_t)update9959_Pin) != 0u)
+        ? 1u : 0u;
+    HAL_Delay(AD9959_IO_UPDATE_HIGH_MS);
     HAL_GPIO_WritePin(update9959_GPIO_Port, update9959_Pin, GPIO_PIN_RESET);
+    __DSB();
+    ad9959_diagnostics.io_update_low_odr =
+        ((update9959_GPIO_Port->ODR & (uint32_t)update9959_Pin) != 0u)
+        ? 1u : 0u;
+    ad9959_diagnostics.io_update_low_idr =
+        ((update9959_GPIO_Port->IDR & (uint32_t)update9959_Pin) != 0u)
+        ? 1u : 0u;
+    ad9959_diagnostics.io_update_count++;
 }
 
 /**
@@ -558,6 +573,11 @@ ad9959_status_t ad9959_init(void)
     ad9959_diagnostics.bus_probe_cs_low_idr = 1u;
     ad9959_diagnostics.bus_probe_cs_high_odr = 1u;
     ad9959_diagnostics.bus_probe_cs_high_idr = 1u;
+    ad9959_diagnostics.io_update_count = 0u;
+    ad9959_diagnostics.io_update_high_odr = 0u;
+    ad9959_diagnostics.io_update_high_idr = 0u;
+    ad9959_diagnostics.io_update_low_odr = 0u;
+    ad9959_diagnostics.io_update_low_idr = 0u;
     ad9959_bus_probe_state = AD9959_BUS_PROBE_STATE_WAITING;
     ad9959_bus_probe_cs_low_started_ms = 0u;
     /* 让system_process()第一次调用时立即开始40ms低电平，避免上电后再等待一个周期。 */
