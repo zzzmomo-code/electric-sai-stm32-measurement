@@ -31,6 +31,17 @@
 /** AD9959读寄存器时单次最大字节数，用于防止越界。 */
 #define AD9959_READ_MAX_BYTES 8u
 
+/** 初始化回读不一致位：FR1 全局寄存器。 */
+#define AD9959_READBACK_MISMATCH_FR1      0x01u
+/** 初始化回读不一致位：CH0 的 CFR 寄存器。 */
+#define AD9959_READBACK_MISMATCH_CH0_CFR  0x02u
+/** 初始化回读不一致位：CH0 的 CFTW0 寄存器。 */
+#define AD9959_READBACK_MISMATCH_CH0_FTW  0x04u
+/** 初始化回读不一致位：CH1 的 CFR 寄存器。 */
+#define AD9959_READBACK_MISMATCH_CH1_CFR  0x08u
+/** 初始化回读不一致位：CH1 的 CFTW0 寄存器。 */
+#define AD9959_READBACK_MISMATCH_CH1_FTW  0x10u
+
 /** AD9959驱动返回状态。 */
 typedef enum
 {
@@ -63,6 +74,11 @@ typedef struct
     uint16_t phase_degrees[2];           /**< 两个通道最近成功写入的整数角度。 */
     uint16_t phase_word[2];              /**< 两个通道的14位相位字。 */
     uint16_t amplitude[2];               /**< 两个通道的10位幅度值。 */
+    uint8_t readback_complete;           /**< 初始化末尾5项寄存器均完成SPI回读后为1。 */
+    uint8_t readback_mismatch_mask;      /**< 回读值不一致位，使用AD9959_READBACK_MISMATCH_*解析。 */
+    uint8_t fr1_readback[3];             /**< 初始化末尾读回的FR1原始字节。 */
+    uint8_t cfr_readback[2][3];          /**< 初始化末尾分别读回的CH0/CH1 CFR原始字节。 */
+    uint8_t ftw_readback[2][4];          /**< 初始化末尾分别读回的CH0/CH1 CFTW0原始字节。 */
 } ad9959_diagnostics_t;
 
 /** AD9959运行诊断快照。 */

@@ -178,6 +178,117 @@ static ad9959_status_t ad9959_select_channel(ad9959_channel_t channel)
 }
 
 /**
+ * @brief 比较两段寄存器字节是否完全一致。
+ * @param actual 实际读回数据。
+ * @param expected 期望数据。
+ * @param length 比较字节数。
+ * @return 完全一致返回1，否则返回0。
+ */
+static uint8_t ad9959_bytes_equal(const uint8_t *actual,
+                                  const uint8_t *expected,
+                                  uint8_t length)
+{
+    uint8_t index;
+
+    for (index = 0u; index < length; index++)
+    {
+        if (actual[index] != expected[index])
+        {
+            return 0u;
+        }
+    }
+    return 1u;
+}
+
+/**
+ * @brief 在初始化末尾回读关键寄存器并保存原始快照。
+ * @param 无。
+ * @return SPI事务状态；读回内容不一致不会伪装成HAL错误，而由mismatch掩码报告。
+ * @note 依次验证全局FR1、CH0/CH1的CFR和CFTW0，用于区分“MCU已发送”与
+ *       “AD9959已接收”。该数字回读不能证明模拟输出幅度或波形正确。
+ */
+static ad9959_status_t ad9959_capture_init_readback(void)
+{
+    ad9959_status_t status;
+    uint8_t fr1[3];
+    uint8_t cfr[2][3];
+    uint8_t ftw[2][4];
+    uint8_t expected_ftw[2][4];
+    uint8_t channel;
+    uint8_t index;
+    uint8_t mismatch = 0u;
+
+    for (channel = 0u; channel < 2u; channel++)
+    {
+        uint32_t tuning_word = ad9959_diagnostics.frequency_tuning_word[channel];
+
+        expected_ftw[channel][0] = (uint8_t)(tuning_word >> 24u);
+        expected_ftw[channel][1] = (uint8_t)(tuning_word >> 16u);
+        expected_ftw[channel][2] = (uint8_t)(tuning_word >> 8u);
+        expected_ftw[channel][3] = (uint8_t)tuning_word;
+    }
+
+    status = ad9959_read_register_raw(AD9959_REG_FR1, fr1, 3u);
+    if (status != ad9959_status_ok)
+    {
+        return status;
+    }
+    if (ad9959_bytes_equal(fr1, ad9959_fr1_default, 3u) == 0u)
+    {
+        mismatch |= AD9959_READBACK_MISMATCH_FR1;
+    }
+
+    for (channel = 0u; channel < 2u; channel++)
+    {
+        status = ad9959_select_channel((ad9959_channel_t)channel);
+        if (status != ad9959_status_ok)
+        {
+            return status;
+        }
+
+        status = ad9959_read_register_raw(AD9959_REG_CFR, cfr[channel], 3u);
+        if (status != ad9959_status_ok)
+        {
+            return status;
+        }
+        status = ad9959_read_register_raw(AD9959_REG_CFTW0, ftw[channel], 4u);
+        if (status != ad9959_status_ok)
+        {
+            return status;
+        }
+
+        if (ad9959_bytes_equal(cfr[channel], ad9959_cfr_default, 3u) == 0u)
+        {
+            mismatch |= (channel == 0u)
+                      ? AD9959_READBACK_MISMATCH_CH0_CFR
+                      : AD9959_READBACK_MISMATCH_CH1_CFR;
+        }
+        if (ad9959_bytes_equal(ftw[channel], expected_ftw[channel], 4u) == 0u)
+        {
+            mismatch |= (channel == 0u)
+                      ? AD9959_READBACK_MISMATCH_CH0_FTW
+                      : AD9959_READBACK_MISMATCH_CH1_FTW;
+        }
+    }
+
+    for (index = 0u; index < 3u; index++)
+    {
+        ad9959_diagnostics.fr1_readback[index] = fr1[index];
+        ad9959_diagnostics.cfr_readback[0][index] = cfr[0][index];
+        ad9959_diagnostics.cfr_readback[1][index] = cfr[1][index];
+    }
+    for (index = 0u; index < 4u; index++)
+    {
+        ad9959_diagnostics.ftw_readback[0][index] = ftw[0][index];
+        ad9959_diagnostics.ftw_readback[1][index] = ftw[1][index];
+    }
+
+    ad9959_diagnostics.readback_mismatch_mask = mismatch;
+    ad9959_diagnostics.readback_complete = 1u;
+    return ad9959_status_ok;
+}
+
+/**
  * @brief 计算 AD9959 的 32 位频率控制字。
  * @param frequency_hz 目标输出频率，单位Hz。
  * @return 按 500MHz MCLK 四舍五入后的 32 位频率控制字。
@@ -200,6 +311,8 @@ uint32_t ad9959_calculate_tuning_word(uint32_t frequency_hz)
 ad9959_status_t ad9959_init(void)
 {
     ad9959_status_t status;
+    uint8_t channel;
+    uint8_t index;
 
     ad9959_diagnostics.write_count = 0u;
     ad9959_diagnostics.error_count = 0u;
@@ -216,6 +329,23 @@ ad9959_status_t ad9959_init(void)
     ad9959_diagnostics.phase_word[1] = 0u;
     ad9959_diagnostics.amplitude[0] = 0u;
     ad9959_diagnostics.amplitude[1] = 0u;
+    ad9959_diagnostics.readback_complete = 0u;
+    ad9959_diagnostics.readback_mismatch_mask = 0u;
+    for (index = 0u; index < 3u; index++)
+    {
+        ad9959_diagnostics.fr1_readback[index] = 0u;
+        for (channel = 0u; channel < 2u; channel++)
+        {
+            ad9959_diagnostics.cfr_readback[channel][index] = 0u;
+        }
+    }
+    for (index = 0u; index < 4u; index++)
+    {
+        for (channel = 0u; channel < 2u; channel++)
+        {
+            ad9959_diagnostics.ftw_readback[channel][index] = 0u;
+        }
+    }
 
     /* 上电等待电源稳定：商家建议 500ms，让模块 5V LDO 和 25MHz 晶振充分稳定 */
     HAL_Delay(500);
@@ -285,6 +415,12 @@ ad9959_status_t ad9959_init(void)
         return status;
     }
     status = ad9959_set_amplitude(ad9959_channel_1, AD9959_AMPLITUDE_MAX);
+    if (status != ad9959_status_ok)
+    {
+        return status;
+    }
+
+    status = ad9959_capture_init_readback();
     if (status != ad9959_status_ok)
     {
         return status;

@@ -127,6 +127,8 @@ class DdsContractTest(unittest.TestCase):
             "#define AD9959_MCLK_HZ 500000000u",
             "#define AD9959_MAX_OUTPUT_HZ 200000000u",
             "#define AD9959_AMPLITUDE_MAX 1023u",
+            "#define AD9959_READBACK_MISMATCH_FR1      0x01u",
+            "#define AD9959_READBACK_MISMATCH_CH1_FTW  0x10u",
             "extern volatile ad9959_diagnostics_t ad9959_diagnostics;",
             "ad9959_status_t ad9959_init(void);",
             "ad9959_status_t ad9959_set_frequency(ad9959_channel_t channel,",
@@ -165,8 +167,32 @@ class DdsContractTest(unittest.TestCase):
             "AD9959_ACR_AMPLITUDE_ENABLE 0x10u",
             "ad9959_io_update()",
             "ad9959_hardware_reset()",
+            "ad9959_capture_init_readback()",
+            "ad9959_diagnostics.readback_complete = 1u;",
+            "ad9959_diagnostics.readback_mismatch_mask = mismatch;",
         )
         for text in required:
+            self.assertIn(text, source)
+
+    def test_ad9959_init_readback_has_debugger_contract(self) -> None:
+        header = read_text("Core/User/ad9959.h")
+        source = read_text("Core/User/ad9959.c")
+
+        for text in (
+            "uint8_t readback_complete;",
+            "uint8_t readback_mismatch_mask;",
+            "uint8_t fr1_readback[3];",
+            "uint8_t cfr_readback[2][3];",
+            "uint8_t ftw_readback[2][4];",
+        ):
+            self.assertIn(text, header)
+
+        for text in (
+            "ad9959_read_register_raw(AD9959_REG_FR1, fr1, 3u)",
+            "ad9959_read_register_raw(AD9959_REG_CFR, cfr[channel], 3u)",
+            "ad9959_read_register_raw(AD9959_REG_CFTW0, ftw[channel], 4u)",
+            "status = ad9959_capture_init_readback();",
+        ):
             self.assertIn(text, source)
 
     def test_ad9959_guide_keeps_power_down_control_low(self) -> None:
