@@ -49,8 +49,8 @@
 /** IO_UPDATE诊断高电平时间，单位ms；40ms脉冲便于在模块排针处直接观察。 */
 #define AD9959_IO_UPDATE_HIGH_MS 40u
 
-/** 临时总线探针固件签名，ASCII为“IUP1”，用于确认IO_UPDATE诊断固件。 */
-#define AD9959_BUS_PROBE_SIGNATURE 0x49555031u
+/** 临时总线探针固件签名，ASCII为“RDE1”，用于确认下降沿读回诊断固件。 */
+#define AD9959_BUS_PROBE_SIGNATURE 0x52444531u
 
 /** 初始化回读不一致位：FR1 全局寄存器。 */
 #define AD9959_READBACK_MISMATCH_FR1      0x01u
@@ -62,6 +62,10 @@
 #define AD9959_READBACK_MISMATCH_CH1_CFR  0x08u
 /** 初始化回读不一致位：CH1 的 CFTW0 寄存器。 */
 #define AD9959_READBACK_MISMATCH_CH1_FTW  0x10u
+/** 初始化回读不一致位：CH0 的 ACR 寄存器。 */
+#define AD9959_READBACK_MISMATCH_CH0_ACR  0x20u
+/** 初始化回读不一致位：CH1 的 ACR 寄存器。 */
+#define AD9959_READBACK_MISMATCH_CH1_ACR  0x40u
 
 /** AD9959驱动返回状态。 */
 typedef enum
@@ -95,11 +99,12 @@ typedef struct
     uint16_t phase_degrees[2];           /**< 两个通道最近成功写入的整数角度。 */
     uint16_t phase_word[2];              /**< 两个通道的14位相位字。 */
     uint16_t amplitude[2];               /**< 两个通道的10位幅度值。 */
-    uint8_t readback_complete;           /**< 初始化末尾5项寄存器均完成串行回读流程后为1。 */
+    uint8_t readback_complete;           /**< 初始化末尾7项寄存器均完成串行回读流程后为1。 */
     uint8_t readback_mismatch_mask;      /**< 回读值不一致位，使用AD9959_READBACK_MISMATCH_*解析。 */
     uint8_t fr1_readback[3];             /**< 初始化末尾读回的FR1原始字节。 */
     uint8_t cfr_readback[2][3];          /**< 初始化末尾分别读回的CH0/CH1 CFR原始字节。 */
     uint8_t ftw_readback[2][4];          /**< 初始化末尾分别读回的CH0/CH1 CFTW0原始字节。 */
+    uint8_t acr_readback[2][3];          /**< 初始化末尾分别读回的CH0/CH1 ACR原始字节。 */
     uint32_t bus_probe_count;            /**< 临时总线探针已执行的周期数。 */
     int32_t bus_probe_last_hal_status;   /**< 临时总线探针最近一次传输状态。 */
     uint8_t bus_probe_fr1[3];            /**< 临时总线探针最近一次读回的FR1字节。 */

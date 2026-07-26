@@ -195,7 +195,8 @@ static void ad9959_bitbang_write_byte(uint8_t value)
  * @brief 以Mode 0、MSB优先方式从AD9959的SDIO_2读取一个字节。
  * @param 无。
  * @return 读取到的8位数据。
- * @note AD9959在SCLK下降沿更新输出，本函数在下一次上升沿后的稳定窗口采样PE5。
+ * @note AD9959在SCLK下降沿后输出读数据。本函数等待tDV后、在SCLK仍为低电平时采样PE5，
+ *       再产生下一次上升沿；这样可避免寄存器最后一位在通信周期结束时释放为高阻后才被采样。
  */
 static uint8_t ad9959_bitbang_read_byte(void)
 {
@@ -207,15 +208,15 @@ static uint8_t ad9959_bitbang_read_byte(void)
         HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
                           GPIO_PIN_RESET);
         ad9959_bitbang_delay();
-        HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
-                          GPIO_PIN_SET);
-        ad9959_bitbang_delay();
         value <<= 1u;
         if (HAL_GPIO_ReadPin(AD9959_SDIO2_GPIO_Port,
                             AD9959_SDIO2_Pin) == GPIO_PIN_SET)
         {
             value |= 1u;
         }
+        HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
+                          GPIO_PIN_SET);
+        ad9959_bitbang_delay();
     }
 
     HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,
@@ -427,7 +428,7 @@ static uint8_t ad9959_bytes_equal(const uint8_t *actual,
  * @brief 在初始化末尾回读关键寄存器并保存原始快照。
  * @param 无。
  * @return 串行事务状态；读回内容不一致不会伪装成HAL错误，而由mismatch掩码报告。
- * @note 依次验证全局FR1、CH0/CH1的CFR和CFTW0，用于区分“MCU已发送”与
+ * @note 依次验证全局FR1、CH0/CH1的CFR、CFTW0和ACR，用于区分“MCU已发送”与
  *       “AD9959已接收”。该数字回读不能证明模拟输出幅度或波形正确。
  */
 static ad9959_status_t ad9959_capture_init_readback(void)
@@ -436,7 +437,9 @@ static ad9959_status_t ad9959_capture_init_readback(void)
     uint8_t fr1[3];
     uint8_t cfr[2][3];
     uint8_t ftw[2][4];
+    uint8_t acr[2][3];
     uint8_t expected_ftw[2][4];
+    uint8_t expected_acr[2][3];
     uint8_t channel;
     uint8_t index;
     uint8_t mismatch = 0u;
@@ -449,6 +452,12 @@ static ad9959_status_t ad9959_capture_init_readback(void)
         expected_ftw[channel][1] = (uint8_t)(tuning_word >> 16u);
         expected_ftw[channel][2] = (uint8_t)(tuning_word >> 8u);
         expected_ftw[channel][3] = (uint8_t)tuning_word;
+        expected_acr[channel][0] = 0x00u;
+        expected_acr[channel][1] =
+            (uint8_t)(AD9959_ACR_AMPLITUDE_ENABLE
+                      | (uint8_t)(ad9959_diagnostics.amplitude[channel] >> 8u));
+        expected_acr[channel][2] =
+            (uint8_t)(ad9959_diagnostics.amplitude[channel] & 0xFFu);
     }
 
     status = ad9959_read_register_raw(AD9959_REG_FR1, fr1, 3u);
@@ -464,6 +473,11 @@ static ad9959_status_t ad9959_capture_init_readback(void)
     for (channel = 0u; channel < 2u; channel++)
     {
         status = ad9959_select_channel((ad9959_channel_t)channel);
+        if (status != ad9959_status_ok)
+        {
+            return status;
+        }
+        status = ad9959_read_register_raw(AD9959_REG_ACR, acr[channel], 3u);
         if (status != ad9959_status_ok)
         {
             return status;
@@ -492,6 +506,12 @@ static ad9959_status_t ad9959_capture_init_readback(void)
                       ? AD9959_READBACK_MISMATCH_CH0_FTW
                       : AD9959_READBACK_MISMATCH_CH1_FTW;
         }
+        if (ad9959_bytes_equal(acr[channel], expected_acr[channel], 3u) == 0u)
+        {
+            mismatch |= (channel == 0u)
+                      ? AD9959_READBACK_MISMATCH_CH0_ACR
+                      : AD9959_READBACK_MISMATCH_CH1_ACR;
+        }
     }
 
     for (index = 0u; index < 3u; index++)
@@ -499,6 +519,8 @@ static ad9959_status_t ad9959_capture_init_readback(void)
         ad9959_diagnostics.fr1_readback[index] = fr1[index];
         ad9959_diagnostics.cfr_readback[0][index] = cfr[0][index];
         ad9959_diagnostics.cfr_readback[1][index] = cfr[1][index];
+        ad9959_diagnostics.acr_readback[0][index] = acr[0][index];
+        ad9959_diagnostics.acr_readback[1][index] = acr[1][index];
     }
     for (index = 0u; index < 4u; index++)
     {
@@ -588,6 +610,7 @@ ad9959_status_t ad9959_init(void)
         for (channel = 0u; channel < 2u; channel++)
         {
             ad9959_diagnostics.cfr_readback[channel][index] = 0u;
+            ad9959_diagnostics.acr_readback[channel][index] = 0u;
         }
     }
     for (index = 0u; index < 4u; index++)

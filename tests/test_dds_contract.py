@@ -148,9 +148,11 @@ class DdsContractTest(unittest.TestCase):
             "#define AD9959_BUS_PROBE_PERIOD_MS 200u",
             "#define AD9959_BUS_PROBE_CS_LOW_MS 40u",
             "#define AD9959_IO_UPDATE_HIGH_MS 40u",
-            "#define AD9959_BUS_PROBE_SIGNATURE 0x49555031u",
+            "#define AD9959_BUS_PROBE_SIGNATURE 0x52444531u",
             "#define AD9959_READBACK_MISMATCH_FR1      0x01u",
             "#define AD9959_READBACK_MISMATCH_CH1_FTW  0x10u",
+            "#define AD9959_READBACK_MISMATCH_CH0_ACR  0x20u",
+            "#define AD9959_READBACK_MISMATCH_CH1_ACR  0x40u",
             "extern volatile ad9959_diagnostics_t ad9959_diagnostics;",
             "ad9959_status_t ad9959_init(void);",
             "ad9959_status_t ad9959_set_frequency(ad9959_channel_t channel,",
@@ -228,6 +230,26 @@ class DdsContractTest(unittest.TestCase):
             source.index("ad9959_hardware_reset();"),
         )
 
+    def test_ad9959_bitbang_read_samples_on_sclk_low_phase(self) -> None:
+        source = read_text("Core/User/ad9959.c")
+        read_source = source.split(
+            "static uint8_t ad9959_bitbang_read_byte(void)", 1
+        )[1].split("/**", 1)[0]
+
+        sample_index = read_source.index(
+            "HAL_GPIO_ReadPin(AD9959_SDIO2_GPIO_Port,"
+        )
+        rising_index = read_source.index(
+            "HAL_GPIO_WritePin(AD9959_SCLK_GPIO_Port, AD9959_SCLK_Pin,\n"
+            "                          GPIO_PIN_SET);"
+        )
+
+        self.assertLess(
+            sample_index,
+            rising_index,
+            "SDIO_2必须在SCLK下降沿后的低电平数据有效窗口采样",
+        )
+
     def test_ad9959_io_update_covers_pre_pll_sync_clock_period(self) -> None:
         source = read_text("Core/User/ad9959.c")
         update_source = source.split(
@@ -258,6 +280,7 @@ class DdsContractTest(unittest.TestCase):
             "uint8_t fr1_readback[3];",
             "uint8_t cfr_readback[2][3];",
             "uint8_t ftw_readback[2][4];",
+            "uint8_t acr_readback[2][3];",
         ):
             self.assertIn(text, header)
 
@@ -265,6 +288,7 @@ class DdsContractTest(unittest.TestCase):
             "ad9959_read_register_raw(AD9959_REG_FR1, fr1, 3u)",
             "ad9959_read_register_raw(AD9959_REG_CFR, cfr[channel], 3u)",
             "ad9959_read_register_raw(AD9959_REG_CFTW0, ftw[channel], 4u)",
+            "ad9959_read_register_raw(AD9959_REG_ACR, acr[channel], 3u)",
             "status = ad9959_capture_init_readback();",
         ):
             self.assertIn(text, source)
