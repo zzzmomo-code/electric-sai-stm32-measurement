@@ -138,6 +138,8 @@ class DdsContractTest(unittest.TestCase):
             "#define AD9959_MCLK_HZ 500000000u",
             "#define AD9959_MAX_OUTPUT_HZ 200000000u",
             "#define AD9959_AMPLITUDE_MAX 1023u",
+            "#define AD9959_BUS_PROBE_ENABLE 1u",
+            "#define AD9959_BUS_PROBE_PERIOD_MS 100u",
             "#define AD9959_READBACK_MISMATCH_FR1      0x01u",
             "#define AD9959_READBACK_MISMATCH_CH1_FTW  0x10u",
             "extern volatile ad9959_diagnostics_t ad9959_diagnostics;",
@@ -146,6 +148,7 @@ class DdsContractTest(unittest.TestCase):
             "ad9959_status_t ad9959_set_phase(ad9959_channel_t channel,",
             "ad9959_status_t ad9959_set_amplitude(ad9959_channel_t channel,",
             "ad9959_status_t ad9959_read_register(uint8_t address, uint8_t *data,",
+            "void ad9959_bus_probe_process(void);",
             "uint32_t ad9959_calculate_tuning_word(uint32_t frequency_hz);",
             "ad9959_channel_0",
             "ad9959_channel_1",
@@ -184,6 +187,10 @@ class DdsContractTest(unittest.TestCase):
             "ad9959_capture_init_readback()",
             "ad9959_diagnostics.readback_complete = 1u;",
             "ad9959_diagnostics.readback_mismatch_mask = mismatch;",
+            "void ad9959_bus_probe_process(void)",
+            "uint8_t csr_frame[2] = {",
+            "HAL_SPI_Transmit(&hspi4, csr_frame, 2u,",
+            "ad9959_diagnostics.bus_probe_count++;",
         )
         for text in required:
             self.assertIn(text, source)
@@ -213,6 +220,9 @@ class DdsContractTest(unittest.TestCase):
             "status = ad9959_capture_init_readback();",
         ):
             self.assertIn(text, source)
+
+        system_source = read_text("Core/User/system.c")
+        self.assertIn("ad9959_bus_probe_process();", system_source)
 
     def test_ad9959_guide_keeps_power_down_control_low(self) -> None:
         guide = read_text("docs/AD9959上板测试指南.md")

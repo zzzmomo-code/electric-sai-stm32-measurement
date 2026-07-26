@@ -58,6 +58,9 @@ static const uint8_t ad9959_cfr_default[3] = { 0x00u, 0x03u, 0x02u };
 /** AD9959 运行诊断快照，仅由驱动调用上下文修改。 */
 volatile ad9959_diagnostics_t ad9959_diagnostics;
 
+/** 临时总线探针最近一次执行时刻，单位ms，仅由主循环访问。 */
+static uint32_t ad9959_bus_probe_last_ms;
+
 /**
  * @brief 产生 IO_UPDATE 上升沿，将影子寄存器内容加载到实际工作寄存器。
  * @param 无。
@@ -338,6 +341,12 @@ ad9959_status_t ad9959_init(void)
     ad9959_diagnostics.amplitude[1] = 0u;
     ad9959_diagnostics.readback_complete = 0u;
     ad9959_diagnostics.readback_mismatch_mask = 0u;
+    ad9959_diagnostics.bus_probe_count = 0u;
+    ad9959_diagnostics.bus_probe_last_hal_status = (int32_t)HAL_OK;
+    ad9959_diagnostics.bus_probe_fr1[0] = 0u;
+    ad9959_diagnostics.bus_probe_fr1[1] = 0u;
+    ad9959_diagnostics.bus_probe_fr1[2] = 0u;
+    ad9959_bus_probe_last_ms = HAL_GetTick();
     for (index = 0u; index < 3u; index++)
     {
         ad9959_diagnostics.fr1_readback[index] = 0u;
@@ -611,4 +620,58 @@ ad9959_status_t ad9959_read_register(uint8_t address, uint8_t *data,
     }
 
     return ad9959_read_register_raw(address, data, length);
+}
+
+/**
+ * @brief 周期发送固定SPI帧，便于示波器稳定触发并逐线检查总线。
+ * @param 无。
+ * @return 无，诊断结果写入ad9959_diagnostics。
+ * @note 每100ms先在一个CS低脉冲内发送00 12（CSR地址+CH0三线模式），
+ *       再在下一个CS低脉冲内发送81并读取3字节FR1。探针写入不计入write_count。
+ */
+void ad9959_bus_probe_process(void)
+{
+#if (AD9959_BUS_PROBE_ENABLE != 0u)
+    HAL_StatusTypeDef hal_status;
+    uint32_t now_ms = HAL_GetTick();
+    uint8_t csr_frame[2] = {
+        AD9959_REG_CSR,
+        (uint8_t)(0x10u | AD9959_CSR_THREE_WIRE_MODE)
+    };
+    uint8_t read_header = (uint8_t)(AD9959_REG_FR1 | AD9959_READ_BIT);
+    uint8_t dummy[3] = { 0u, 0u, 0u };
+    uint8_t readback[3] = { 0u, 0u, 0u };
+
+    if ((uint32_t)(now_ms - ad9959_bus_probe_last_ms)
+        < AD9959_BUS_PROBE_PERIOD_MS)
+    {
+        return;
+    }
+    ad9959_bus_probe_last_ms = now_ms;
+
+    HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);
+    hal_status = HAL_SPI_Transmit(&hspi4, csr_frame, 2u,
+                                  AD9959_SPI_TIMEOUT_MS);
+    HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_SET);
+    if (hal_status == HAL_OK)
+    {
+        ad9959_io_update();
+
+        HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_RESET);
+        hal_status = HAL_SPI_Transmit(&hspi4, &read_header, 1u,
+                                      AD9959_SPI_TIMEOUT_MS);
+        if (hal_status == HAL_OK)
+        {
+            hal_status = HAL_SPI_TransmitReceive(&hspi4, dummy, readback, 3u,
+                                                 AD9959_SPI_TIMEOUT_MS);
+        }
+        HAL_GPIO_WritePin(AD9959_CS_GPIO_Port, AD9959_CS_Pin, GPIO_PIN_SET);
+    }
+
+    ad9959_diagnostics.bus_probe_last_hal_status = (int32_t)hal_status;
+    ad9959_diagnostics.bus_probe_fr1[0] = readback[0];
+    ad9959_diagnostics.bus_probe_fr1[1] = readback[1];
+    ad9959_diagnostics.bus_probe_fr1[2] = readback[2];
+    ad9959_diagnostics.bus_probe_count++;
+#endif
 }

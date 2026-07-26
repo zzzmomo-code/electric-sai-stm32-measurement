@@ -6,7 +6,7 @@
  * GPIO 引脚映射：统一入口无直接 GPIO；AD9959使用PE2/PE5/PE6/PD4/PD5/PB4，
  * VGA模块使用PA4/DAC1_OUT1，其他映射见对应模块说明。
  * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h、dac.h、adc.h、tim.h、spi.h，
- * 启用串口屏时还依赖usart.h。AD9959依赖已初始化的SPI4（Full-Duplex、8bit、15Mbit/s），
+ * 启用串口屏时还依赖usart.h。AD9959依赖已初始化的SPI4（Full-Duplex、8bit、1.875Mbit/s），
  * DAC1_OUT1配置为无触发并开启输出缓冲。
  * ADS8688 与片上双 ADC 均参加构建，由 measurement_input 在运行时选择。
  * 初始化方法：HAL 与 MX_* 初始化完成后调用 system_init()。

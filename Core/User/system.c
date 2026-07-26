@@ -100,6 +100,7 @@ void system_init(void)
  */
 void system_process(void)
 {
+    ad9959_bus_probe_process();
 	hmi_tjc_process_input();
     frequency_measure_process();
     dds_control_process();

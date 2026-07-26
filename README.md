@@ -85,6 +85,7 @@ PC4 与 PB1 的模拟电压必须保持在 VSSA～VDDA 允许范围内。
 - CPOL Low，CPHA 1 Edge（SPI Mode 0），软件 NSS；CS 由 PD5 手动控制。
 - SPI45 内核时钟为 120 MHz，诊断阶段 Prescaler=64，SCLK=1.875 MHz，以提高杜邦线连接下的信号完整性并验证SPI通信。
 - PE5/SPI4_MISO 在诊断阶段启用内部下拉；若关键寄存器从全 `0xFF` 变成全 `0x00`，说明模块 SDIO_2 没有驱动该线路，应检查 PE5→SD2 连线或串行端口模式。
+- 临时总线探针每100ms重复发送CSR写帧 `00 12` 和FR1读帧 `81 + 3字节`，用于示波器稳定触发；实板通信确认后应关闭 `AD9959_BUS_PROBE_ENABLE`。
 - AD9959 板载 25 MHz 晶振经片内 PLL 20 倍频得到 500 MHz 系统时钟。
 - PE6/MOSI 接 SDIO_0 用于写入，PE5/MISO 接 SDIO_2 用于读回；PD4 产生 IO_UPDATE
 - 驱动每次写 CSR 都设置 `CSR[2:1]=01` 三线模式（CH0=`0x12`、CH1=`0x22`），使 SDIO_0 作为输入、SDIO_2 作为读回输出。

@@ -31,6 +31,12 @@
 /** AD9959读寄存器时单次最大字节数，用于防止越界。 */
 #define AD9959_READ_MAX_BYTES 8u
 
+/** 临时总线探针开关：1表示每100ms重复固定CSR写入和FR1读取。 */
+#define AD9959_BUS_PROBE_ENABLE 1u
+
+/** 临时总线探针重复周期，单位ms。 */
+#define AD9959_BUS_PROBE_PERIOD_MS 100u
+
 /** 初始化回读不一致位：FR1 全局寄存器。 */
 #define AD9959_READBACK_MISMATCH_FR1      0x01u
 /** 初始化回读不一致位：CH0 的 CFR 寄存器。 */
@@ -79,6 +85,9 @@ typedef struct
     uint8_t fr1_readback[3];             /**< 初始化末尾读回的FR1原始字节。 */
     uint8_t cfr_readback[2][3];          /**< 初始化末尾分别读回的CH0/CH1 CFR原始字节。 */
     uint8_t ftw_readback[2][4];          /**< 初始化末尾分别读回的CH0/CH1 CFTW0原始字节。 */
+    uint32_t bus_probe_count;            /**< 临时总线探针已执行的周期数。 */
+    int32_t bus_probe_last_hal_status;   /**< 临时总线探针最近一次HAL SPI状态。 */
+    uint8_t bus_probe_fr1[3];            /**< 临时总线探针最近一次读回的FR1字节。 */
 } ad9959_diagnostics_t;
 
 /** AD9959运行诊断快照。 */
@@ -136,6 +145,15 @@ ad9959_status_t ad9959_set_amplitude(ad9959_channel_t channel,
  */
 ad9959_status_t ad9959_read_register(uint8_t address, uint8_t *data,
                                      uint8_t length);
+
+/**
+ * @brief 周期执行便于示波器触发的固定SPI写入和读取。
+ * @param 无。
+ * @return 无，执行次数、HAL状态和FR1数据保存在ad9959_diagnostics。
+ * @note 启用AD9959_BUS_PROBE_ENABLE后每100ms发送一次CSR写帧00 12，
+ *       随后发送FR1读指令81并读取3字节；仅在主循环调用。
+ */
+void ad9959_bus_probe_process(void);
 
 /**
  * @brief 计算AD9959的32位频率控制字。
