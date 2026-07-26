@@ -84,6 +84,7 @@ PC4 与 PB1 的模拟电压必须保持在 VSSA～VDDA 允许范围内。
 - SPI4：Master、Full-Duplex、Motorola、8 bit、MSB First。
 - CPOL Low，CPHA 1 Edge（SPI Mode 0），软件 NSS；CS 由 PD5 手动控制。
 - SPI45 内核时钟为 120 MHz，诊断阶段 Prescaler=64，SCLK=1.875 MHz，以提高杜邦线连接下的信号完整性并验证SPI通信。
+- PE5/SPI4_MISO 在诊断阶段启用内部下拉；若关键寄存器从全 `0xFF` 变成全 `0x00`，说明模块 SDIO_2 没有驱动该线路，应检查 PE5→SD2 连线或串行端口模式。
 - AD9959 板载 25 MHz 晶振经片内 PLL 20 倍频得到 500 MHz 系统时钟。
 - PE6/MOSI 接 SDIO_0 用于写入，PE5/MISO 接 SDIO_2 用于读回；PD4 产生 IO_UPDATE
   上升沿刷新影子寄存器，PB4 控制硬件 RESET。

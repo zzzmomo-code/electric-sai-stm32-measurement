@@ -106,6 +106,7 @@ class DdsContractTest(unittest.TestCase):
             "PB4\\ (NJTRST).GPIO_Label=AD9959_RST",
             "PE2.Signal=SPI4_SCK",
             "PE5.Signal=SPI4_MISO",
+            "PE5.GPIO_PuPd=GPIO_PULLDOWN",
             "PE6.Signal=SPI4_MOSI",
             "SPI4.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_64",
             "SPI4.DataSize=SPI_DATASIZE_8BIT",
@@ -119,6 +120,12 @@ class DdsContractTest(unittest.TestCase):
         self.assertIn(
             "hspi4.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_64;",
             spi_source,
+        )
+        self.assertRegex(
+            spi_source,
+            r"GPIO_InitStruct\.Pin = GPIO_PIN_5;\s+"
+            r"GPIO_InitStruct\.Mode = GPIO_MODE_AF_PP;\s+"
+            r"GPIO_InitStruct\.Pull = GPIO_PULLDOWN;",
         )
         self.assertLess(main.index("MX_SPI4_Init();"), main.index("system_init();"))
 
