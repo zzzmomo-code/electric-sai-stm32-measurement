@@ -12,13 +12,14 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.header = (ROOT / "Core/User/hmi_task2.h").read_text(encoding="utf-8")
         self.system = (ROOT / "Core/User/system.c").read_text(encoding="utf-8")
 
-    def test_runtime_page_has_all_required_objects(self):
+    def test_runtime_page_only_requires_power_text(self):
+        self.assertIn('"t_power.txt=\\"%s\\""', self.source)
         for name in (
             "t_timer_freq", "t_adc_freq", "t_adc_amp", "t_real_freq",
             "t_real_amp", "t_wave", "t_dds_freq", "t_vga",
             "t_status", "t_overflow",
         ):
-            self.assertIn(f'"{name}"', self.source)
+            self.assertNotIn(f'"{name}"', self.source)
 
     def test_buttons_map_to_vga_and_forced_measurement(self):
         self.assertIn("dac_output_set_level", self.source)
@@ -40,6 +41,11 @@ class HmiRuntimeContractTest(unittest.TestCase):
 
     def test_runtime_process_is_called_every_loop(self):
         self.assertIn("hmi_task2_process();", self.system)
+        self.assertIn("fpga_link_process();", self.system)
+        self.assertLess(
+            self.system.index("fpga_link_process();"),
+            self.system.index("hmi_task2_process();"),
+        )
         self.assertNotIn(
             "if (measurement_fft_hmi_refresh_allowed() != 0u)\n    {\n"
             "        hmi_task2_process();",

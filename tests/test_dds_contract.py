@@ -32,7 +32,7 @@ class DdsContractTest(unittest.TestCase):
             self.assertEqual([], excluded_hal)
 
     def test_ioc_matches_ad9834_spi_contract(self) -> None:
-        ioc = read_text("h743_pre1.ioc")
+        ioc = read_text("h743_task2_20260727.ioc")
 
         required_lines = (
             "PB12.GPIO_Label=DDS_FSYNC",

@@ -24,7 +24,7 @@ class SamplingDesignTest(unittest.TestCase):
 
 class SourceContractTest(unittest.TestCase):
     def test_adc1_uses_pa6_inp3(self):
-        ioc = (ROOT / "h743_pre1.ioc").read_text(encoding="utf-8")
+        ioc = (ROOT / "h743_task2_20260727.ioc").read_text(encoding="utf-8")
         adc_source = (ROOT / "Core/Src/adc.c").read_text(encoding="utf-8")
         self.assertIn("ADC1.Channel-0\\#ChannelRegularConversion=ADC_CHANNEL_3", ioc)
         self.assertIn("PA6.Signal=ADCx_INP3", ioc)

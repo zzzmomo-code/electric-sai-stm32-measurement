@@ -5,9 +5,9 @@
  * 模块用途：集中调用用户模块初始化函数，避免在 main.c 中堆放业务逻辑。
  * GPIO 引脚映射：PA6/ADC1_INP3、PB1/ADC2_INP5、PA0/TIM5_CH1，
  * PB12/AD9834_FSYNC、PB13/SPI2_SCK、PB15/SPI2_MOSI、
- * PB14/AD9834_FSELECT、PD8/AD9834_PSELECT。
+ * PB14/AD9834_FSELECT、PD8/AD9834_PSELECT、PA2/USART2_TX、PA3/USART2_RX。
  * 依赖的外设和 CubeIDE 配置：依赖 ADC1/ADC2、TIM2、TIM3、TIM5、SPI2、DMA 和 NVIC；
- * 串口屏依赖 USART1，9600 8N1；接收使用全局中断，发送轮询且不使用 DMA。
+ * 串口屏依赖 USART1 9600 8N1；FPGA 链路依赖 USART2 1 Mbaud 和 DMA1_Stream1。
  * 初始化方法：在 main.c 的 USER CODE BEGIN 2 区域调用 system_init()。
  * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
  */
@@ -41,6 +41,7 @@ static void hmi_tjc_publish_self_test(void)
     result.frequency_hz = 12345.0f;
     result.thd_percent = 0.10f;
     result.phase_deg = -90.0f;
+    result.power_w = 1.234f;
     result.wave_type = MEASUREMENT_WAVE_SINE;
     result.mode = MEASUREMENT_MODE_AC;
     result.valid_mask = MEASUREMENT_VALID_DC_VOLTAGE
@@ -49,7 +50,8 @@ static void hmi_tjc_publish_self_test(void)
                         | MEASUREMENT_VALID_FREQUENCY
                         | MEASUREMENT_VALID_THD
                         | MEASUREMENT_VALID_WAVE_TYPE
-                        | MEASUREMENT_VALID_PHASE;
+                        | MEASUREMENT_VALID_PHASE
+                        | MEASUREMENT_VALID_POWER;
     result.secondary_dc_voltage = 0.0f;
     result.secondary_amplitude_vpp = 0.0f;
     result.secondary_rms_voltage = 0.0f;
@@ -85,6 +87,12 @@ void system_init(void)
 #if defined(SYSTEM_USART1_AVAILABLE)
     hmi_task2_bind_uart(&huart1);
 #endif
+    /* FPGA 数据链路：USART2 1 Mbaud + Receive-to-IDLE DMA。 */
+    fpga_link_init();
+#if defined(SYSTEM_USART2_AVAILABLE)
+    fpga_link_bind_uart(&huart2);
+    (void)fpga_link_start();
+#endif
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
     hmi_tjc_publish_self_test();
 #endif
@@ -104,6 +112,7 @@ void system_process(void)
     adc_dual_process();
     measurement_fft_process();
     adc_dual_process();
+    fpga_link_process();
     hmi_task2_process();
     HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
 }

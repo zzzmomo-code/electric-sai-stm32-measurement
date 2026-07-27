@@ -17,6 +17,8 @@
 
 2026-07-21 实测确认：淘晶驰串口屏通过 USART1 正常收发，十项数据显示、G0～G5 六档按键和立即测量按键均能被 MCU 正确处理；`tx_count`、`rx_count`、`command_count` 会随实际通信更新，通信错误计数保持为 0。当前代码默认运行正式跟随模式，是项目现阶段的稳定基线。
 
+2026-07-27 新增但尚未实板验证：FPGA 通过 USART2 以 1 Mbaud 发送 1024 点幅频/相频数据，STM32 使用 Receive-to-IDLE DMA 接收并降采样为 64 点，再通过 USART1 以 `cle + add` 刷新 TJC 屏的 `s0`/`s1` Waveform；页面动态文本只发送 `t_power`。旧十文本页面的实测结论不能替代本次新页面验证。
+
 开发环境：STM32CubeIDE 1.19.0、STM32Cube FW_H7 V1.12.1。
 
 ## 硬件
@@ -31,8 +33,12 @@
 - PB15：SPI2_MOSI，连接 AD9834 SDATA。
 - PB14：AD9834 FSELECT，低电平选择 FREQ0，高电平选择 FREQ1。
 - PD8：AD9834 PSELECT，低电平选择 PHASE0，高电平选择 PHASE1。
+- PA2：USART2_TX，连接 FPGA RX。
+- PA3：USART2_RX，连接 FPGA TX。
+- PA9：USART1_TX，连接 TJC 串口屏 RX。
+- PA10：USART1_RX，连接 TJC 串口屏 TX。
 - PC4: DAC1输出直流信号
-- MCU、比较器和 AD9834 必须共地。
+- MCU、FPGA、串口屏、比较器和 AD9834 必须共地。
 
 AD9834 初始化使用控制寄存器的 RESET 位完成软件复位，不需要 MCU 单独控制硬件 RESET 引脚。硬件 RESET、SLEEP 等未由本工程控制的引脚应按实际模块原理图固定到有效电平，不得悬空。
 
@@ -40,7 +46,7 @@ AD9834 初始化使用控制寄存器的 RESET 位完成软件复位，不需要
 
 ### ADC1 / ADC2 双路同步采集
 
-1. 打开工程根目录的 `h743_pre1.ioc`，进入 `Pinout & Configuration`。
+1. 打开工程根目录的 `h743_task2_20260727.ioc`，进入 `Pinout & Configuration`。
 2. 在芯片引脚图中单击 PA6，选择 `ADC1_INP3`；在 ADC1 通道设置中确认显示 `IN3 Single-ended`。PC4 不再分配给 ADC1。
 3. 打开 `Analog > ADC1 > Parameter Settings`：
    - Resolution：`16 Bits`；
@@ -94,20 +100,23 @@ AD9834 初始化使用控制寄存器的 RESET 位完成软件复位，不需要
 - 发送使用 HAL 轮询，不使用 DMA；接收使用单字节中断。
 - 启用 `USART1 global interrupt`，抢占优先级为 7，子优先级为 0。
 
-串口屏页面需要以下文本控件，控件名必须完全一致：
+当前 FPGA/HMI 页面需要以下动态控件，控件名必须完全一致：
 
-| 控件名 | 显示内容 |
-|---|---|
-| `t_timer_freq` | TIM5 粗测输入频率 |
-| `t_adc_freq` | ADC/FFT 测得的中频频率 |
-| `t_adc_amp` | ADC/FFT 测得的 CH1 峰峰值 |
-| `t_real_freq` | 换算后的被测信号频率 |
-| `t_real_amp` | 换算后的被测信号幅度 |
-| `t_wave` | `SINE`、`SQUARE` 或 `UNKNOWN` |
-| `t_dds_freq` | AD9834 当前输出频率 |
-| `t_vga` | 当前 VGA 档位 `G0` 至 `G5` |
-| `t_status` | 测量状态 |
-| `t_overflow` | `adc_dual_stats.overflow_count` |
+| 控件名 | 类型 | 显示内容 |
+|---|---|---|
+| `t_power` | Text | 功率，格式为 `%.3f W`；无有效值时显示 `--` |
+| `s0` | Waveform | 幅频曲线，`ch=1` |
+| `s1` | Waveform | 相频曲线，`ch=1` |
+
+横轴、纵轴、单位和刻度由 USART HMI 软件中的静态 Text/线条控件绘制，STM32 只刷新三项动态控件。曲线命令使用 `s0.id`/`s1.id`，所以控件数字 ID 改变时无需修改 C 代码。
+
+### USART2 / FPGA
+
+- `PA2 -> USART2_TX`，连接 FPGA RX；`PA3 -> USART2_RX`，连接 FPGA TX。
+- Asynchronous，`1000000 bit/s`，8 data bits，No parity，1 stop bit。
+- USART2_RX 使用 DMA1_Stream1，Peripheral-to-Memory、Normal、Byte/Byte、Memory Increment。
+- 使用 `HAL_UARTEx_ReceiveToIdle_DMA()`；DMA 缓冲区 32 字节对齐，并处理 Cortex-M7 D-Cache 一致性。
+- FPGA 帧格式为 `AA 55 [N高 N低] [N×4字节数据] 0D 0A`；每点依次为 16 位大端 `mag2_hi` 和 16 位大端 `phase`，N 最大 1024。
 
 VGA 六个按键的按下或松开事件分别发送一个 ASCII 字节：
 
@@ -136,7 +145,7 @@ printh 4D
 - `CLIP`：CH1 FFT 诊断发现削顶。
 - `ERROR`：ADC 或 DDS 控制模块报告错误。
 
-数值前的 `~` 表示当前值仍是估算值；`--` 表示暂时没有可用数据。串口屏输入处理、VGA 切档和 TIM5 强制测量都在主循环执行，USART1 回调只设置接收标志。
+`measurement_result_set_power_w()` 是功率数据写入接口；本任务不计算功率。串口屏输入处理、VGA 切档和 TIM5 强制测量兼容协议仍在主循环执行，USART1 回调只设置接收标志。
 
 CubeMX 重新生成代码前启用 `Project Manager > Code Generator > Keep User Code when re-generating`。不要手工修改自动生成的 `MX_*_Init()`，用户模块统一放在 `Core/User`。
 
@@ -166,7 +175,7 @@ FTW = round(fLO * 2^28 / 75 MHz)
 
 初始化顺序为软件复位、写 FREQ0、写 PHASE0、退出复位。FSYNC 在每个 16 位 SPI 字发送前拉低，发送结束后恢复高电平。
 
-`hmi_task2.c` 是本题的活动串口屏模块，每 500 ms 读取 TIM5、DDS、ADC/FFT、VGA 和溢出计数的快照并刷新页面。旧 `hmi_tjc.c` 仅作上一训练题留档，整个实现已用条件编译关闭。当前换算接口位于 `measurement_conversion.c`：被测频率优先按 `DDS频率 + ADC中频` 计算，ADC 中频缺失时暂用 TIM5 粗测值；被测幅度暂时直接使用 ADC 峰峰值。整机幅频标定完成后，只需在该模块中替换拟合公式，不需要修改显示协议。
+`fpga_link.c` 负责 USART2 DMA 接收和 AA55 帧解析；`hmi_chart.c` 把原始点按频率顺序分成 64 组，每组取最大 `mag2_hi` 及其对应相位，映射到 0～255 后构建 `cle + add`。`hmi_task2.c` 每 500 ms 刷新 `t_power`，并且每轮主循环最多发送一条完整曲线命令，避免在 9600 波特率下连续阻塞约 2 秒。旧 `hmi_tjc.c` 仅作上一训练题留档。
 
 ## 模式切换
 
@@ -188,10 +197,13 @@ FTW = round(fLO * 2^28 / 75 MHz)
 - `Core/User/dds_control.c`：输入频率检查、低侧本振计算和更新阈值控制。
 - `Core/User/ad9834.c`：AD9834 SPI 驱动、FTW 计算及 FSELECT/PSELECT 控制。
 - `Core/User/measurement_conversion.c`：被测频率和幅度的标定换算接口。
-- `Core/User/hmi_task2.c`：本题串口屏十项数据显示及单字节按键处理。
+- `Core/User/fpga_link.c`：USART2 Receive-to-IDLE DMA 接收和 FPGA 协议解析。
+- `Core/User/hmi_chart.c`：64 点幅频/相频降采样与 TJC `cle + add` 构帧。
+- `Core/User/hmi_task2.c`：`t_power` 刷新、分步曲线发送及兼容按键处理。
 - `Core/User/hmi_tjc.c`：上一训练题留档，当前不参与编译。
 - `tests/test_dds_contract.py`：检查 IOC、SPI 时序约定、频率公式和模块调用关系。
 - `tests/test_hmi_runtime_contract.py`：检查串口屏控件、按键命令、中断边界和换算接口。
+- `tests/test_fpga_hmi_bode_contract.py`：检查 Receive-to-IDLE、D-Cache、`cle + add` 和功率接口。
 
 `main.c` 用户初始化区只调用 `system_init()`，主循环只调用 `system_process()`。
 
@@ -225,6 +237,11 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - `ad9834_diagnostics.write_count`：成功写入的 16 位字数。
 - `ad9834_diagnostics.error_count`：SPI 写入错误次数，正常应保持 0。
 - `ad9834_diagnostics.last_hal_status`：最近一次 HAL SPI 状态，正常为 `HAL_OK`。
+- `fpga_link_diagnostics.rx_event_count`：USART2 Receive-to-IDLE 事件数。
+- `fpga_link_diagnostics.frame_valid_count`：FPGA 完整帧解析成功数。
+- `fpga_link_diagnostics.frame_error_count`：FPGA 协议帧错误数，稳定运行时应保持 0。
+- `hmi_task2_diagnostics.bode_frame_count`：完整 Bode 图发送完成数。
+- `hmi_task2_diagnostics.bode_error_count`：曲线构帧或 USART1 发送错误数。
 
 ## 已知限制与后续工作
 
@@ -232,8 +249,10 @@ python -m unittest discover -s tests -p 'test_*.py' -v
 - PA6 和 PB1 的 ADC 模拟输入必须保持在 `VSSA`～`VDDA` 允许范围内；高源阻抗信号需要缓冲或增大采样时间，当前 `8.5 Cycles` 配置应结合模拟前端驱动能力进行实板验证。
 - 当前频率规划采用低侧本振，输入有效范围为 1～30 MHz，目标中频固定为 100 kHz。
 - 频率绝对精度受输入边沿质量、H743 系统时钟和 AD9834 75 MHz 参考时钟误差影响。
-- DDS 控制全流程和串口屏双向通信已经通过实板测试；AD835 混频、中频滤波、VGA 自动增益、片上 ADC 幅度精度和整机校准仍需后续联调。
-- 串口屏实板测试采用 PA9/PA10 交叉接线，页面控件刷新、G0～G5 六档命令和立即测量命令均已验证。屏幕工程修改控件名或按键发送字节后，必须同步更新 `hmi_task2.c` 中的协议常量。
+- DDS 控制全流程和旧十文本串口屏页面已经通过实板测试；本次 FPGA 1 Mbaud 接收、`t_power`、`s0/s1` 曲线和静态横纵轴均待硬件验证。
+- HMI 软件仍需创建对象名为 `s1` 的相频 Waveform，并完成两张图的静态横纵轴、单位和刻度；数字 ID 不影响当前 C 代码。
+- 当前 64 点双曲线在 9600 bit/s 下最坏约需 2.4 秒发送完一张图，这是采用普通 `cle + add` 且不使用 `addt` 的预期性能。
+- Headless 全工程编译目前会被既有 `.cproject` 的错误相对 include 路径阻断；本次变更文件已用 CubeIDE GCC 和 `-Wall -Wextra -Werror` 检查通过，但仍应在 GUI 修复工程 include 路径后重新取得完整 `.elf`。
 - `measurement_conversion.c` 中的幅度换算仍是占位实现；整机增益及频率响应拟合完成后再替换为校准公式。
 - 仓库中保留了前一训练题的双 ADC、FFT 和串口屏模块，当前 DDS 链路不以这些模块的测量结果作为验收依据。
 ## DAC 与 VGA 增益控制（2026-07-19）

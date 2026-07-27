@@ -42,6 +42,7 @@ typedef enum
 #define MEASUREMENT_VALID_WAVE_TYPE    (1u << 5)
 #define MEASUREMENT_VALID_PHASE        (1u << 6)
 #define MEASUREMENT_VALID_SPECTRUM     (1u << 7)
+#define MEASUREMENT_VALID_POWER        (1u << 8)
 
 /** 一组可供显示或记录的测量结果。 */
 typedef struct
@@ -57,6 +58,7 @@ typedef struct
     float secondary_frequency_hz;      /**< CH2 频率，单位为赫兹。 */
     float secondary_thd_percent;       /**< CH2 总谐波失真，单位为百分比。 */
     float phase_deg;                   /**< CH2 相对 CH1 的相位差，单位为度。 */
+    float power_w;                     /**< 功率测量值，单位为瓦（数据由算法或 FPGA 链路填入，本模块只负责传递与显示）。 */
     measurement_wave_type_t wave_type; /**< CH1 算法识别的波形类型。 */
     measurement_wave_type_t secondary_wave_type; /**< CH2 算法识别的波形类型。 */
     measurement_mode_t mode;           /**< CH1 被判定为直流、交流或未知。 */
@@ -93,5 +95,22 @@ void measurement_result_publish(const measurement_result_t *result);
  * @note 即使尚未发布，也会向有效输出指针写入 valid 为零的默认快照。
  */
 uint8_t measurement_result_get_snapshot(measurement_result_t *result);
+
+/**
+ * @brief 更新独立的功率显示值。
+ * @param power_w 功率，单位为瓦。
+ * @return 输入为有限数时返回 1；NaN 或无穷大返回 0。
+ * @note 这是给功率算法或 FPGA 解析层预留的接口，只能在主循环调用。
+ *       调用成功后自动设置 MEASUREMENT_VALID_POWER。
+ */
+uint8_t measurement_result_set_power_w(float power_w);
+
+/**
+ * @brief 将功率显示恢复为无效状态。
+ * @param 无。
+ * @return 无。
+ * @note 清除 MEASUREMENT_VALID_POWER 后，t_power 显示“--”。
+ */
+void measurement_result_clear_power(void);
 
 #endif /* MEASUREMENT_RESULT_H */

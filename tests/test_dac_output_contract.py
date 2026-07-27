@@ -11,7 +11,7 @@ def read_text(relative_path: str) -> str:
 
 class DacOutputContractTest(unittest.TestCase):
     def test_cube_configuration_routes_dac_to_opamp_pc4(self) -> None:
-        ioc = read_text("h743_pre1.ioc")
+        ioc = read_text("h743_task2_20260727.ioc")
         for line in (
             "DAC1.DAC_Channel-DAC_OUT1_Int=DAC_CHANNEL_1",
             "PC4.Mode=Follower-DAC_OUT1-INP",

@@ -5,7 +5,8 @@
  * 模块用途：集中包含 HAL 生成头文件与全部用户模块头文件。
  * GPIO 引脚映射：无直接 GPIO 引脚，各模块映射见对应模块说明。
  * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h、adc.h、tim.h、spi.h，
- * 启用串口屏时还依赖 usart.h。旧 ADS8688 模块已从片上 ADC 工程的活动构建中排除。
+ * 串口屏 USART1 和 FPGA USART2 还依赖 usart.h。
+ * 旧 ADS8688 模块已从片上 ADC 工程的活动构建中排除。
  * 初始化方法：HAL 与 MX_* 初始化完成后调用 system_init()。
  * 调用方法：main.c 及其他用户 .c 文件仅包含本头文件。
  */
@@ -20,6 +21,8 @@
 #include "math.h"
 #include "measurement_result.h"
 #include "hmi_task2.h"
+#include "hmi_chart.h"
+#include "fpga_link.h"
 #include "measurement_fft.h"
 #include "fft_f32_65536.h"
 #include "adc_dual.h"
@@ -46,11 +49,12 @@
 #endif
 #endif
 
-/* USART1 由 CubeMX 生成后，统一头文件自动纳入其句柄声明。 */
+/* USART1/USART2 已由本工程 CubeMX 生成，统一纳入 huart1/huart2 声明。 */
 #if defined(__has_include)
 #if __has_include("usart.h")
 #include "usart.h"
 #define SYSTEM_USART1_AVAILABLE 1
+#define SYSTEM_USART2_AVAILABLE 1
 #endif
 #endif
 
@@ -78,7 +82,7 @@ void system_init(void);
  * @brief 执行全部主循环用户功能。
  * @param 无。
  * @return 无。
- * @note 依次处理外部频率、双 ADC、FFT 状态和串口屏，main.c 不放置业务逻辑。
+ * @note 依次处理测量链、FPGA 串口帧和串口屏，main.c 不放置业务逻辑。
  */
 void system_process(void);
 

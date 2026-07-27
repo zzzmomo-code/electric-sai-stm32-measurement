@@ -11,6 +11,8 @@
 
 #include "system.h"
 
+#include <math.h>
+
 /** 最新测量结果快照，仅在主循环上下文读写。 */
 static measurement_result_t measurement_result_latest;
 
@@ -36,6 +38,7 @@ void measurement_result_init(void)
     measurement_result_latest.secondary_frequency_hz = 0.0f;
     measurement_result_latest.secondary_thd_percent = 0.0f;
     measurement_result_latest.phase_deg = 0.0f;
+    measurement_result_latest.power_w = 0.0f;
     measurement_result_latest.wave_type = MEASUREMENT_WAVE_UNKNOWN;
     measurement_result_latest.secondary_wave_type = MEASUREMENT_WAVE_UNKNOWN;
     measurement_result_latest.mode = MEASUREMENT_MODE_UNKNOWN;
@@ -58,12 +61,23 @@ void measurement_result_init(void)
  */
 void measurement_result_publish(const measurement_result_t *result)
 {
+    float saved_power_w;
+    uint32_t saved_power_valid;
+
     if (result == 0)
     {
         return;
     }
 
+    saved_power_w = measurement_result_latest.power_w;
+    saved_power_valid =
+        measurement_result_latest.valid_mask & MEASUREMENT_VALID_POWER;
     measurement_result_latest = *result;
+    if ((result->valid_mask & MEASUREMENT_VALID_POWER) == 0u)
+    {
+        measurement_result_latest.power_w = saved_power_w;
+        measurement_result_latest.valid_mask |= saved_power_valid;
+    }
     measurement_result_available = 1u;
 }
 
@@ -82,4 +96,33 @@ uint8_t measurement_result_get_snapshot(measurement_result_t *result)
 
     *result = measurement_result_latest;
     return measurement_result_available;
+}
+
+/**
+ * @brief 更新独立功率值并置有效位。
+ * @param power_w 功率，单位为瓦。
+ * @return 成功返回 1，非有限数返回 0。
+ */
+uint8_t measurement_result_set_power_w(float power_w)
+{
+    if (!isfinite(power_w))
+    {
+        return 0u;
+    }
+
+    measurement_result_latest.power_w = power_w;
+    measurement_result_latest.valid_mask |= MEASUREMENT_VALID_POWER;
+    measurement_result_available = 1u;
+    return 1u;
+}
+
+/**
+ * @brief 清除功率有效位。
+ * @param 无。
+ * @return 无。
+ */
+void measurement_result_clear_power(void)
+{
+    measurement_result_latest.power_w = 0.0f;
+    measurement_result_latest.valid_mask &= ~MEASUREMENT_VALID_POWER;
 }
