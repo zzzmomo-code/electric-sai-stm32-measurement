@@ -90,9 +90,9 @@ AA 55 [N高 N低] [数据×N×4字节] 0D 0A
 - 每轮主循环只发送一条完整 `cle/add` 命令，避免连续阻塞约 2 秒
 - `HAL_UARTEx_RxEventCallback` 只写 `fpga_link_rx_event_size`
 - `HAL_UART_ErrorCallback` 把非 USART1 错误分流给 fpga_link
-- 独立曲线自检：`HMI_CHART_SELF_TEST_ENABLE=1` 时不等待 FPGA，
-  启动后向 `s0` 发送峰形幅频曲线、向 `s1` 发送下降相频曲线；
-  FPGA 联调前必须把该宏改回 `0`
+- 独立曲线自检已通过；当前 `HMI_CHART_SELF_TEST_ENABLE=0`，
+  正常模式等待 FPGA 有效帧。需要复测时临时设为 `1`，启动后会向 `s0`
+  发送峰形幅频曲线、向 `s1` 发送下降相频曲线
 
 ### measurement_result.h/c（已升级）
 

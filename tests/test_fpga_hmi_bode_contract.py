@@ -81,7 +81,7 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
         )
         self.assertIn("hmi_chart_build_bode_frame", self.hmi)
         self.assertIn(
-            "#define HMI_CHART_SELF_TEST_ENABLE 1u",
+            "#define HMI_CHART_SELF_TEST_ENABLE 0u",
             self.system,
         )
         self.assertIn(

@@ -28,7 +28,7 @@
  * 串口屏曲线链路自检：1 时不等待 FPGA，启动后自动向 s0/s1 各发送 64 点。
  * FPGA 联调前改回 0，正式曲线将恢复使用 USART2 数据。
  */
-#define HMI_CHART_SELF_TEST_ENABLE 1u
+#define HMI_CHART_SELF_TEST_ENABLE 0u
 
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
 /**
