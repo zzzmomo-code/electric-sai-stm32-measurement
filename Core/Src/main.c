@@ -112,6 +112,7 @@ int main(void)
   MX_SPI2_Init();
   MX_DAC1_Init();
   MX_OPAMP1_Init();
+  MX_USART2_UART_Init();
   /* USER CODE BEGIN 2 */
   system_init();
 
