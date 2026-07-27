@@ -203,6 +203,8 @@ FTW = round(fLO * 2^28 / 75 MHz)
 - `Core/User/hmi_chart.c`：64 点幅频/相频降采样与 TJC `cle + add` 构帧。
 - `Core/User/hmi_task2.c`：`t_power` 刷新、分步曲线发送及兼容按键处理。
 - `Core/User/hmi_tjc.c`：上一训练题留档，当前不参与编译。
+- `docs/FPGA_UART_PROTOCOL_GUIDE.md`：FPGA 端 UART 帧格式、定点数据、
+  帧间时序、发送状态机和联调方法。
 - `tests/test_dds_contract.py`：检查 IOC、SPI 时序约定、频率公式和模块调用关系。
 - `tests/test_hmi_runtime_contract.py`：检查串口屏控件、按键命令、中断边界和换算接口。
 - `tests/test_fpga_hmi_bode_contract.py`：检查 Receive-to-IDLE、D-Cache、`cle + add` 和功率接口。

@@ -71,6 +71,9 @@ AA 55 [N高 N低] [数据×N×4字节] 0D 0A
 - phase: 相位响应，÷32768×π = 实际弧度
 - 频率轴: freq[i] = (f_start + i × f_step) × 762.94 Hz
 
+FPGA 端的完整实现约束、帧间空闲要求、状态机参考和测试帧见
+[`docs/FPGA_UART_PROTOCOL_GUIDE.md`](FPGA_UART_PROTOCOL_GUIDE.md)。
+
 ### hmi_chart.h / hmi_chart.c（Bode 图构帧）
 
 **Codex 已改进版本**，使用 `s0.id`/`s1.id` 表达式（非数字 ID），无状态设计。

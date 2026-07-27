@@ -21,6 +21,9 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
         self.result_c = (
             ROOT / "Core/User/measurement_result.c"
         ).read_text(encoding="utf-8")
+        self.fpga_guide = (
+            ROOT / "docs/FPGA_UART_PROTOCOL_GUIDE.md"
+        ).read_text(encoding="utf-8")
 
     def test_fpga_uses_receive_to_idle_dma_and_cache_maintenance(self):
         self.assertIn("HAL_UARTEx_ReceiveToIdle_DMA", self.fpga)
@@ -37,6 +40,17 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
         )
         self.assertEqual(assignments, ["fpga_link_rx_event_size"])
         self.assertNotIn("fpga_link_parse_frame", body)
+
+    def test_fpga_guide_matches_current_binary_contract(self):
+        for contract in (
+            "AA 55  N_H N_L",
+            "MAG_H MAG_L PHASE_H PHASE_L",
+            "`1 ≤ N ≤ 1024`",
+            "`4102` 字节",
+            "`1,000,000 bit/s`",
+            "`50 ms`",
+        ):
+            self.assertIn(contract, self.fpga_guide)
 
     def test_chart_uses_cle_add_without_transparent_mode(self):
         self.assertIn('"cle %s,%u"', self.chart)
