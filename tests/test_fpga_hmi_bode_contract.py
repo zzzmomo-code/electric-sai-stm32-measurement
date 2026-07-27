@@ -14,6 +14,7 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
             ROOT / "Core/User/hmi_chart.h"
         ).read_text(encoding="utf-8")
         self.hmi = (ROOT / "Core/User/hmi_task2.c").read_text(encoding="utf-8")
+        self.system = (ROOT / "Core/User/system.c").read_text(encoding="utf-8")
         self.result_h = (
             ROOT / "Core/User/measurement_result.h"
         ).read_text(encoding="utf-8")
@@ -71,6 +72,22 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
         self.assertIn("measurement_result_set_power_w", self.result_h)
         self.assertIn("measurement_result_clear_power", self.result_h)
         self.assertIn("saved_power_valid", self.result_c)
+
+    def test_chart_self_test_uses_the_production_frame_path(self):
+        self.assertIn("hmi_task2_generate_chart_self_test", self.hmi)
+        self.assertIn(
+            "bode->point_count = HMI_CHART_POINT_COUNT",
+            self.hmi,
+        )
+        self.assertIn("hmi_chart_build_bode_frame", self.hmi)
+        self.assertIn(
+            "#define HMI_CHART_SELF_TEST_ENABLE 1u",
+            self.system,
+        )
+        self.assertIn(
+            "hmi_task2_set_chart_self_test(1u);",
+            self.system,
+        )
 
 
 if __name__ == "__main__":

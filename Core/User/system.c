@@ -24,6 +24,12 @@
  */
 #define HMI_TJC_SELF_TEST_ENABLE 0u
 
+/**
+ * 串口屏曲线链路自检：1 时不等待 FPGA，启动后自动向 s0/s1 各发送 64 点。
+ * FPGA 联调前改回 0，正式曲线将恢复使用 USART2 数据。
+ */
+#define HMI_CHART_SELF_TEST_ENABLE 1u
+
 #if (HMI_TJC_SELF_TEST_ENABLE != 0u)
 /**
  * @brief 发布用于验证串口屏通信的固定测量结果。
@@ -84,6 +90,9 @@ void system_init(void)
     frequency_measure_init();
     dds_control_init();
     hmi_task2_init();
+#if (HMI_CHART_SELF_TEST_ENABLE != 0u)
+    hmi_task2_set_chart_self_test(1u);
+#endif
 #if defined(SYSTEM_USART1_AVAILABLE)
     hmi_task2_bind_uart(&huart1);
 #endif

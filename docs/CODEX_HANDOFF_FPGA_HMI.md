@@ -90,6 +90,9 @@ AA 55 [N高 N低] [数据×N×4字节] 0D 0A
 - 每轮主循环只发送一条完整 `cle/add` 命令，避免连续阻塞约 2 秒
 - `HAL_UARTEx_RxEventCallback` 只写 `fpga_link_rx_event_size`
 - `HAL_UART_ErrorCallback` 把非 USART1 错误分流给 fpga_link
+- 独立曲线自检：`HMI_CHART_SELF_TEST_ENABLE=1` 时不等待 FPGA，
+  启动后向 `s0` 发送峰形幅频曲线、向 `s1` 发送下降相频曲线；
+  FPGA 联调前必须把该宏改回 `0`
 
 ### measurement_result.h/c（已升级）
 
@@ -165,7 +168,7 @@ AA 55 [N高 N低] [数据×N×4字节] 0D 0A
 | HMI s0 控件 | ✅ 已建 (id=6) |
 | HMI s1 控件 | ❌ 待建 |
 | HMI t_power 控件 | ✅ 已建 |
-| Python 契约测试 | ✅ 42 项全部通过 |
+| Python 契约测试 | ✅ 44 项全部通过 |
 | 变更源码 GCC 检查 | ✅ CubeIDE GCC，`-Wall -Wextra -Werror` 通过 |
 | 完整工程 `.elf` | ⚠️ 未取得；现有 `.cproject` 生成 `-I../../Core/Inc`，HAL 编译前即找不到头文件 |
 | 实板验证 | ❌ 全部待硬件验证 |

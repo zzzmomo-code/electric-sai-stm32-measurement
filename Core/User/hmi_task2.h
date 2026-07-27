@@ -43,6 +43,14 @@ extern volatile hmi_task2_diagnostics_t hmi_task2_diagnostics;
  */
 void hmi_task2_init(void);
 
+/**
+ * @brief 启用或关闭串口屏双曲线自检。
+ * @param enable 非零时生成一帧内部测试曲线，零时恢复使用 FPGA 数据。
+ * @return 无。
+ * @note 自检只生成一次 s0/s1 测试帧，不依赖 USART2 或 FPGA。
+ */
+void hmi_task2_set_chart_self_test(uint8_t enable);
+
 #if defined(HAL_UART_MODULE_ENABLED)
 /**
  * @brief 绑定 USART1 并启动单字节中断接收。

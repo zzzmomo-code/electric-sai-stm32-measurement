@@ -177,6 +177,8 @@ FTW = round(fLO * 2^28 / 75 MHz)
 
 `fpga_link.c` 负责 USART2 DMA 接收和 AA55 帧解析；`hmi_chart.c` 把原始点按频率顺序分成 64 组，每组取最大 `mag2_hi` 及其对应相位，映射到 0～255 后构建 `cle + add`。`hmi_task2.c` 每 500 ms 刷新 `t_power`，并且每轮主循环最多发送一条完整曲线命令，避免在 9600 波特率下连续阻塞约 2 秒。旧 `hmi_tjc.c` 仅作上一训练题留档。
 
+当前 `system.c` 的 `HMI_CHART_SELF_TEST_ENABLE` 设为 `1`：启动约 2 秒后，STM32 不等待 FPGA，自动向 `s0` 发送一条中间高、两端低的峰形幅频曲线，并向 `s1` 发送一条从高到低的相频曲线。该模式只发送一帧，专门验证 STM32 到串口屏的正式 `cle + add` 链路；FPGA 开始联调前必须把宏改回 `0`。
+
 ## 模式切换
 
 模式开关位于 `Core/User/dds_control.h`：

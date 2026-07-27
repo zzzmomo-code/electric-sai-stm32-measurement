@@ -45,6 +45,52 @@ static uint16_t hmi_task2_bode_frame_size;
 static uint16_t hmi_task2_bode_frame_offset;
 static uint32_t hmi_task2_bode_source_frame;
 
+/** 非零时使用内部测试曲线，不等待 FPGA 数据。 */
+static uint8_t hmi_task2_chart_self_test_enabled;
+
+/** 非零表示本次启用周期的测试曲线已经构帧。 */
+static uint8_t hmi_task2_chart_self_test_generated;
+
+/**
+ * @brief 生成一帧便于肉眼检查的幅频和相频测试数据。
+ * @param bode 输出 64 点测试快照。
+ * @return 无。
+ * @note s0 形成中间高、两端低的峰形；s1 从高相位单调下降。
+ */
+static void hmi_task2_generate_chart_self_test(fpga_link_bode_t *bode)
+{
+    uint16_t index;
+
+    memset((void *)bode, 0, sizeof(*bode));
+    bode->point_count = HMI_CHART_POINT_COUNT;
+    bode->frame_count = 0xffffffffu;
+    bode->valid = 1u;
+
+    for (index = 0u; index < HMI_CHART_POINT_COUNT; index++)
+    {
+        uint16_t distance;
+        uint16_t amplitude;
+        uint16_t phase_display;
+        int32_t phase_raw;
+
+        distance = (index <= 32u)
+            ? (uint16_t)(32u - index)
+            : (uint16_t)(index - 32u);
+
+        /* 端点约 32，中点 255；平方后交给正式幅度映射路径开方。 */
+        amplitude = (uint16_t)(
+            32u + ((223u * (32u - distance)) / 32u));
+        bode->mag2_hi[index] = (uint16_t)(amplitude * amplitude);
+
+        /* 显示纵轴从约 230 单调下降到约 30。 */
+        phase_display = (uint16_t)(
+            230u - ((200u * index) / (HMI_CHART_POINT_COUNT - 1u)));
+        phase_raw = (int32_t)(
+            ((uint32_t)phase_display * 65535u) / 255u) - 32768;
+        bode->phase[index] = (int16_t)phase_raw;
+    }
+}
+
 /**
  * @brief 追加一条 t_power 文本赋值命令。
  * @param frame 输出缓冲区。
@@ -162,7 +208,15 @@ static void hmi_task2_prepare_bode_frame(uint32_t now)
     {
         return;
     }
-    if (fpga_link_get_bode(&hmi_task2_bode_snapshot) == 0u)
+    if (hmi_task2_chart_self_test_enabled != 0u)
+    {
+        if (hmi_task2_chart_self_test_generated != 0u)
+        {
+            return;
+        }
+        hmi_task2_generate_chart_self_test(&hmi_task2_bode_snapshot);
+    }
+    else if (fpga_link_get_bode(&hmi_task2_bode_snapshot) == 0u)
     {
         return;
     }
@@ -188,6 +242,10 @@ static void hmi_task2_prepare_bode_frame(uint32_t now)
     hmi_task2_bode_frame_offset = 0u;
     hmi_task2_bode_source_frame = hmi_task2_bode_snapshot.frame_count;
     hmi_task2_last_bode_start_ms = now;
+    if (hmi_task2_chart_self_test_enabled != 0u)
+    {
+        hmi_task2_chart_self_test_generated = 1u;
+    }
 }
 
 /**
@@ -273,6 +331,18 @@ void hmi_task2_init(void)
     hmi_task2_bode_frame_size = 0u;
     hmi_task2_bode_frame_offset = 0u;
     hmi_task2_bode_source_frame = 0u;
+    hmi_task2_chart_self_test_enabled = 0u;
+    hmi_task2_chart_self_test_generated = 0u;
+}
+
+void hmi_task2_set_chart_self_test(uint8_t enable)
+{
+    hmi_task2_chart_self_test_enabled = (enable != 0u) ? 1u : 0u;
+    hmi_task2_chart_self_test_generated = 0u;
+    hmi_task2_bode_frame_size = 0u;
+    hmi_task2_bode_frame_offset = 0u;
+    hmi_task2_bode_source_frame = 0u;
+    hmi_task2_last_bode_start_ms = 0u;
 }
 
 #if defined(HAL_UART_MODULE_ENABLED)
