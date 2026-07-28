@@ -17,6 +17,14 @@ class VgaControlContractTest(unittest.TestCase):
             "1.017f",
             "1.117f",
         )
+        measured_voltages = (
+            "0.645f",
+            "0.746f",
+            "0.847f",
+            "0.948f",
+            "1.049f",
+            "1.150f",
+        )
         for index, voltage in enumerate(command_voltages):
             self.assertIn(
                 f"#define VGA_CONTROL_LEVEL_{index}_VOLTAGE_V {voltage}",
@@ -24,7 +32,7 @@ class VgaControlContractTest(unittest.TestCase):
             )
             self.assertIn(
                 f"#define VGA_CONTROL_LEVEL_{index}_MEASURED_VOLTAGE_V "
-                f"{voltage}",
+                f"{measured_voltages[index]}",
                 header,
             )
         self.assertIn(
@@ -38,30 +46,31 @@ class VgaControlContractTest(unittest.TestCase):
 
     def test_dac_codes_and_vca821_piecewise_gain_model(self):
         command_voltages = (0.617, 0.717, 0.817, 0.917, 1.017, 1.117)
+        measured_voltages = (0.645, 0.746, 0.847, 0.948, 1.049, 1.150)
         expected_codes = (766, 890, 1014, 1138, 1262, 1386)
         expected_gain_db = (
-            0.664207,
-            6.918506,
-            13.172806,
-            16.408623,
-            18.659508,
-            19.525459,
+            2.415411,
+            8.732253,
+            14.693778,
+            18.062002,
+            18.936612,
+            19.811223,
         )
         expected_gain = (
-            1.079469,
-            2.217815,
-            4.556594,
-            6.613497,
-            8.569893,
-            9.468320,
+            1.320598,
+            2.732830,
+            5.428613,
+            8.000186,
+            8.847705,
+            9.785007,
         )
 
         for index, command_voltage in enumerate(command_voltages):
             code = int(command_voltage / 3.30 * ((1 << 12) - 1) + 0.5)
-            control_mv = command_voltage * 1000.0
-            if index <= 2:
+            control_mv = measured_voltages[index] * 1000.0
+            if control_mv <= 830.226:
                 gain_db = (control_mv - 606.38) / 15.989
-            elif index == 3:
+            elif control_mv <= 941.14:
                 gain_db = (control_mv - 247.2) / 40.82
             else:
                 gain_db = (control_mv + 1137.8) / 115.48
@@ -84,7 +93,7 @@ class VgaControlContractTest(unittest.TestCase):
             "vga_control_voltage_to_dac_code(dac_voltage_v)", set_body
         )
         self.assertIn(
-            "vga_control_gain_db_from_voltage(level, measured_voltage_v)",
+            "vga_control_gain_db_from_voltage(measured_voltage_v)",
             set_body,
         )
         self.assertIn(
@@ -92,7 +101,7 @@ class VgaControlContractTest(unittest.TestCase):
             set_body,
         )
         self.assertIn(
-            "vga_control_gain_db_from_voltage(level, measured_voltage_v)",
+            "vga_control_gain_db_from_voltage(measured_voltage_v)",
             gain_body,
         )
         for level in range(6):

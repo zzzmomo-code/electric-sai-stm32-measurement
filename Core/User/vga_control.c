@@ -32,23 +32,21 @@ vga_control_diagnostics_t vga_control_diagnostics = {
 };
 
 /**
- * @brief 按 VCA821 模块手册的三段拟合公式，由档位和控制电压计算增益。
- * @param level 当前 VGA 档位，范围为 0 至 5。
+ * @brief 按 VCA821 模块手册的三段拟合公式，由控制电压计算增益。
  * @param control_voltage_v PA4 实测控制电压，单位为 V。
  * @return 限制在 0 至 20 dB 内的理论增益。
- * @note 手册三段电压范围存在重叠，因此按固定档位选择分段：0~2、3、4~5 档。
+ * @note 以各段增益上限对应的控制电压作为切换点，避免实测偏差跨档后仍使用错误分段。
  */
-static float vga_control_gain_db_from_voltage(uint8_t level,
-                                              float control_voltage_v)
+static float vga_control_gain_db_from_voltage(float control_voltage_v)
 {
     float control_voltage_mv = control_voltage_v * 1000.0f;
     float gain_db;
 
-    if (level <= 2u)
+    if (control_voltage_mv <= 830.226f)
     {
         gain_db = (control_voltage_mv - 606.38f) / 15.989f;
     }
-    else if (level == 3u)
+    else if (control_voltage_mv <= 941.14f)
     {
         gain_db = (control_voltage_mv - 247.2f) / 40.82f;
     }
@@ -202,7 +200,7 @@ vga_control_status_t vga_control_set_level(uint8_t level)
     }
 
     vg_voltage_v = measured_voltage_v;
-    gain_db = vga_control_gain_db_from_voltage(level, measured_voltage_v);
+    gain_db = vga_control_gain_db_from_voltage(measured_voltage_v);
     gain = vga_control_linear_gain_from_db(gain_db);
     vga_control_diagnostics.current_level = level;
     vga_control_diagnostics.dac_voltage_v = dac_voltage_v;
@@ -258,7 +256,7 @@ vga_control_status_t vga_control_gain_from_level(uint8_t level, float *gain)
             return vga_control_status_invalid_level;
     }
 
-    gain_db = vga_control_gain_db_from_voltage(level, measured_voltage_v);
+    gain_db = vga_control_gain_db_from_voltage(measured_voltage_v);
     *gain = vga_control_linear_gain_from_db(gain_db);
 
     return vga_control_status_ok;
