@@ -1,10 +1,11 @@
 /**
  * @file fpga_link.c
- * @brief FPGA 高速串口数据接收模块实现。
+ * @brief FPGA 高速串口双向通信模块实现。
  *
  * 模块用途：用 USART2 Receive-to-IDLE DMA 接收 FPGA Bode 数据帧，
  *          在主循环验证同步头、点数、帧长和帧尾后发布稳定快照。
- * GPIO 引脚映射：PA2/USART2_TX，PA3/USART2_RX，双方共地。
+ * GPIO 引脚映射：PA2/USART2_TX 接 FPGA T19/RX，
+ *          PA3/USART2_RX 接 FPGA J15/TX，双方共地。
  * 依赖的外设和 CubeIDE 配置：USART2 1 Mbaud 8N1、DMA1_Stream1 RX Normal、
  *          USART2 与 DMA1_Stream1 中断。
  * 初始化方法：system_init() 调用 init、bind 和 start。
@@ -14,6 +15,10 @@
 #include "system.h"
 
 #include <string.h>
+
+#define FPGA_LINK_STEP_INCREASE_COMMAND 0x2bu
+#define FPGA_LINK_STEP_DECREASE_COMMAND 0x2du
+#define FPGA_LINK_COMMAND_TX_TIMEOUT_MS 10u
 
 /** DMA 写入缓冲区；长度和地址均按 32 字节缓存行对齐。 */
 static uint8_t fpga_link_dma_buffer[FPGA_LINK_DMA_BUFFER_SIZE]
@@ -304,6 +309,50 @@ uint8_t fpga_link_get_bode(fpga_link_bode_t *bode)
 
     *bode = fpga_link_bode;
     return fpga_link_bode.valid;
+}
+
+/**
+ * @brief 通过 USART2 向 FPGA 发送一个扫频控制命令。
+ * @param command 只允许 0x2B 或 0x2D。
+ * @return 发送成功返回 1，参数、UART 状态或 HAL 发送异常返回 0。
+ */
+static uint8_t fpga_link_send_command(uint8_t command)
+{
+    HAL_StatusTypeDef status;
+
+    if ((command != FPGA_LINK_STEP_INCREASE_COMMAND)
+        && (command != FPGA_LINK_STEP_DECREASE_COMMAND))
+    {
+        fpga_link_diagnostics.command_tx_error_count++;
+        return 0u;
+    }
+    if (fpga_link_uart == NULL)
+    {
+        fpga_link_diagnostics.command_tx_error_count++;
+        return 0u;
+    }
+
+    status = HAL_UART_Transmit(
+        fpga_link_uart, &command, 1u, FPGA_LINK_COMMAND_TX_TIMEOUT_MS);
+    if (status != HAL_OK)
+    {
+        fpga_link_diagnostics.command_tx_error_count++;
+        return 0u;
+    }
+
+    fpga_link_diagnostics.command_tx_count++;
+    fpga_link_diagnostics.last_tx_command = command;
+    return 1u;
+}
+
+uint8_t fpga_link_send_step_increase(void)
+{
+    return fpga_link_send_command(FPGA_LINK_STEP_INCREASE_COMMAND);
+}
+
+uint8_t fpga_link_send_step_decrease(void)
+{
+    return fpga_link_send_command(FPGA_LINK_STEP_DECREASE_COMMAND);
 }
 
 #if defined(HAL_UART_MODULE_ENABLED)

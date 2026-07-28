@@ -168,7 +168,7 @@ static void hmi_chart_downsample(const fpga_link_bode_t *bode,
         mean_magnitude = (uint16_t)(magnitude_sum / sample_count);
         mean_phase = (int16_t)(phase_sum / (int32_t)sample_count);
 
-        /* mag2_hi 是 (I²+Q²)[47:32]，均值开方后得到幅度响应。 */
+        /* mag2_hi 是 (I²+Q²)[63:48]，均值开方后得到幅度响应。 */
         magnitude_root = hmi_chart_isqrt_u16(mean_magnitude);
         amplitude[output_index] = (uint8_t)magnitude_root;
         if (amplitude[output_index] < amplitude_min)

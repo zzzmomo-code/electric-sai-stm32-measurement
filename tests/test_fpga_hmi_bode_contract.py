@@ -9,6 +9,9 @@ ROOT = Path(__file__).resolve().parents[1]
 class FpgaHmiBodeContractTest(unittest.TestCase):
     def setUp(self):
         self.fpga = (ROOT / "Core/User/fpga_link.c").read_text(encoding="utf-8")
+        self.fpga_h = (
+            ROOT / "Core/User/fpga_link.h"
+        ).read_text(encoding="utf-8")
         self.chart = (ROOT / "Core/User/hmi_chart.c").read_text(encoding="utf-8")
         self.chart_h = (
             ROOT / "Core/User/hmi_chart.h"
@@ -122,7 +125,27 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
             "amplitude[output_index] = (uint8_t)magnitude_root",
             self.chart,
         )
-        self.assertIn("(I²+Q²)[47:32]", self.chart)
+        self.assertIn("(I²+Q²)[63:48]", self.chart)
+
+    def test_fpga_step_commands_use_usart2_single_byte_contract(self):
+        self.assertIn(
+            "#define FPGA_LINK_STEP_INCREASE_COMMAND 0x2bu",
+            self.fpga,
+        )
+        self.assertIn(
+            "#define FPGA_LINK_STEP_DECREASE_COMMAND 0x2du",
+            self.fpga,
+        )
+        self.assertIn(
+            "HAL_UART_Transmit(\n"
+            "        fpga_link_uart, &command, 1u,",
+            self.fpga,
+        )
+        self.assertIn("fpga_link_send_step_increase", self.fpga_h)
+        self.assertIn("fpga_link_send_step_decrease", self.fpga_h)
+        self.assertIn("command_tx_count", self.fpga_h)
+        self.assertIn("command_tx_error_count", self.fpga_h)
+        self.assertIn("last_tx_command", self.fpga_h)
 
     def test_s0_autoscales_frame_minimum_and_maximum(self):
         self.assertIn(

@@ -1,14 +1,15 @@
-# FPGA → STM32 幅频/相频 UART 发送指导
+# FPGA ↔ STM32 幅频/相频 UART 双向通信指导
 
-本文给 FPGA 端开发人员使用。当前 STM32 固件只接收下面定义的固定协议；
-不要自行增加版本号、CRC、功率、频率起点等字段，否则 STM32 会按错误位置解析。
+本文给 FPGA 与 STM32 联调使用。FPGA 向 STM32 发送固定幅相数据帧，STM32
+向 FPGA 发送单字节扫频步进命令。不要自行增加版本号、CRC、功率、频率起点
+等字段，否则 STM32 会按错误位置解析。
 
 ## 1. 硬件和串口参数
 
 | 项目 | 要求 |
 |---|---|
-| FPGA TX | 接 STM32 `PA3/USART2_RX` |
-| FPGA RX | 可接 STM32 `PA2/USART2_TX`，当前协议暂不使用 |
+| FPGA J15/TX | 接 STM32 `PA3/USART2_RX` |
+| FPGA T19/RX | 接 STM32 `PA2/USART2_TX`，接收扫频步进命令 |
 | 电平 | 3.3 V TTL UART，不是 RS-232 电平 |
 | 地 | FPGA 与 STM32 必须共地 |
 | 波特率 | `1,000,000 bit/s` |
@@ -58,7 +59,7 @@ MAG_H MAG_L PHASE_H PHASE_L
 ### 3.1 幅度 `mag2_hi`
 
 - 类型：`uint16_t`，范围 `0…65535`。
-- 精确定义：`mag2_hi = (I² + Q²)[47:32]`，即48位幅度平方的高16位。
+- 精确定义：`mag2_hi = (I² + Q²)[63:48]`，即64位幅度平方的高16位。
 - STM32 对每组 `mag2_hi` 求均值后执行整数平方根，再按本帧幅值最小值到
   最大值自动映射到 `0…255`；最小值位于 s0 纵轴底部。
 - FPGA 不要再对该字段开方或使用逐频点变化的缩放系数。
@@ -67,7 +68,7 @@ MAG_H MAG_L PHASE_H PHASE_L
 例如：
 
 ```verilog
-mag2_hi = mag2[47:32];
+mag2_hi = mag2[63:48];
 ```
 
 ### 3.2 相位 `phase`
@@ -207,7 +208,25 @@ frame_error_count = 0
 uart_error_count  = 0
 ```
 
-## 8. 当前协议没有包含的内容
+## 8. STM32 → FPGA 扫频步进命令
+
+STM32 通过 `PA2/USART2_TX` 向 FPGA `T19/RX` 发送单字节命令：
+
+| STM32 字节 | ASCII | FPGA 动作 | STM32 接口 |
+|---:|---:|---|---|
+| `0x2B` | `+` | `f_step + 1` | `fpga_link_send_step_increase()` |
+| `0x2D` | `-` | `f_step - 1` | `fpga_link_send_step_decrease()` |
+
+命令没有帧头、帧尾或 ACK。USART2 是全双工接口，STM32发送单字节命令时
+RX DMA可以继续接收FPGA数据帧。可在调试器中观察：
+
+```c
+fpga_link_diagnostics.command_tx_count
+fpga_link_diagnostics.command_tx_error_count
+fpga_link_diagnostics.last_tx_command
+```
+
+## 9. 当前协议没有包含的内容
 
 - 功率值不在该帧中。STM32当前通过 `measurement_result_set_power_w()` 接口
   单独写入功率。

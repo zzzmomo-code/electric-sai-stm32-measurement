@@ -67,12 +67,19 @@ AA 55 [N高 N低] [数据×N×4字节] 0D 0A
 ```
 
 **数据含义**：
-- mag2_hi: `(I²+Q²)[47:32]`，幅度平方高16位，0~65535
+- mag2_hi: `(I²+Q²)[63:48]`，幅度平方高16位，0~65535
 - phase: 相位响应，÷32768×π = 实际弧度
 - 频率轴: freq[i] = (f_start + i × f_step) × 762.94 Hz
 
 FPGA 端的完整实现约束、帧间空闲要求、状态机参考和测试帧见
 [`docs/FPGA_UART_PROTOCOL_GUIDE.md`](FPGA_UART_PROTOCOL_GUIDE.md)。
+
+**STM32 → FPGA 扫频步进命令**：
+
+- `fpga_link_send_step_increase()` 发送 `0x2B`，FPGA执行 `f_step + 1`
+- `fpga_link_send_step_decrease()` 发送 `0x2D`，FPGA执行 `f_step - 1`
+- PA2/USART2_TX 接 FPGA T19/RX；诊断量为 `command_tx_count`、
+  `command_tx_error_count` 和 `last_tx_command`
 
 ### hmi_chart.h / hmi_chart.c（Bode 图构帧）
 
