@@ -1,9 +1,9 @@
 /**
  * @file vga_control.c
- * @brief 片上 DAC 六档输出与外接差分 VGA 增益控制实现。
+ * @brief 片上 DAC 六档输出与外接 VCA821 程控放大器控制实现。
  *
- * 模块用途：通过 PA4/DAC1_OUT1 输出六档直流电压，并计算对应的 VG 与 VGA 理论增益。
- * GPIO 引脚映射：PA4/DAC1_OUT1，连接外部控制电压放大器的输入端。
+ * 模块用途：通过 PA4/DAC1_OUT1 输出六档直流电压，并按模块手册分段曲线计算 VCA821 理论增益。
+ * GPIO 引脚映射：PA4/DAC1_OUT1，连接 VCA821 模块的外接 DA 控制输入端。
  * 依赖的外设和 CubeIDE 配置：DAC1 Channel 1、无触发、输出缓冲开启，PA4 为模拟无上下拉。
  * 初始化方法：CubeMX 完成 MX_DAC1_Init() 后，由 system_init() 调用 vga_control_init()。
  * 调用方法：使用 vga_control_set_level() 切换档位，使用
@@ -14,7 +14,10 @@
 
 _Static_assert(VGA_CONTROL_DAC_REFERENCE_VOLTAGE_V > 0.0f,
                "DAC reference voltage must be positive");
-_Static_assert(VGA_CONTROL_RG > 0.0f, "VGA RG must be positive");
+_Static_assert(VGA_CONTROL_LEVEL_0_VOLTAGE_V >= VGA_CONTROL_VCA821_CONTROL_MIN_V,
+               "VCA821 level 0 is below the documented control range");
+_Static_assert(VGA_CONTROL_LEVEL_5_VOLTAGE_V <= VGA_CONTROL_VCA821_CONTROL_MAX_V,
+               "VCA821 level 5 is above the documented control range");
 
 /** 模块状态快照；初始档位 0xff 表示尚未成功设置任何有效档位。 */
 vga_control_diagnostics_t vga_control_diagnostics = {
@@ -23,9 +26,58 @@ vga_control_diagnostics_t vga_control_diagnostics = {
     0.0f,
     0.0f,
     0.0f,
+    0.0f,
     vga_control_status_dac_error,
     (uint32_t)HAL_ERROR
 };
+
+/**
+ * @brief 按 VCA821 模块手册的三段拟合公式，由档位和控制电压计算增益。
+ * @param level 当前 VGA 档位，范围为 0 至 5。
+ * @param control_voltage_v PA4 实测控制电压，单位为 V。
+ * @return 限制在 0 至 20 dB 内的理论增益。
+ * @note 手册三段电压范围存在重叠，因此按固定档位选择分段：0~2、3、4~5 档。
+ */
+static float vga_control_gain_db_from_voltage(uint8_t level,
+                                              float control_voltage_v)
+{
+    float control_voltage_mv = control_voltage_v * 1000.0f;
+    float gain_db;
+
+    if (level <= 2u)
+    {
+        gain_db = (control_voltage_mv - 606.38f) / 15.989f;
+    }
+    else if (level == 3u)
+    {
+        gain_db = (control_voltage_mv - 247.2f) / 40.82f;
+    }
+    else
+    {
+        gain_db = (control_voltage_mv + 1137.8f) / 115.48f;
+    }
+
+    if (gain_db < VGA_CONTROL_VCA821_GAIN_MIN_DB)
+    {
+        gain_db = VGA_CONTROL_VCA821_GAIN_MIN_DB;
+    }
+    else if (gain_db > VGA_CONTROL_VCA821_GAIN_MAX_DB)
+    {
+        gain_db = VGA_CONTROL_VCA821_GAIN_MAX_DB;
+    }
+
+    return gain_db;
+}
+
+/**
+ * @brief 把分贝增益换算为幅度换算所需的线性电压增益。
+ * @param gain_db 理论增益，单位为 dB。
+ * @return 线性电压增益。
+ */
+static float vga_control_linear_gain_from_db(float gain_db)
+{
+    return powf(10.0f, gain_db / 20.0f);
+}
 
 /**
  * @brief 把目标电压自动换算为片上 DAC 的 12 位数字码。
@@ -100,8 +152,10 @@ vga_control_status_t vga_control_set_level(uint8_t level)
     float measured_voltage_v;
     /** 当前档位对应的外部放大器控制电压。 */
     float vg_voltage_v;
-    /** 当前档位对应的 VGA 理论差分增益。 */
+    /** 当前档位对应的 VCA821 理论线性增益。 */
     float gain;
+    /** 当前档位对应的 VCA821 理论增益，单位为 dB。 */
+    float gain_db;
     /** 自动换算得到的片上 DAC 12 位数字码。 */
     uint32_t dac_code;
     /** DAC 数据写入操作的 HAL 返回状态。 */
@@ -147,12 +201,14 @@ vga_control_status_t vga_control_set_level(uint8_t level)
         return vga_control_status_dac_error;
     }
 
-    vg_voltage_v = VGA_CONTROL_VG_FROM_DAC_VOLTAGE(measured_voltage_v);
-    gain = VGA_CONTROL_GAIN_FROM_VG(vg_voltage_v);
+    vg_voltage_v = measured_voltage_v;
+    gain_db = vga_control_gain_db_from_voltage(level, measured_voltage_v);
+    gain = vga_control_linear_gain_from_db(gain_db);
     vga_control_diagnostics.current_level = level;
     vga_control_diagnostics.dac_voltage_v = dac_voltage_v;
     vga_control_diagnostics.measured_voltage_v = measured_voltage_v;
     vga_control_diagnostics.vg_voltage_v = vg_voltage_v;
+    vga_control_diagnostics.gain_db = gain_db;
     vga_control_diagnostics.vga_gain = gain;
     vga_control_diagnostics.last_status = vga_control_status_ok;
 
@@ -160,7 +216,7 @@ vga_control_status_t vga_control_set_level(uint8_t level)
 }
 
 /**
- * @brief 使用 switch 由档位计算外接差分 VGA 的理论增益。
+ * @brief 使用 switch 由档位计算 VCA821 模块的理论线性增益。
  * @param level 电压档位，有效范围为 0 至 5。
  * @param gain 用于接收理论增益的非空指针。
  * @return 成功返回 vga_control_status_ok；非法档位或空指针返回对应错误。
@@ -170,8 +226,8 @@ vga_control_status_t vga_control_gain_from_level(uint8_t level, float *gain)
 {
     /** 当前档位 PA4 的实测电压，用于 VG 与 AV 模型计算。 */
     float measured_voltage_v;
-    /** 根据 PA4 实测电压计算得到的外部控制电压。 */
-    float vg_voltage_v;
+    /** 根据 PA4 实测电压计算得到的 VCA821 理论增益，单位为 dB。 */
+    float gain_db;
 
     if (gain == NULL)
     {
@@ -202,8 +258,8 @@ vga_control_status_t vga_control_gain_from_level(uint8_t level, float *gain)
             return vga_control_status_invalid_level;
     }
 
-    vg_voltage_v = VGA_CONTROL_VG_FROM_DAC_VOLTAGE(measured_voltage_v);
-    *gain = VGA_CONTROL_GAIN_FROM_VG(vg_voltage_v);
+    gain_db = vga_control_gain_db_from_voltage(level, measured_voltage_v);
+    *gain = vga_control_linear_gain_from_db(gain_db);
 
     return vga_control_status_ok;
 }
