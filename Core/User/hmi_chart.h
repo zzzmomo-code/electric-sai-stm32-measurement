@@ -54,7 +54,8 @@ typedef enum
  * @param frame_size 输出实际字节数。
  * @return 构帧状态。
  * @note 使用 s0.id/s1.id 表达式，避免控件置顶、置底或增删后数字 ID 改变。
- *       每个频率分组内幅度取最大值，相位取该最大幅度点对应的相位。
+ *       每个频率分组内分别对幅度平方和有符号相位求算术平均值；
+ *       幅度平方的均值随后开方，得到该分组的均方根幅度。
  */
 hmi_chart_status_t hmi_chart_build_bode_frame(
     const fpga_link_bode_t *bode,

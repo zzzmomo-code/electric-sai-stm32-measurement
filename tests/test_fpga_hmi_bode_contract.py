@@ -97,6 +97,22 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
             self.chart,
         )
 
+    def test_chart_downsampling_uses_bucket_means(self):
+        self.assertIn(
+            "magnitude_sum += bode->mag2_hi[input_index]",
+            self.chart,
+        )
+        self.assertIn(
+            "phase_sum += bode->phase[input_index]",
+            self.chart,
+        )
+        self.assertIn(
+            "mean_magnitude = (uint16_t)(magnitude_sum / sample_count)",
+            self.chart,
+        )
+        self.assertNotIn("best_magnitude", self.chart)
+        self.assertNotIn("best_index", self.chart)
+
     def test_bode_transmit_is_split_at_complete_command_boundaries(self):
         self.assertIn("hmi_task2_send_next_bode_command", self.hmi)
         self.assertIn("terminator_found", self.hmi)

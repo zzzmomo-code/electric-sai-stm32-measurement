@@ -136,8 +136,11 @@ static void hmi_chart_downsample(const fpga_link_bode_t *bode,
             ((uint32_t)(output_index + 1u) * bode->point_count)
             / HMI_CHART_POINT_COUNT;
         uint32_t input_index;
-        uint32_t best_index;
-        uint16_t best_magnitude;
+        uint32_t sample_count;
+        uint32_t magnitude_sum = 0u;
+        int32_t phase_sum = 0;
+        uint16_t mean_magnitude;
+        int16_t mean_phase;
         uint16_t magnitude_root;
         int32_t phase_shifted;
 
@@ -154,24 +157,22 @@ static void hmi_chart_downsample(const fpga_link_bode_t *bode,
             end = bode->point_count;
         }
 
-        best_index = begin;
-        best_magnitude = bode->mag2_hi[begin];
-        for (input_index = begin + 1u; input_index < end; input_index++)
+        sample_count = end - begin;
+        for (input_index = begin; input_index < end; input_index++)
         {
-            if (bode->mag2_hi[input_index] > best_magnitude)
-            {
-                best_magnitude = bode->mag2_hi[input_index];
-                best_index = input_index;
-            }
+            magnitude_sum += bode->mag2_hi[input_index];
+            phase_sum += bode->phase[input_index];
         }
+        mean_magnitude = (uint16_t)(magnitude_sum / sample_count);
+        mean_phase = (int16_t)(phase_sum / (int32_t)sample_count);
 
-        /* mag2_hi 与幅度平方成正比，先开方再映射到 0~255。 */
-        magnitude_root = hmi_chart_isqrt_u16(best_magnitude);
+        /* 先对幅度平方求均值，再开方得到该频率组的均方根幅度。 */
+        magnitude_root = hmi_chart_isqrt_u16(mean_magnitude);
         amplitude[output_index] = (uint8_t)(
             ((uint32_t)magnitude_root * HMI_CHART_VALUE_MAX) / 255u);
 
-        /* int16 相位的 -32768~32767 精确映射到 0~255。 */
-        phase_shifted = (int32_t)bode->phase[best_index] + 32768;
+        /* 相位按 int16 有符号值求均值，再将 -32768~32767 映射到 0~255。 */
+        phase_shifted = (int32_t)mean_phase + 32768;
         phase[output_index] = (uint8_t)(
             ((uint32_t)phase_shifted * HMI_CHART_VALUE_MAX) / 65535u);
     }
