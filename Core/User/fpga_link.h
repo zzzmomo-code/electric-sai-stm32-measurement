@@ -38,7 +38,7 @@
 typedef struct
 {
     uint16_t point_count;                   /**< 本帧有效点数。 */
-    uint16_t mag2_hi[FPGA_LINK_MAX_POINTS]; /**< 幅度平方高位，0~65535。 */
+    uint16_t mag2_hi[FPGA_LINK_MAX_POINTS]; /**< FPGA 已开方的幅度；字段名沿用协议。 */
     int16_t phase[FPGA_LINK_MAX_POINTS];    /**< 相位，除以 32768 后乘 π。 */
     uint32_t frame_count;                   /**< 已接收的有效帧累计数。 */
     uint8_t valid;                          /**< 非零表示已有有效帧。 */

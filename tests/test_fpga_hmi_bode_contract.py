@@ -113,6 +113,16 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
         self.assertNotIn("best_magnitude", self.chart)
         self.assertNotIn("best_index", self.chart)
 
+    def test_chart_linearly_maps_fpga_amplitude_without_second_sqrt(self):
+        self.assertIn(
+            "((uint32_t)mean_magnitude * HMI_CHART_VALUE_MAX)"
+            " / 65535u",
+            self.chart,
+        )
+        self.assertNotIn("hmi_chart_isqrt", self.chart)
+        self.assertNotIn("magnitude_root", self.chart)
+        self.assertIn("FPGA 已完成开方", self.chart)
+
     def test_bode_transmit_is_split_at_complete_command_boundaries(self):
         self.assertIn("hmi_task2_send_next_bode_command", self.hmi)
         self.assertIn("terminator_found", self.hmi)

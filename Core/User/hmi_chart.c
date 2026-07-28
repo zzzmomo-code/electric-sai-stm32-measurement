@@ -26,39 +26,6 @@ static uint8_t hmi_chart_amplitude_workspace[HMI_CHART_POINT_COUNT];
 static uint8_t hmi_chart_phase_workspace[HMI_CHART_POINT_COUNT];
 
 /**
- * @brief 计算 16 位无符号整数平方根的向下取整值。
- * @param value 输入值。
- * @return 0~255 的整数平方根。
- */
-static uint16_t hmi_chart_isqrt_u16(uint16_t value)
-{
-    uint32_t operand = value;
-    uint32_t result = 0u;
-    uint32_t bit = 1uL << 14;
-
-    while (bit > operand)
-    {
-        bit >>= 2;
-    }
-
-    while (bit != 0u)
-    {
-        if (operand >= (result + bit))
-        {
-            operand -= result + bit;
-            result = (result >> 1) + bit;
-        }
-        else
-        {
-            result >>= 1;
-        }
-        bit >>= 2;
-    }
-
-    return (uint16_t)result;
-}
-
-/**
  * @brief 追加一条以 FF FF FF 结尾的格式化 TJC 指令。
  * @param frame 输出缓冲区。
  * @param capacity 缓冲区总容量。
@@ -141,7 +108,6 @@ static void hmi_chart_downsample(const fpga_link_bode_t *bode,
         int32_t phase_sum = 0;
         uint16_t mean_magnitude;
         int16_t mean_phase;
-        uint16_t magnitude_root;
         int32_t phase_shifted;
 
         if (begin >= bode->point_count)
@@ -166,10 +132,9 @@ static void hmi_chart_downsample(const fpga_link_bode_t *bode,
         mean_magnitude = (uint16_t)(magnitude_sum / sample_count);
         mean_phase = (int16_t)(phase_sum / (int32_t)sample_count);
 
-        /* 先对幅度平方求均值，再开方得到该频率组的均方根幅度。 */
-        magnitude_root = hmi_chart_isqrt_u16(mean_magnitude);
+        /* FPGA 已完成开方，STM32 只把 16 位幅值线性映射到 0~255。 */
         amplitude[output_index] = (uint8_t)(
-            ((uint32_t)magnitude_root * HMI_CHART_VALUE_MAX) / 255u);
+            ((uint32_t)mean_magnitude * HMI_CHART_VALUE_MAX) / 65535u);
 
         /* 相位按 int16 有符号值求均值，再将 -32768~32767 映射到 0~255。 */
         phase_shifted = (int32_t)mean_phase + 32768;
