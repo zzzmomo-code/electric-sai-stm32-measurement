@@ -55,7 +55,7 @@ typedef enum
  * @return 构帧状态。
  * @note 使用 s0.id/s1.id 表达式，避免控件置顶、置底或增删后数字 ID 改变。
  *       每个频率分组内分别对 mag2_hi 和有符号相位求算术平均值；
- *       mag2_hi 均值开方后映射到 Waveform 的 0~255。
+ *       mag2_hi 均值开方后，按本帧最小值到最大值自动映射到 0~255。
  */
 hmi_chart_status_t hmi_chart_build_bode_frame(
     const fpga_link_bode_t *bode,

@@ -124,6 +124,8 @@ static void hmi_chart_downsample(const fpga_link_bode_t *bode,
                                  uint8_t *phase)
 {
     uint16_t output_index;
+    uint8_t amplitude_min = HMI_CHART_VALUE_MAX;
+    uint8_t amplitude_max = 0u;
 
     for (output_index = 0u;
          output_index < HMI_CHART_POINT_COUNT;
@@ -168,13 +170,49 @@ static void hmi_chart_downsample(const fpga_link_bode_t *bode,
 
         /* mag2_hi 是 (I²+Q²)[47:32]，均值开方后得到幅度响应。 */
         magnitude_root = hmi_chart_isqrt_u16(mean_magnitude);
-        amplitude[output_index] = (uint8_t)(
-            ((uint32_t)magnitude_root * HMI_CHART_VALUE_MAX) / 255u);
+        amplitude[output_index] = (uint8_t)magnitude_root;
+        if (amplitude[output_index] < amplitude_min)
+        {
+            amplitude_min = amplitude[output_index];
+        }
+        if (amplitude[output_index] > amplitude_max)
+        {
+            amplitude_max = amplitude[output_index];
+        }
 
         /* 相位按 int16 有符号值求均值，再将 -32768~32767 映射到 0~255。 */
         phase_shifted = (int32_t)mean_phase + 32768;
         phase[output_index] = (uint8_t)(
             ((uint32_t)phase_shifted * HMI_CHART_VALUE_MAX) / 65535u);
+    }
+
+    /*
+     * s0 使用本帧自动量程：本帧最小幅度放在纵轴底部，最大幅度放在顶部。
+     * 全帧幅度相等时没有可展开范围，统一显示在纵轴底部。
+     */
+    if (amplitude_max > amplitude_min)
+    {
+        uint16_t amplitude_range =
+            (uint16_t)amplitude_max - amplitude_min;
+
+        for (output_index = 0u;
+             output_index < HMI_CHART_POINT_COUNT;
+             output_index++)
+        {
+            amplitude[output_index] = (uint8_t)(
+                ((uint32_t)(amplitude[output_index] - amplitude_min)
+                 * HMI_CHART_VALUE_MAX)
+                / amplitude_range);
+        }
+    }
+    else
+    {
+        for (output_index = 0u;
+             output_index < HMI_CHART_POINT_COUNT;
+             output_index++)
+        {
+            amplitude[output_index] = 0u;
+        }
     }
 }
 

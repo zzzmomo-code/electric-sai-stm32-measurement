@@ -119,10 +119,23 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
             self.chart,
         )
         self.assertIn(
-            "((uint32_t)magnitude_root * HMI_CHART_VALUE_MAX) / 255u",
+            "amplitude[output_index] = (uint8_t)magnitude_root",
             self.chart,
         )
         self.assertIn("(I²+Q²)[47:32]", self.chart)
+
+    def test_s0_autoscales_frame_minimum_and_maximum(self):
+        self.assertIn(
+            "uint8_t amplitude_min = HMI_CHART_VALUE_MAX",
+            self.chart,
+        )
+        self.assertIn("uint8_t amplitude_max = 0u", self.chart)
+        self.assertIn(
+            "amplitude[output_index] - amplitude_min",
+            self.chart,
+        )
+        self.assertIn("/ amplitude_range", self.chart)
+        self.assertIn("amplitude[output_index] = 0u", self.chart)
 
     def test_bode_transmit_is_split_at_complete_command_boundaries(self):
         self.assertIn("hmi_task2_send_next_bode_command", self.hmi)
