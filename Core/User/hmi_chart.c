@@ -2,7 +2,7 @@
  * @file hmi_chart.c
  * @brief TJC 串口屏幅频和相频曲线构帧实现。
  *
- * 模块用途：把最多 1024 点 FPGA Bode 数据压缩为 64 点，构建 s0/s1
+ * 模块用途：把最多 1024 点 FPGA Bode 数据压缩为 256 点，构建 s0/s1
  *          Waveform 控件的 cle + add ASCII 指令。
  * GPIO 引脚映射：无直接 GPIO。
  * 依赖的外设和 CubeIDE 配置：HMI 当前页面必须存在 s0 和 s1，通道数 ch=1。
@@ -17,6 +17,13 @@
 #define HMI_CHART_AMPLITUDE_OBJECT "s0.id"
 #define HMI_CHART_PHASE_OBJECT     "s1.id"
 #define HMI_CHART_TERMINATOR       0xffu
+
+/**
+ * 256 点降采样工作区。
+ * 使用静态存储，避免 512 字节临时数组占用主循环栈；构帧函数不可重入。
+ */
+static uint8_t hmi_chart_amplitude_workspace[HMI_CHART_POINT_COUNT];
+static uint8_t hmi_chart_phase_workspace[HMI_CHART_POINT_COUNT];
 
 /**
  * @brief 计算 16 位无符号整数平方根的向下取整值。
@@ -106,7 +113,7 @@ static uint8_t hmi_chart_append_command(uint8_t *frame,
 }
 
 /**
- * @brief 将原始 Bode 点按频率顺序压缩到 64 点。
+ * @brief 将原始 Bode 点按频率顺序压缩到 256 点。
  * @param bode 原始数据。
  * @param amplitude 输出幅频纵轴值。
  * @param phase 输出相频纵轴值。
@@ -176,8 +183,6 @@ hmi_chart_status_t hmi_chart_build_bode_frame(
     uint16_t frame_capacity,
     uint16_t *frame_size)
 {
-    uint8_t amplitude[HMI_CHART_POINT_COUNT];
-    uint8_t phase[HMI_CHART_POINT_COUNT];
     uint16_t index;
 
     if ((bode == NULL) || (frame == NULL) || (frame_size == NULL)
@@ -192,7 +197,8 @@ hmi_chart_status_t hmi_chart_build_bode_frame(
     }
 
     *frame_size = 0u;
-    hmi_chart_downsample(bode, amplitude, phase);
+    hmi_chart_downsample(
+        bode, hmi_chart_amplitude_workspace, hmi_chart_phase_workspace);
 
     if (hmi_chart_append_command(
             frame, frame_capacity, frame_size,
@@ -203,9 +209,9 @@ hmi_chart_status_t hmi_chart_build_bode_frame(
     for (index = 0u; index < HMI_CHART_POINT_COUNT; index++)
     {
         if (hmi_chart_append_command(
-                frame, frame_capacity, frame_size,
-                "add %s,%u,%u", HMI_CHART_AMPLITUDE_OBJECT,
-                0u, (int16_t)amplitude[index]) == 0u)
+            frame, frame_capacity, frame_size,
+            "add %s,%u,%u", HMI_CHART_AMPLITUDE_OBJECT,
+            0u, (int16_t)hmi_chart_amplitude_workspace[index]) == 0u)
         {
             return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
         }
@@ -220,9 +226,9 @@ hmi_chart_status_t hmi_chart_build_bode_frame(
     for (index = 0u; index < HMI_CHART_POINT_COUNT; index++)
     {
         if (hmi_chart_append_command(
-                frame, frame_capacity, frame_size,
-                "add %s,%u,%u", HMI_CHART_PHASE_OBJECT,
-                0u, (int16_t)phase[index]) == 0u)
+            frame, frame_capacity, frame_size,
+            "add %s,%u,%u", HMI_CHART_PHASE_OBJECT,
+            0u, (int16_t)hmi_chart_phase_workspace[index]) == 0u)
         {
             return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
         }

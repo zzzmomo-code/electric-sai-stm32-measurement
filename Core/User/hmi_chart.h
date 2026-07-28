@@ -19,14 +19,17 @@
 
 #include "fpga_link.h"
 
-/** 串口屏每条曲线显示的点数。 */
-#define HMI_CHART_POINT_COUNT 64u
+/**
+ * 串口屏每条曲线显示的点数。
+ * 实板上 64 点约占 Waveform 横轴四分之一，因此按 256 像素宽度输出。
+ */
+#define HMI_CHART_POINT_COUNT 256u
 
 /**
- * 单个 Waveform 的 cle + 64 条 add 指令缓冲区上限。
- * 最坏情况下每条三位数 add 指令占 18 字节，单图最多 1166 字节。
+ * 单个 Waveform 的 cle + 256 条 add 指令缓冲区上限。
+ * 最坏情况下每条三位数 add 指令占 18 字节，单图不超过 4621 字节。
  */
-#define HMI_CHART_FRAME_SIZE_PER_COMPONENT 1280u
+#define HMI_CHART_FRAME_SIZE_PER_COMPONENT 5120u
 
 /** 幅频和相频两条曲线的总缓冲区上限。 */
 #define HMI_CHART_FRAME_SIZE_TOTAL \

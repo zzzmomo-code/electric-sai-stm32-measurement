@@ -60,15 +60,42 @@ class FpgaHmiBodeContractTest(unittest.TestCase):
         self.assertNotIn("addt", self.chart)
 
     def test_chart_buffer_covers_worst_case_ascii_commands(self):
+        point_count_match = re.search(
+            r"HMI_CHART_POINT_COUNT\s+(\d+)u",
+            self.chart_h,
+        )
         capacity_match = re.search(
             r"HMI_CHART_FRAME_SIZE_PER_COMPONENT\s+(\d+)u",
             self.chart_h,
         )
+        self.assertIsNotNone(point_count_match)
         self.assertIsNotNone(capacity_match)
+        point_count = int(point_count_match.group(1))
         capacity = int(capacity_match.group(1))
         worst_case_bytes = len("cle s0.id,0") + 3
-        worst_case_bytes += 64 * (len("add s0.id,0,255") + 3)
+        worst_case_bytes += point_count * (len("add s0.id,0,255") + 3)
+        self.assertEqual(point_count, 256)
         self.assertGreaterEqual(capacity, worst_case_bytes)
+
+    def test_chart_uses_static_downsample_workspace(self):
+        self.assertIn(
+            "static uint8_t hmi_chart_amplitude_workspace"
+            "[HMI_CHART_POINT_COUNT]",
+            self.chart,
+        )
+        self.assertIn(
+            "static uint8_t hmi_chart_phase_workspace"
+            "[HMI_CHART_POINT_COUNT]",
+            self.chart,
+        )
+        self.assertNotIn(
+            "uint8_t amplitude[HMI_CHART_POINT_COUNT]",
+            self.chart,
+        )
+        self.assertNotIn(
+            "uint8_t phase[HMI_CHART_POINT_COUNT]",
+            self.chart,
+        )
 
     def test_bode_transmit_is_split_at_complete_command_boundaries(self):
         self.assertIn("hmi_task2_send_next_bode_command", self.hmi)
