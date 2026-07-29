@@ -15,17 +15,40 @@
 #define FPGA_PROTOCOL_STATUS_CRC_OFFSET 14u
 #define FPGA_PROTOCOL_FRAME_CRC_BYTES   2u
 
+/*
+ * 协议规定多字节字段均为小端。这里逐字节拼接，而不把接收缓冲区直接强制转换成
+ * C 结构体，原因有三点：
+ * 1. DMA 缓冲区不保证满足 uint32_t/uint64_t 对齐要求；
+ * 2. 编译器可能在结构体成员之间插入填充字节；
+ * 3. 显式偏移能让代码和 FPGA 协议表逐项核对。
+ */
+
+/**
+ * @brief 从字节流读取一个小端无符号 16 位整数。
+ * @param data 字段首字节地址，调用者保证至少有 2 字节。
+ * @return 还原后的 uint16_t。
+ */
 uint16_t fpga_protocol_read_u16_le(const uint8_t *data)
 {
     return (uint16_t)((uint16_t)data[0]
                       | ((uint16_t)data[1] << 8));
 }
 
+/**
+ * @brief 从字节流读取一个小端有符号 16 位整数。
+ * @param data 字段首字节地址，调用者保证至少有 2 字节。
+ * @return 保留二进制补码含义的 int16_t。
+ */
 int16_t fpga_protocol_read_i16_le(const uint8_t *data)
 {
     return (int16_t)fpga_protocol_read_u16_le(data);
 }
 
+/**
+ * @brief 从字节流读取一个小端无符号 32 位整数。
+ * @param data 字段首字节地址，调用者保证至少有 4 字节。
+ * @return 还原后的 uint32_t。
+ */
 uint32_t fpga_protocol_read_u32_le(const uint8_t *data)
 {
     return (uint32_t)data[0]
@@ -34,17 +57,33 @@ uint32_t fpga_protocol_read_u32_le(const uint8_t *data)
            | ((uint32_t)data[3] << 24);
 }
 
+/**
+ * @brief 从字节流读取一个小端有符号 32 位整数。
+ * @param data 字段首字节地址，调用者保证至少有 4 字节。
+ * @return 保留二进制补码含义的 int32_t。
+ */
 int32_t fpga_protocol_read_i32_le(const uint8_t *data)
 {
     return (int32_t)fpga_protocol_read_u32_le(data);
 }
 
+/**
+ * @brief 从字节流读取一个小端无符号 64 位整数。
+ * @param data 字段首字节地址，调用者保证至少有 8 字节。
+ * @return 还原后的 uint64_t。
+ */
 uint64_t fpga_protocol_read_u64_le(const uint8_t *data)
 {
     return (uint64_t)fpga_protocol_read_u32_le(data)
            | ((uint64_t)fpga_protocol_read_u32_le(data + 4u) << 32);
 }
 
+/**
+ * @brief 把 32 位整数按小端顺序写入字节流。
+ * @param data 至少可写 4 字节的目标地址。
+ * @param value 待写入值。
+ * @return 无；data 为空时直接返回。
+ */
 void fpga_protocol_write_u32_le(uint8_t *data, uint32_t value)
 {
     if (data == NULL)
@@ -89,6 +128,14 @@ uint16_t fpga_protocol_crc16(const uint8_t *data, uint32_t length)
     return crc;
 }
 
+/**
+ * @brief 校验并解析 GET_STATUS 返回的 16 字节状态。
+ * @param data 从第一个响应字节 0x5A 开始的缓冲区。
+ * @param length 缓冲区长度，V1 必须等于 16。
+ * @param status 成功时写入稳定的状态、序号和完整帧长度。
+ * @return FPGA_PROTOCOL_OK 或具体的格式、版本、长度、CRC 错误。
+ * @note 输出采用“全部校验成功后再赋值”，失败不会留下半更新状态。
+ */
 fpga_protocol_result_t fpga_protocol_parse_status(
     const uint8_t *data,
     uint32_t length,
@@ -146,7 +193,7 @@ fpga_protocol_result_t fpga_protocol_parse_status(
 }
 
 /**
- * @brief 解析一个 12 字节分量描述。
+ * @brief 解析一个 12 字节频率分量描述。
  * @param data 分量首字节。
  * @param component 输出结构。
  * @return 无。
@@ -163,6 +210,15 @@ static void fpga_protocol_parse_component(
     component->flags = data[11];
 }
 
+/**
+ * @brief 校验完整测量帧并解析 128 字节帧头。
+ * @param frame 以 ASCII G26F 开头、以 CRC16 结尾的完整帧。
+ * @param length GET_STATUS 给出的完整帧字节数。
+ * @param expected_sequence GET_STATUS 给出的帧序号，用于防止读到被替换的帧。
+ * @param header 成功时输出帧头；时域和频谱载荷由 fpga_link 在校验后复制。
+ * @return FPGA_PROTOCOL_OK 或具体错误原因。
+ * @note CRC 覆盖从 G26F 到最后一个频谱字节，不包含末尾 CRC 本身。
+ */
 fpga_protocol_result_t fpga_protocol_parse_frame(
     const uint8_t *frame,
     uint32_t length,
@@ -192,6 +248,11 @@ fpga_protocol_result_t fpga_protocol_parse_frame(
         return FPGA_PROTOCOL_ERROR_MAGIC;
     }
 
+    /*
+     * 下面的数字是 V1 帧头中的固定字节偏移。先把 128 字节帧头完整解析到
+     * 局部变量 parsed，再统一检查固定值和范围；任何检查失败都不会污染
+     * 调用者正在使用的上一份 header。
+     */
     parsed.protocol_version = frame[4];
     parsed.frame_type = frame[5];
     parsed.header_bytes = fpga_protocol_read_u16_le(&frame[6]);

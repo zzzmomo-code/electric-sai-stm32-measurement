@@ -16,6 +16,15 @@
 
 #define HMI_CHART_TERMINATOR 0xffu
 
+/*
+ * 淘晶驰普通指令的共同格式：
+ *
+ *   ASCII 命令 + 0xFF 0xFF 0xFF
+ *
+ * 本模块只负责“把一条命令正确编码到字节缓冲区”，不直接操作 UART。
+ * 这样协议构帧可以在 PC 单元测试中验证，UART DMA 则集中由 hmi_task2 管理。
+ */
+
 /**
  * @brief 追加三个 FF 结束符。
  * @param frame 输出缓冲区。
@@ -131,6 +140,19 @@ static uint8_t hmi_chart_append_visibility(
         frame, capacity, used);
 }
 
+/**
+ * @brief 构建一整条 700 点曲线的清空和追加命令。
+ * @param object_name 淘晶驰 Waveform 控件名。
+ * @param points 已映射到 8~247 的 700 个纵坐标。
+ * @param point_count 点数，必须等于 MEASUREMENT_DISPLAY_POINT_COUNT。
+ * @param frame 输出命令字节流。
+ * @param frame_capacity 输出缓冲区容量。
+ * @param frame_size 输出实际字节数。
+ * @return 构帧状态；本函数不启动 UART 发送。
+ *
+ * @note 先发送 cle，再为每个点发送 add。700 个点对应控件的 700 个横向位置，
+ *       因此不会出现只占横轴左侧一部分的问题。
+ */
 hmi_chart_status_t hmi_chart_build_waveform(
     const char *object_name,
     const uint8_t *points,
@@ -173,6 +195,16 @@ hmi_chart_status_t hmi_chart_build_waveform(
     return HMI_CHART_STATUS_OK;
 }
 
+/**
+ * @brief 构建三个重叠曲线控件的可见性切换命令。
+ * @param mode 需要显示的模式。
+ * @param frame 输出命令字节流。
+ * @param frame_capacity 输出缓冲区容量。
+ * @param frame_size 输出实际字节数。
+ * @return 构帧状态。
+ *
+ * @note 该函数只改变 vis 属性，不清空或重发曲线数据，所以按键切换很快。
+ */
 hmi_chart_status_t hmi_chart_build_visibility(
     hmi_chart_mode_t mode,
     uint8_t *frame,
@@ -212,6 +244,15 @@ hmi_chart_status_t hmi_chart_build_visibility(
     return HMI_CHART_STATUS_OK;
 }
 
+/**
+ * @brief 构建上电时隐藏三个曲线控件的命令。
+ * @param frame 输出命令字节流。
+ * @param frame_capacity 输出缓冲区容量。
+ * @param frame_size 输出实际字节数。
+ * @return 构帧状态。
+ *
+ * @note 隐藏不等于清空。后台仍可把新曲线预装进隐藏控件。
+ */
 hmi_chart_status_t hmi_chart_build_hide_all(
     uint8_t *frame,
     uint16_t frame_capacity,

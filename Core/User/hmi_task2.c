@@ -21,6 +21,19 @@
 #define HMI_TASK2_COMMAND_HEAD        0xa5u
 #define HMI_TASK2_COMMAND_TAIL        0x5au
 
+/*
+ * 后台预装状态机的核心规则：
+ *
+ * 1. 上电先隐藏三个曲线控件；
+ * 2. 取得一份稳定的 measurement_display_snapshot_t 工作快照；
+ * 3. 依次发送当前按键目标曲线、另外两条曲线和参数文本；
+ * 4. 每项只有在 TX DMA 完成回调到达后才记为“已装载”；
+ * 5. 用户按键只触发 vis 命令，不重新采样、不重新换算整条曲线；
+ * 6. 一份工作快照未装完前不换新快照，避免 FPGA 持续产帧导致旧帧永远装不完。
+ *
+ * 中断回调只写事件标志，所有解析、构帧和状态迁移均在主循环执行。
+ */
+
 /** 内部发送动作；动作完成后才更新对应的已装载序号。 */
 typedef enum
 {
@@ -803,6 +816,13 @@ void hmi_task2_init(void)
     hmi_task2_diagnostics.state = HMI_TASK2_STATE_WAIT_DATA;
 }
 
+/**
+ * @brief 打开或关闭脱离 FPGA 的串口屏三图自检模式。
+ * @param enable 非零时使用内部测试曲线，并主动显示；零时恢复正式数据链路。
+ * @return 无。
+ *
+ * @note 正式比赛代码应保持关闭。该接口仅用于排除 FPGA/SPI 之前的屏幕链路问题。
+ */
 void hmi_task2_set_chart_self_test(uint8_t enable)
 {
     hmi_task2_self_test_enabled = (enable != 0u) ? 1u : 0u;
@@ -819,6 +839,13 @@ void hmi_task2_set_chart_self_test(uint8_t enable)
 }
 
 #if defined(HAL_UART_MODULE_ENABLED)
+/**
+ * @brief 绑定串口屏 UART 并启动 Receive-to-IDLE DMA。
+ * @param huart CubeMX 生成的 USART1 HAL 句柄。
+ * @return 无。
+ *
+ * @note 绑定后 RX DMA 会循环重启，用于接收屏幕按键发出的 A5 CMD 5A。
+ */
 void hmi_task2_bind_uart(UART_HandleTypeDef *huart)
 {
     hmi_task2_uart = huart;
@@ -830,6 +857,14 @@ void hmi_task2_bind_uart(UART_HandleTypeDef *huart)
 }
 #endif
 
+/**
+ * @brief 在主循环中推进串口屏接收、发送、预装和显示切换状态机。
+ * @param 无。
+ * @return 无。
+ *
+ * @note 本函数不阻塞等待 UART。DMA 完成、错误和空闲接收事件先由回调置标志，
+ *       下一轮主循环再统一处理，避免在中断中解析协议或构建大帧。
+ */
 void hmi_task2_process(void)
 {
     uint16_t rx_size;
@@ -843,6 +878,10 @@ void hmi_task2_process(void)
         return;
     }
 
+    /*
+     * 用极短临界区一次性“取走”中断事件。这样主循环处理期间，
+     * 新到的事件仍可由回调写入，留给下一轮处理，不会长时间关闭中断。
+     */
     primask = __get_PRIMASK();
     __disable_irq();
     rx_size = hmi_uart_rx_event_size;
@@ -903,6 +942,10 @@ void hmi_task2_process(void)
         (void)hmi_task2_start_rx();
     }
 
+    /*
+     * 先固定本轮需要预装的显示快照，再选择一个 DMA 动作。
+     * 每轮最多启动一项发送，主循环不会被约 18 KB 的曲线命令阻塞。
+     */
     hmi_task2_refresh_work_snapshot();
     if (hmi_task2_tx_active == 0u)
     {
@@ -914,6 +957,12 @@ void hmi_task2_process(void)
     }
 }
 
+/**
+ * @brief USART Receive-to-IDLE 回调，只记录本次收到的字节数。
+ * @param huart 产生事件的 UART 句柄。
+ * @param size DMA 已收到的字节数。
+ * @return 无。
+ */
 void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
 {
     if (huart == hmi_task2_uart)
@@ -922,6 +971,11 @@ void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
     }
 }
 
+/**
+ * @brief USART TX DMA 完成回调，只置发送完成标志。
+ * @param huart 产生事件的 UART 句柄。
+ * @return 无。
+ */
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
 {
     if (huart == hmi_task2_uart)
@@ -930,6 +984,11 @@ void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart)
     }
 }
 
+/**
+ * @brief USART 错误回调，只置错误标志。
+ * @param huart 产生错误的 UART 句柄。
+ * @return 无。
+ */
 void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart)
 {
     if (huart == hmi_task2_uart)

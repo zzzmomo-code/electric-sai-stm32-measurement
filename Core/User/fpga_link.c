@@ -51,6 +51,23 @@ volatile uint8_t fpga_spi_dma_complete_flag;
 volatile uint8_t fpga_spi_dma_error_flag;
 volatile fpga_link_diagnostics_t fpga_link_diagnostics;
 
+/*
+ * 主循环状态机只有两个长期状态：
+ *
+ * IDLE
+ *   ├─ PD1 为高或收到上升沿 -> 同一 CS 下读取 GET_STATUS
+ *   ├─ 状态有效且 FRAME_READY=1 -> 启动 READ_FRAME DMA
+ *   └─ 状态无效 -> 延时 2 ms 后重试状态
+ *
+ * WAIT_FRAME_DMA
+ *   ├─ DMA 完成 -> 拉高 CS、校验完整帧、发布快照、发送 ACK
+ *   ├─ 帧格式/CRC 错 -> 不发 ACK，同一稳定 FPGA 帧最多重读 3 次
+ *   └─ DMA 错误/超时 -> 中止 SPI、拉高 CS、回到 IDLE
+ *
+ * 中断回调只产生 ready/complete/error 三个事件；全部 HAL 调用、CRC 和数据复制
+ * 都在 fpga_link_process() 中完成，因此不会在中断里阻塞约 4 ms 的大帧传输。
+ */
+
 /**
  * @brief 判断 D-Cache 是否启用。
  * @param 无。
@@ -316,6 +333,10 @@ static void fpga_link_publish_snapshot(
     uint8_t target_index =
         (uint8_t)(fpga_link_active_snapshot_index ^ 1u);
 
+    /*
+     * 永远写“非活动”快照：活动快照继续供 measurement_conversion 读取。
+     * 原始帧已通过 CRC，所以这里可以按协议偏移把载荷安全复制出来。
+     */
     snapshot = &fpga_link_snapshots[target_index];
     memset((void *)snapshot, 0, sizeof(*snapshot));
     snapshot->header = *header;
@@ -334,6 +355,10 @@ static void fpga_link_publish_snapshot(
     }
 
     snapshot->valid = 1u;
+    /*
+     * DMB 保证上面的帧头、时域和频谱写入先对 CPU 可见，再切换活动索引。
+     * 读取者因此只可能看到完整的旧快照或完整的新快照，不会看到半帧。
+     */
     __DMB();
     fpga_link_active_snapshot_index = target_index;
     fpga_link_diagnostics.published_snapshot_count++;
@@ -434,6 +459,12 @@ static void fpga_link_finish_frame(uint32_t now)
     fpga_link_next_attempt_ms = now + 1u;
 }
 
+/**
+ * @brief 初始化软件缓冲区、诊断量和链路状态。
+ * @param 无。
+ * @return 无。
+ * @note 必须在 MX_GPIO_Init() 之后调用，因为函数会把 PA15/CS 拉高。
+ */
 void fpga_link_init(void)
 {
     memset((void *)fpga_link_frame_buffer, 0,
@@ -465,12 +496,24 @@ void fpga_link_init(void)
 }
 
 #if defined(HAL_SPI_MODULE_ENABLED)
+/**
+ * @brief 绑定 CubeMX 已初始化的 SPI3 句柄。
+ * @param hspi SPI3 句柄地址。
+ * @return 无。
+ */
 void fpga_link_bind_spi(SPI_HandleTypeDef *hspi)
 {
     fpga_link_spi = hspi;
 }
 #endif
 
+/**
+ * @brief 推进一次 FPGA SPI 非阻塞状态机。
+ * @param 无。
+ * @return 无。
+ * @note 函数需要在 while(1) 中高频调用；只有 2 字节命令和 16 字节状态使用
+ *       带超时的短轮询，最长测量帧使用 DMA。
+ */
 void fpga_link_process(void)
 {
     fpga_protocol_result_t status_result;
@@ -577,6 +620,11 @@ void fpga_link_process(void)
     }
 }
 
+/**
+ * @brief 取得当前已经完整发布的测量快照。
+ * @param snapshot 输出当前活动快照的只读地址。
+ * @return 快照有效返回 1，尚未收到有效帧或参数为空返回 0。
+ */
 uint8_t fpga_link_get_snapshot(
     const fpga_measurement_snapshot_t **snapshot)
 {
@@ -592,6 +640,11 @@ uint8_t fpga_link_get_snapshot(
     return active->valid;
 }
 
+/**
+ * @brief HAL GPIO 外部中断回调；只记录 DATA_READY 上升沿事件。
+ * @param gpio_pin 产生中断的 GPIO 引脚掩码。
+ * @return 无。
+ */
 void HAL_GPIO_EXTI_Callback(uint16_t gpio_pin)
 {
     if (gpio_pin == FPGA_DATA_READY_Pin)
@@ -600,6 +653,11 @@ void HAL_GPIO_EXTI_Callback(uint16_t gpio_pin)
     }
 }
 
+/**
+ * @brief HAL SPI 双向 DMA 完成回调；只设置完成标志。
+ * @param hspi 触发回调的 SPI 句柄。
+ * @return 无。
+ */
 void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
 {
     if (hspi == fpga_link_spi)
@@ -608,6 +666,11 @@ void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
     }
 }
 
+/**
+ * @brief HAL SPI 错误回调；只设置错误标志。
+ * @param hspi 触发回调的 SPI 句柄。
+ * @return 无。
+ */
 void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
 {
     if (hspi == fpga_link_spi)

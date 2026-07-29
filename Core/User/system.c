@@ -22,6 +22,14 @@ static uint32_t system_last_converted_sequence;
 /** 是否已经转换过至少一帧，避免 FPGA 首帧序号为零时被跳过。 */
 static uint8_t system_conversion_started;
 
+/**
+ * @brief 初始化 FPGA 链路、显示换算和串口屏三个用户模块。
+ * @param 无。
+ * @return 无。
+ *
+ * @note CubeMX 生成的 SPI3、USART1、DMA 和 GPIO 必须已在 main.c 中完成初始化。
+ *       本函数只绑定 HAL 句柄并初始化用户状态，不重复配置硬件寄存器。
+ */
 void system_init(void)
 {
     system_last_converted_sequence = 0u;
@@ -44,12 +52,22 @@ void system_init(void)
 #endif
 }
 
+/**
+ * @brief 推进“FPGA 接收 -> 显示换算 -> 串口屏预装”的非阻塞数据链路。
+ * @param 无。
+ * @return 无。
+ *
+ * @note FPGA 快照只有序号变化时才换算一次；串口屏模块自行保存稳定工作快照，
+ *       因此 FPGA 继续更新不会破坏正在进行的 DMA 预装。
+ */
 void system_process(void)
 {
     const fpga_measurement_snapshot_t *fpga_snapshot;
 
+    /* 第一步：推进 SPI3 命令、DMA、CRC、ACK 状态机并发布最新有效快照。 */
     fpga_link_process();
 
+    /* 第二步：仅对新 frame_seq 执行一次 700 点显示换算。 */
     if (fpga_link_get_snapshot(&fpga_snapshot) != 0u)
     {
         uint32_t sequence = fpga_snapshot->header.frame_seq;
@@ -65,5 +83,6 @@ void system_process(void)
         }
     }
 
+    /* 第三步：后台预装三图和文本，收到按键后只切换控件可见性。 */
     hmi_task2_process();
 }

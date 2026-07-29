@@ -42,32 +42,32 @@ typedef struct
 /** SPI 链路诊断量，可直接加入 STM32CubeIDE Expressions。 */
 typedef struct
 {
-    uint32_t data_ready_irq_count;
-    uint32_t status_read_count;
-    uint32_t status_valid_count;
-    uint32_t status_error_count;
-    uint32_t status_crc_error_count;
-    uint32_t frame_read_count;
-    uint32_t frame_dma_start_count;
-    uint32_t frame_dma_complete_count;
-    uint32_t frame_dma_error_count;
-    uint32_t frame_dma_timeout_count;
-    uint32_t frame_valid_count;
-    uint32_t frame_format_error_count;
-    uint32_t frame_crc_error_count;
-    uint32_t frame_retry_count;
-    uint32_t duplicate_frame_count;
-    uint32_t result_invalid_count;
-    uint32_t adc_overrange_count;
-    uint32_t fpga_dropped_report_count;
-    uint32_t ack_count;
-    uint32_t ack_error_count;
-    uint32_t published_snapshot_count;
-    uint32_t last_frame_sequence;
-    uint32_t last_frame_length;
-    uint32_t last_hal_error;
-    fpga_protocol_result_t last_protocol_result;
-    fpga_link_state_t state;
+    uint32_t data_ready_irq_count; /**< PD1 上升沿回调次数。 */
+    uint32_t status_read_count; /**< 已发起 GET_STATUS 的次数。 */
+    uint32_t status_valid_count; /**< magic、版本、长度和 CRC 均正确的状态数。 */
+    uint32_t status_error_count; /**< 所有状态响应错误的总数。 */
+    uint32_t status_crc_error_count; /**< 状态响应 CRC 错误数。 */
+    uint32_t frame_read_count; /**< 已发起 READ_FRAME 的次数，包含重试。 */
+    uint32_t frame_dma_start_count; /**< 成功启动帧 DMA 的次数。 */
+    uint32_t frame_dma_complete_count; /**< 帧 DMA 正常完成次数。 */
+    uint32_t frame_dma_error_count; /**< SPI/DMA 启动或运行错误数。 */
+    uint32_t frame_dma_timeout_count; /**< 超过 20 ms 仍未完成的次数。 */
+    uint32_t frame_valid_count; /**< 完整格式和 CRC 均正确的帧数。 */
+    uint32_t frame_format_error_count; /**< 非 CRC 类的完整帧格式错误数。 */
+    uint32_t frame_crc_error_count; /**< 完整测量帧 CRC 错误数。 */
+    uint32_t frame_retry_count; /**< 坏帧后不 ACK 并重新读取的次数。 */
+    uint32_t duplicate_frame_count; /**< 与当前活动快照序号相同的帧数。 */
+    uint32_t result_invalid_count; /**< FPGA 标记 RESULT_INVALID 的帧数。 */
+    uint32_t adc_overrange_count; /**< FPGA 状态报告 ADC 超量程的次数。 */
+    uint32_t fpga_dropped_report_count; /**< FPGA 状态报告内部丢帧的次数。 */
+    uint32_t ack_count; /**< ACK_FRAME 成功发送次数。 */
+    uint32_t ack_error_count; /**< ACK_FRAME HAL 发送失败次数。 */
+    uint32_t published_snapshot_count; /**< 成功发布给显示层的新快照数。 */
+    uint32_t last_frame_sequence; /**< 最近一帧通过校验的序号。 */
+    uint32_t last_frame_length; /**< 最近一帧通过校验的总字节数。 */
+    uint32_t last_hal_error; /**< 最近一次 SPI HAL 错误码。 */
+    fpga_protocol_result_t last_protocol_result; /**< 最近一次协议解析结果。 */
+    fpga_link_state_t state; /**< 当前主循环状态。 */
 } fpga_link_diagnostics_t;
 
 /** PD1 EXTI 回调与主循环共享的数据就绪标志。 */
@@ -82,6 +82,12 @@ extern volatile uint8_t fpga_spi_dma_error_flag;
 /** 公开诊断量，仅中断标志以外的字段由主循环修改。 */
 extern volatile fpga_link_diagnostics_t fpga_link_diagnostics;
 
+/**
+ * @brief 清零 FPGA 链路缓冲区、诊断量和状态机。
+ * @param 无。
+ * @return 无。
+ * @note GPIO 和 SPI3 必须先由 CubeMX 初始化，函数会把软件 CS 拉高。
+ */
 void fpga_link_init(void);
 
 #if defined(HAL_SPI_MODULE_ENABLED)

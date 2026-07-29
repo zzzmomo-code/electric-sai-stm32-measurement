@@ -21,6 +21,19 @@ static uint8_t measurement_display_active_index;
 volatile measurement_conversion_diagnostics_t
     measurement_conversion_diagnostics;
 
+/*
+ * 本模块只改变“显示点数和纵轴坐标”，不重新计算 Vpp、Vrms、频率或谐波。
+ *
+ * FPGA快照                           显示快照
+ * time_samples[最多3750]  ────────> waveform_3cycle[700]
+ * 中间一个完整周期       ─────────> waveform_1cycle[700]
+ * spectrum[1312]          ─────────> spectrum_display[700]
+ * 帧头参数                ─────────> Vpp/Vrms/基频/三个分量
+ *
+ * 三个输出数组带同一个 frame_sequence；HMI 只有看到完整发布的显示快照后
+ * 才开始预装，因此不会把不同 FPGA 帧的曲线和参数混在一起。
+ */
+
 /**
  * @brief 将一个时域原始值映射到保留上下边距的 8 位纵轴。
  * @param value 当前样点。
@@ -71,6 +84,10 @@ static void measurement_conversion_resample_time(
 
     if (source_count >= MEASUREMENT_DISPLAY_POINT_COUNT)
     {
+        /*
+         * 原始点多于 700 时，把输入分成 700 个连续区间，每区间取均值。
+         * 这样横轴始终铺满控件，并抑制单个采样毛刺。
+         */
         for (output_index = 0u;
              output_index < MEASUREMENT_DISPLAY_POINT_COUNT;
              output_index++)
@@ -104,6 +121,10 @@ static void measurement_conversion_resample_time(
     }
     else
     {
+        /*
+         * 原始点少于 700 时，相邻样点做线性插值。不能简单重复最后一个点，
+         * 否则有效波形只会挤在横轴左侧。
+         */
         for (output_index = 0u;
              output_index < MEASUREMENT_DISPLAY_POINT_COUNT;
              output_index++)
@@ -172,6 +193,10 @@ static uint16_t measurement_conversion_compress_spectrum(
         }
     }
 
+    /*
+     * 频谱与时域不同：每个横向桶取最大值而不是均值，避免很窄的谐波谱线
+     * 在 1312 -> 700 压缩过程中被平均掉。
+     */
     for (output_index = 0u;
          output_index < MEASUREMENT_DISPLAY_POINT_COUNT;
          output_index++)
@@ -219,6 +244,11 @@ static uint16_t measurement_conversion_compress_spectrum(
     return source_maximum;
 }
 
+/**
+ * @brief 清零双显示快照和诊断量。
+ * @param 无。
+ * @return 无。
+ */
 void measurement_conversion_init(void)
 {
     memset((void *)measurement_display_snapshots, 0,
@@ -228,6 +258,11 @@ void measurement_conversion_init(void)
     measurement_display_active_index = 0u;
 }
 
+/**
+ * @brief 把一份完整 FPGA 快照转换为三组 700 点显示数据并原子发布。
+ * @param source 已通过协议、长度和 CRC 校验的只读快照。
+ * @return 转换成功返回 1，输入字段无效返回 0。
+ */
 uint8_t measurement_conversion_update(
     const fpga_measurement_snapshot_t *source)
 {
@@ -251,6 +286,7 @@ uint8_t measurement_conversion_update(
         return 0u;
     }
 
+    /* 和 FPGA 层相同：先写非活动快照，完成后再一次性切换活动索引。 */
     target_index = (uint8_t)(measurement_display_active_index ^ 1u);
     target = &measurement_display_snapshots[target_index];
     memset((void *)target, 0, sizeof(*target));
@@ -276,6 +312,10 @@ uint8_t measurement_conversion_update(
         time_maximum,
         target->waveform_3cycle);
 
+    /*
+     * FPGA 发送固定三周期数据。这里取位于中间的完整周期，减少首尾截取点
+     * 可能存在的滤波过渡或边界误差。
+     */
     one_cycle_count = (uint16_t)(
         source->header.time_count / source->header.captured_cycles);
     if (one_cycle_count == 0u)
@@ -324,6 +364,7 @@ uint8_t measurement_conversion_update(
     }
 
     target->valid = 1u;
+    /* 保证数组和参数先写完，再让读取者看到新的活动索引。 */
     __DMB();
     measurement_display_active_index = target_index;
 
@@ -337,6 +378,11 @@ uint8_t measurement_conversion_update(
     return 1u;
 }
 
+/**
+ * @brief 获取当前完整发布的显示快照。
+ * @param snapshot 输出只读快照地址。
+ * @return 已有有效快照返回 1，否则返回 0。
+ */
 uint8_t measurement_conversion_get_snapshot(
     const measurement_display_snapshot_t **snapshot)
 {
@@ -353,6 +399,13 @@ uint8_t measurement_conversion_get_snapshot(
     return active->valid;
 }
 
+/**
+ * @brief 旧页面兼容的频率换算函数。
+ * @param timer_frequency_hz 定时器测得频率。
+ * @param dds_frequency_hz DDS 频率。
+ * @param adc_frequency_hz ADC 频率。
+ * @return 旧页面所需频率；G 题正式链路不调用。
+ */
 float measurement_conversion_frequency_hz(float timer_frequency_hz,
                                            float dds_frequency_hz,
                                            float adc_frequency_hz)
@@ -365,6 +418,12 @@ float measurement_conversion_frequency_hz(float timer_frequency_hz,
     return timer_frequency_hz;
 }
 
+/**
+ * @brief 旧页面兼容的幅度换算函数。
+ * @param adc_amplitude_vpp ADC 峰峰值。
+ * @param vga_level VGA 档位，当前兼容实现未使用。
+ * @return 原样返回 adc_amplitude_vpp；G 题正式链路不调用。
+ */
 float measurement_conversion_amplitude_vpp(float adc_amplitude_vpp,
                                             uint8_t vga_level)
 {

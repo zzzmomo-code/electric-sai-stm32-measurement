@@ -17,45 +17,54 @@
 
 #include "fpga_link.h"
 
+/** 每个 Waveform 恰好发送 700 个横向显示点。 */
 #define MEASUREMENT_DISPLAY_POINT_COUNT 700u
+/** 纵轴最低显示值，保留 8 个单位下边距。 */
 #define MEASUREMENT_DISPLAY_Y_MIN       8u
+/** 纵轴最高显示值，保留 8 个单位上边距。 */
 #define MEASUREMENT_DISPLAY_Y_MAX       247u
 
 /** 已转换的完整显示快照。 */
 typedef struct
 {
-    uint8_t waveform_1cycle[MEASUREMENT_DISPLAY_POINT_COUNT];
-    uint8_t waveform_3cycle[MEASUREMENT_DISPLAY_POINT_COUNT];
-    uint8_t spectrum_display[MEASUREMENT_DISPLAY_POINT_COUNT];
-    uint32_t frame_sequence;
-    uint64_t timestamp_50m;
-    uint32_t source_flags;
-    uint32_t vpp_uv;
-    uint32_t vrms_uv;
-    uint32_t fundamental_mhz;
-    int32_t dc_offset_uv;
-    fpga_protocol_component_t component[FPGA_PROTOCOL_COMPONENT_MAX];
-    uint32_t dropped_frames;
-    uint16_t calibration_revision;
-    uint8_t component_count;
-    uint8_t valid;
+    uint8_t waveform_1cycle[MEASUREMENT_DISPLAY_POINT_COUNT]; /**< 一周期纵轴点。 */
+    uint8_t waveform_3cycle[MEASUREMENT_DISPLAY_POINT_COUNT]; /**< 三周期纵轴点。 */
+    uint8_t spectrum_display[MEASUREMENT_DISPLAY_POINT_COUNT]; /**< 频谱纵轴点。 */
+    uint32_t frame_sequence; /**< 三组数组共同对应的 FPGA 帧序号。 */
+    uint64_t timestamp_50m; /**< FPGA 50 MHz 时钟时间戳。 */
+    uint32_t source_flags; /**< FPGA 完整测量帧 flags。 */
+    uint32_t vpp_uv; /**< 峰峰值，单位 µV。 */
+    uint32_t vrms_uv; /**< 真有效值，单位 µV。 */
+    uint32_t fundamental_mhz; /**< 基频，单位 0.001 Hz。 */
+    int32_t dc_offset_uv; /**< 直流偏置，单位 µV。 */
+    fpga_protocol_component_t component[FPGA_PROTOCOL_COMPONENT_MAX]; /**< 分量参数。 */
+    uint32_t dropped_frames; /**< FPGA 累计丢帧计数。 */
+    uint16_t calibration_revision; /**< FPGA 校准版本。 */
+    uint8_t component_count; /**< 有效分量个数，范围 1~3。 */
+    uint8_t valid; /**< 非零表示整份显示快照已完整发布。 */
 } measurement_display_snapshot_t;
 
 /** 显示转换诊断量。 */
 typedef struct
 {
-    uint32_t conversion_count;
-    uint32_t invalid_source_count;
-    uint32_t last_frame_sequence;
-    int16_t last_time_min;
-    int16_t last_time_max;
-    uint16_t last_spectrum_max;
-    uint16_t last_one_cycle_samples;
+    uint32_t conversion_count; /**< 成功生成并发布显示快照的次数。 */
+    uint32_t invalid_source_count; /**< 输入快照字段不合法的次数。 */
+    uint32_t last_frame_sequence; /**< 最近一次成功转换的 FPGA 帧序号。 */
+    int16_t last_time_min; /**< 最近时域帧的最小原始码。 */
+    int16_t last_time_max; /**< 最近时域帧的最大原始码。 */
+    uint16_t last_spectrum_max; /**< 最近 1312 点频谱的最大值。 */
+    uint16_t last_one_cycle_samples; /**< 最近一次截取的一周期原始点数。 */
 } measurement_conversion_diagnostics_t;
 
+/** 转换层公开诊断量，可加入 CubeIDE Expressions。 */
 extern volatile measurement_conversion_diagnostics_t
     measurement_conversion_diagnostics;
 
+/**
+ * @brief 清零两份显示快照和转换诊断量。
+ * @param 无。
+ * @return 无。
+ */
 void measurement_conversion_init(void);
 
 /**
@@ -74,12 +83,11 @@ uint8_t measurement_conversion_update(
 uint8_t measurement_conversion_get_snapshot(
     const measurement_display_snapshot_t **snapshot);
 
-/*
- * 旧页面仍参与编译时使用的兼容接口；新 G 题主流程不调用。
- */
+/** 旧页面兼容频率换算接口；新 G 题正式主流程不调用。 */
 float measurement_conversion_frequency_hz(float timer_frequency_hz,
                                            float dds_frequency_hz,
                                            float adc_frequency_hz);
+/** 旧页面兼容幅度换算接口；新 G 题正式主流程不调用。 */
 float measurement_conversion_amplitude_vpp(float adc_amplitude_vpp,
                                             uint8_t vga_level);
 
