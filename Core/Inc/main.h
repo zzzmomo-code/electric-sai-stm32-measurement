@@ -63,6 +63,11 @@ void Error_Handler(void);
 #define FS_GPIO_Port GPIOB
 #define PS_Pin GPIO_PIN_8
 #define PS_GPIO_Port GPIOD
+#define FPGA_CS_N_Pin GPIO_PIN_15
+#define FPGA_CS_N_GPIO_Port GPIOA
+#define FPGA_DATA_READY_Pin GPIO_PIN_1
+#define FPGA_DATA_READY_GPIO_Port GPIOD
+#define FPGA_DATA_READY_EXTI_IRQn EXTI1_IRQn
 
 /* USER CODE BEGIN Private defines */
 

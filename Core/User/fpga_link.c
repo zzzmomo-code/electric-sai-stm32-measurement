@@ -1,380 +1,617 @@
 /**
  * @file fpga_link.c
- * @brief FPGA 高速串口双向通信模块实现。
+ * @brief FPGA SPI3 测量数据链路实现。
  *
- * 模块用途：用 USART2 Receive-to-IDLE DMA 接收 FPGA Bode 数据帧，
- *          在主循环验证同步头、点数、帧长和帧尾后发布稳定快照。
- * GPIO 引脚映射：PA2/USART2_TX 接 FPGA T19/RX，
- *          PA3/USART2_RX 接 FPGA J15/TX，双方共地。
- * 依赖的外设和 CubeIDE 配置：USART2 1 Mbaud 8N1、DMA1_Stream1 RX Normal、
- *          USART2 与 DMA1_Stream1 中断。
- * 初始化方法：system_init() 调用 init、bind 和 start。
- * 调用方法：system_process() 调用 fpga_link_process()。
+ * 模块用途：在同一个 CS 事务中发送命令并立即读取响应，使用 SPI3
+ *          双向 DMA 接收最大 10254 字节测量帧，校验后发布双缓冲快照。
+ * GPIO 引脚映射：PC10/SCK、PC11/MISO、PC12/MOSI、PA15/CS_N、PD1/DATA_READY。
+ * 依赖的外设和 CubeIDE 配置：SPI3 20 MHz Mode 0；RX DMA Memory Increment
+ *          Enable；TX DMA Memory Increment Disable；EXTI1 Rising。
+ * 初始化方法：system_init() 调用 fpga_link_init() 和 fpga_link_bind_spi()。
+ * 调用方法：主循环持续调用 fpga_link_process()。
  */
 
 #include "system.h"
 
 #include <string.h>
 
-#define FPGA_LINK_STEP_INCREASE_COMMAND 0x2bu
-#define FPGA_LINK_STEP_DECREASE_COMMAND 0x2du
-#define FPGA_LINK_COMMAND_TX_TIMEOUT_MS 10u
+#define FPGA_LINK_SPI_TIMEOUT_MS        20u
+#define FPGA_LINK_DMA_TIMEOUT_MS        20u
+#define FPGA_LINK_RETRY_DELAY_MS        2u
+#define FPGA_LINK_MAX_READ_RETRIES      3u
+#define FPGA_LINK_DMA_BUFFER_BYTES \
+    ((FPGA_PROTOCOL_MAX_FRAME_BYTES + 31u) & ~31u)
 
-/** DMA 写入缓冲区；长度和地址均按 32 字节缓存行对齐。 */
-static uint8_t fpga_link_dma_buffer[FPGA_LINK_DMA_BUFFER_SIZE]
+/** SPI3 DMA 接收区，32 字节对齐且长度为缓存行整数倍。 */
+static uint8_t fpga_link_frame_buffer[FPGA_LINK_DMA_BUFFER_BYTES]
     __attribute__((aligned(32)));
 
-/** 主循环发布的最新完整 Bode 数据。 */
-static fpga_link_bode_t fpga_link_bode;
+/** TX DMA 关闭地址递增后重复读取的单个 dummy 字节所在缓存行。 */
+static uint8_t fpga_link_dummy_tx_cache_line[32]
+    __attribute__((aligned(32)));
 
-/** 绑定的 USART2 句柄。 */
-static UART_HandleTypeDef *fpga_link_uart;
+/** 两份快照交替写入，校验成功后只切换活动索引。 */
+static fpga_measurement_snapshot_t fpga_link_snapshots[2];
+static uint8_t fpga_link_active_snapshot_index;
 
-/**
- * Receive-to-IDLE 回调写入的接收长度；零表示没有待处理事件。
- * 该变量同时承担事件标志作用，回调只修改这一处共享状态。
- */
-static volatile uint16_t fpga_link_rx_event_size;
+/** GET_STATUS 使用的固定工作区，仅在主循环访问。 */
+static uint8_t fpga_link_status_dummy[FPGA_PROTOCOL_STATUS_BYTES];
+static uint8_t fpga_link_status_response[FPGA_PROTOCOL_STATUS_BYTES];
 
-/** USART2 错误回调置位，主循环领取并清除。 */
-static volatile uint8_t fpga_link_error_flag;
+/** 当前稳定 FPGA 状态和正在读取的帧信息。 */
+static fpga_protocol_status_t fpga_link_current_status;
+static SPI_HandleTypeDef *fpga_link_spi;
+static uint32_t fpga_link_dma_deadline_ms;
+static uint32_t fpga_link_next_attempt_ms;
+static uint8_t fpga_link_read_retry;
+static uint8_t fpga_link_cs_active;
 
+volatile uint8_t fpga_data_ready_flag;
+volatile uint8_t fpga_spi_dma_complete_flag;
+volatile uint8_t fpga_spi_dma_error_flag;
 volatile fpga_link_diagnostics_t fpga_link_diagnostics;
 
 /**
- * @brief 判断 Cortex-M7 D-Cache 是否启用。
+ * @brief 判断 D-Cache 是否启用。
  * @param 无。
- * @return 已启用返回 1，否则返回 0。
+ * @return 启用返回 1，否则返回 0。
  */
-static uint8_t fpga_link_dcache_is_enabled(void)
+static uint8_t fpga_link_dcache_enabled(void)
 {
     return ((SCB->CCR & SCB_CCR_DC_Msk) != 0u) ? 1u : 0u;
 }
 
 /**
- * @brief 在 DMA 写入前清理并失效整个接收缓冲区。
+ * @brief DMA 前清理并失效接收区，同时清理 dummy TX 缓存行。
  * @param 无。
  * @return 无。
- * @note 缓冲区首地址和长度均为 32 字节整数倍，不会影响相邻变量。
  */
-static void fpga_link_prepare_dma_buffer(void)
+static void fpga_link_prepare_dma_cache(void)
 {
-    if (fpga_link_dcache_is_enabled() != 0u)
-    {
-        SCB_CleanInvalidateDCache_by_Addr(
-            (uint32_t *)fpga_link_dma_buffer,
-            (int32_t)sizeof(fpga_link_dma_buffer));
-    }
-}
-
-/**
- * @brief 在 CPU 读取前失效 DMA 已写入区域的缓存行。
- * @param received_size DMA 已写入的有效字节数。
- * @return 无。
- */
-static void fpga_link_invalidate_received_data(uint16_t received_size)
-{
-    uint32_t cache_size;
-
-    if (fpga_link_dcache_is_enabled() == 0u)
+    if (fpga_link_dcache_enabled() == 0u)
     {
         return;
     }
 
-    cache_size = ((uint32_t)received_size + 31u) & ~31u;
-    SCB_InvalidateDCache_by_Addr(
-        (uint32_t *)fpga_link_dma_buffer,
-        (int32_t)cache_size);
+    SCB_CleanInvalidateDCache_by_Addr(
+        (uint32_t *)fpga_link_frame_buffer,
+        (int32_t)sizeof(fpga_link_frame_buffer));
+    SCB_CleanDCache_by_Addr(
+        (uint32_t *)fpga_link_dummy_tx_cache_line,
+        (int32_t)sizeof(fpga_link_dummy_tx_cache_line));
 }
 
 /**
- * @brief 启动一次 Normal 模式 Receive-to-IDLE DMA。
- * @param 无。
- * @return 成功返回 1，失败返回 0。
- */
-static uint8_t fpga_link_start_receive(void)
-{
-    HAL_StatusTypeDef status;
-
-    if ((fpga_link_uart == NULL) || (fpga_link_uart->hdmarx == NULL))
-    {
-        fpga_link_diagnostics.dma_start_error_count++;
-        return 0u;
-    }
-
-    fpga_link_prepare_dma_buffer();
-    status = HAL_UARTEx_ReceiveToIdle_DMA(
-        fpga_link_uart,
-        fpga_link_dma_buffer,
-        (uint16_t)sizeof(fpga_link_dma_buffer));
-
-    if (status != HAL_OK)
-    {
-        fpga_link_diagnostics.dma_start_error_count++;
-        return 0u;
-    }
-
-    /* 不在半缓冲区回调；只在 IDLE 或缓冲区满时通知主循环。 */
-    __HAL_DMA_DISABLE_IT(fpga_link_uart->hdmarx, DMA_IT_HT);
-    fpga_link_diagnostics.dma_restart_count++;
-    return 1u;
-}
-
-void fpga_link_init(void)
-{
-    memset((void *)&fpga_link_bode, 0, sizeof(fpga_link_bode));
-    memset((void *)&fpga_link_diagnostics, 0,
-           sizeof(fpga_link_diagnostics));
-    memset((void *)fpga_link_dma_buffer, 0, sizeof(fpga_link_dma_buffer));
-    fpga_link_uart = NULL;
-    fpga_link_rx_event_size = 0u;
-    fpga_link_error_flag = 0u;
-}
-
-#if defined(HAL_UART_MODULE_ENABLED)
-void fpga_link_bind_uart(UART_HandleTypeDef *huart)
-{
-    fpga_link_uart = huart;
-}
-#endif
-
-uint8_t fpga_link_start(void)
-{
-    return fpga_link_start_receive();
-}
-
-/**
- * @brief 在接收缓冲区中寻找 AA 55 同步头。
- * @param length 有效接收长度。
- * @return 同步头偏移；未找到返回 0xFFFF。
- */
-static uint16_t fpga_link_find_header(uint16_t length)
-{
-    uint16_t index;
-
-    for (index = 0u; (index + 1u) < length; index++)
-    {
-        if ((fpga_link_dma_buffer[index] == 0xaau)
-            && (fpga_link_dma_buffer[index + 1u] == 0x55u))
-        {
-            return index;
-        }
-    }
-
-    return 0xffffu;
-}
-
-/**
- * @brief 解析一个 Receive-to-IDLE 缓冲区中的第一帧完整数据。
- * @param received_size 本次接收事件的有效字节数。
- * @return 解析成功返回 1，否则返回 0。
- */
-static uint8_t fpga_link_parse_frame(uint16_t received_size)
-{
-    uint16_t header_offset;
-    uint16_t point_count;
-    uint32_t expected_size;
-    uint32_t tail_offset;
-    uint16_t index;
-
-    fpga_link_diagnostics.last_frame_bytes = received_size;
-    if (received_size < 10u)
-    {
-        fpga_link_diagnostics.frame_error_count++;
-        return 0u;
-    }
-
-    header_offset = fpga_link_find_header(received_size);
-    if (header_offset == 0xffffu)
-    {
-        fpga_link_diagnostics.frame_error_count++;
-        return 0u;
-    }
-    fpga_link_diagnostics.frame_found_count++;
-
-    point_count =
-        ((uint16_t)fpga_link_dma_buffer[header_offset + 2u] << 8)
-        | (uint16_t)fpga_link_dma_buffer[header_offset + 3u];
-    if ((point_count == 0u) || (point_count > FPGA_LINK_MAX_POINTS))
-    {
-        fpga_link_diagnostics.frame_error_count++;
-        return 0u;
-    }
-
-    expected_size = 4u + ((uint32_t)point_count * 4u) + 2u;
-    if (((uint32_t)header_offset + expected_size) > received_size)
-    {
-        fpga_link_diagnostics.frame_error_count++;
-        return 0u;
-    }
-
-    tail_offset = (uint32_t)header_offset + expected_size - 2u;
-    if ((fpga_link_dma_buffer[tail_offset] != 0x0du)
-        || (fpga_link_dma_buffer[tail_offset + 1u] != 0x0au))
-    {
-        fpga_link_diagnostics.frame_error_count++;
-        return 0u;
-    }
-
-    for (index = 0u; index < point_count; index++)
-    {
-        uint32_t data_offset =
-            (uint32_t)header_offset + 4u + ((uint32_t)index * 4u);
-
-        fpga_link_bode.mag2_hi[index] =
-            ((uint16_t)fpga_link_dma_buffer[data_offset] << 8)
-            | (uint16_t)fpga_link_dma_buffer[data_offset + 1u];
-        fpga_link_bode.phase[index] =
-            (int16_t)(
-                ((uint16_t)fpga_link_dma_buffer[data_offset + 2u] << 8)
-                | (uint16_t)fpga_link_dma_buffer[data_offset + 3u]);
-    }
-
-    fpga_link_bode.point_count = point_count;
-    fpga_link_bode.frame_count++;
-    fpga_link_bode.valid = 1u;
-    fpga_link_diagnostics.last_point_count = point_count;
-    fpga_link_diagnostics.frame_valid_count++;
-    return 1u;
-}
-
-/**
- * @brief 领取回调事件并清零共享状态。
- * @param rx_size 输出接收事件长度。
- * @param error_flag 输出 UART 错误标志。
+ * @brief DMA 完成后失效 CPU 将读取的缓存行。
+ * @param length DMA 有效接收长度。
  * @return 无。
  */
-static void fpga_link_claim_events(uint16_t *rx_size,
-                                   uint8_t *error_flag)
+static void fpga_link_invalidate_frame_cache(uint32_t length)
+{
+    uint32_t rounded_length;
+
+    if (fpga_link_dcache_enabled() == 0u)
+    {
+        return;
+    }
+
+    rounded_length = (length + 31u) & ~31u;
+    SCB_InvalidateDCache_by_Addr(
+        (uint32_t *)fpga_link_frame_buffer,
+        (int32_t)rounded_length);
+}
+
+/**
+ * @brief 原子拉低软件 CS。
+ * @param 无。
+ * @return 无。
+ */
+static void fpga_link_cs_low(void)
+{
+    HAL_GPIO_WritePin(
+        FPGA_CS_N_GPIO_Port, FPGA_CS_N_Pin, GPIO_PIN_RESET);
+    fpga_link_cs_active = 1u;
+}
+
+/**
+ * @brief 拉高软件 CS 并结束当前事务。
+ * @param 无。
+ * @return 无。
+ */
+static void fpga_link_cs_high(void)
+{
+    HAL_GPIO_WritePin(
+        FPGA_CS_N_GPIO_Port, FPGA_CS_N_Pin, GPIO_PIN_SET);
+    fpga_link_cs_active = 0u;
+}
+
+/**
+ * @brief 清零 DMA 回调标志。
+ * @param 无。
+ * @return 无。
+ */
+static void fpga_link_clear_dma_flags(void)
 {
     uint32_t primask = __get_PRIMASK();
 
     __disable_irq();
-    *rx_size = fpga_link_rx_event_size;
-    fpga_link_rx_event_size = 0u;
-    *error_flag = fpga_link_error_flag;
-    fpga_link_error_flag = 0u;
+    fpga_spi_dma_complete_flag = 0u;
+    fpga_spi_dma_error_flag = 0u;
     if (primask == 0u)
     {
         __enable_irq();
     }
 }
 
-void fpga_link_process(void)
+/**
+ * @brief 从中断共享变量领取事件。
+ * @param ready_flag 输出 DATA_READY 上升沿标志。
+ * @param complete_flag 输出 DMA 完成标志。
+ * @param error_flag 输出 SPI/DMA 错误标志。
+ * @return 无。
+ */
+static void fpga_link_claim_events(
+    uint8_t *ready_flag,
+    uint8_t *complete_flag,
+    uint8_t *error_flag)
 {
-    uint16_t rx_size;
-    uint8_t error_flag;
+    uint32_t primask = __get_PRIMASK();
 
-    if (fpga_link_uart == NULL)
+    __disable_irq();
+    *ready_flag = fpga_data_ready_flag;
+    fpga_data_ready_flag = 0u;
+    *complete_flag = fpga_spi_dma_complete_flag;
+    fpga_spi_dma_complete_flag = 0u;
+    *error_flag = fpga_spi_dma_error_flag;
+    fpga_spi_dma_error_flag = 0u;
+    if (primask == 0u)
     {
-        return;
+        __enable_irq();
     }
-
-    fpga_link_claim_events(&rx_size, &error_flag);
-
-    if (error_flag != 0u)
-    {
-        fpga_link_diagnostics.uart_error_count++;
-        (void)HAL_UART_AbortReceive(fpga_link_uart);
-        (void)fpga_link_start_receive();
-        return;
-    }
-
-    if (rx_size == 0u)
-    {
-        return;
-    }
-
-    fpga_link_diagnostics.rx_event_count++;
-    if (rx_size > sizeof(fpga_link_dma_buffer))
-    {
-        fpga_link_diagnostics.frame_error_count++;
-    }
-    else
-    {
-        fpga_link_invalidate_received_data(rx_size);
-        (void)fpga_link_parse_frame(rx_size);
-    }
-
-    (void)HAL_UART_AbortReceive(fpga_link_uart);
-    (void)fpga_link_start_receive();
-}
-
-uint8_t fpga_link_get_bode(fpga_link_bode_t *bode)
-{
-    if (bode == NULL)
-    {
-        return 0u;
-    }
-
-    *bode = fpga_link_bode;
-    return fpga_link_bode.valid;
 }
 
 /**
- * @brief 通过 USART2 向 FPGA 发送一个扫频控制命令。
- * @param command 只允许 0x2B 或 0x2D。
- * @return 发送成功返回 1，参数、UART 状态或 HAL 发送异常返回 0。
+ * @brief 在一次 CS 事务中读取 GET_STATUS 的 16 字节响应。
+ * @param status 输出已校验状态。
+ * @return 协议解析结果或 HAL 对应的状态错误。
  */
-static uint8_t fpga_link_send_command(uint8_t command)
+static fpga_protocol_result_t fpga_link_read_status(
+    fpga_protocol_status_t *status)
 {
-    HAL_StatusTypeDef status;
+    uint8_t command[2] = {
+        FPGA_PROTOCOL_COMMAND_PREFIX,
+        FPGA_PROTOCOL_COMMAND_GET_STATUS
+    };
+    HAL_StatusTypeDef hal_status;
 
-    if ((command != FPGA_LINK_STEP_INCREASE_COMMAND)
-        && (command != FPGA_LINK_STEP_DECREASE_COMMAND))
+    fpga_link_diagnostics.status_read_count++;
+    fpga_link_cs_low();
+    hal_status = HAL_SPI_Transmit(
+        fpga_link_spi, command, sizeof(command),
+        FPGA_LINK_SPI_TIMEOUT_MS);
+    if (hal_status == HAL_OK)
     {
-        fpga_link_diagnostics.command_tx_error_count++;
+        hal_status = HAL_SPI_TransmitReceive(
+            fpga_link_spi,
+            fpga_link_status_dummy,
+            fpga_link_status_response,
+            FPGA_PROTOCOL_STATUS_BYTES,
+            FPGA_LINK_SPI_TIMEOUT_MS);
+    }
+    fpga_link_cs_high();
+
+    if (hal_status != HAL_OK)
+    {
+        fpga_link_diagnostics.last_hal_error =
+            HAL_SPI_GetError(fpga_link_spi);
+        return FPGA_PROTOCOL_ERROR_STATE;
+    }
+
+    return fpga_protocol_parse_status(
+        fpga_link_status_response,
+        FPGA_PROTOCOL_STATUS_BYTES,
+        status);
+}
+
+/**
+ * @brief 启动同一 CS 内的 READ_FRAME DMA 响应读取。
+ * @param now 当前毫秒计数。
+ * @return 启动成功返回 1，否则返回 0。
+ */
+static uint8_t fpga_link_start_frame_dma(uint32_t now)
+{
+    uint8_t command[2] = {
+        FPGA_PROTOCOL_COMMAND_PREFIX,
+        FPGA_PROTOCOL_COMMAND_READ_FRAME
+    };
+    HAL_StatusTypeDef hal_status;
+
+    if ((fpga_link_current_status.frame_length == 0u)
+        || (fpga_link_current_status.frame_length
+            > FPGA_PROTOCOL_MAX_FRAME_BYTES))
+    {
         return 0u;
     }
-    if (fpga_link_uart == NULL)
+
+    fpga_link_clear_dma_flags();
+    fpga_link_prepare_dma_cache();
+    fpga_link_cs_low();
+    hal_status = HAL_SPI_Transmit(
+        fpga_link_spi, command, sizeof(command),
+        FPGA_LINK_SPI_TIMEOUT_MS);
+    if (hal_status == HAL_OK)
     {
-        fpga_link_diagnostics.command_tx_error_count++;
+        hal_status = HAL_SPI_TransmitReceive_DMA(
+            fpga_link_spi,
+            fpga_link_dummy_tx_cache_line,
+            fpga_link_frame_buffer,
+            (uint16_t)fpga_link_current_status.frame_length);
+    }
+
+    if (hal_status != HAL_OK)
+    {
+        fpga_link_cs_high();
+        fpga_link_diagnostics.frame_dma_error_count++;
+        fpga_link_diagnostics.last_hal_error =
+            HAL_SPI_GetError(fpga_link_spi);
         return 0u;
     }
 
-    status = HAL_UART_Transmit(
-        fpga_link_uart, &command, 1u, FPGA_LINK_COMMAND_TX_TIMEOUT_MS);
-    if (status != HAL_OK)
-    {
-        fpga_link_diagnostics.command_tx_error_count++;
-        return 0u;
-    }
-
-    fpga_link_diagnostics.command_tx_count++;
-    fpga_link_diagnostics.last_tx_command = command;
+    fpga_link_diagnostics.frame_read_count++;
+    fpga_link_diagnostics.frame_dma_start_count++;
+    fpga_link_diagnostics.state = FPGA_LINK_STATE_WAIT_FRAME_DMA;
+    fpga_link_dma_deadline_ms = now + FPGA_LINK_DMA_TIMEOUT_MS;
     return 1u;
 }
 
-uint8_t fpga_link_send_step_increase(void)
-{
-    return fpga_link_send_command(FPGA_LINK_STEP_INCREASE_COMMAND);
-}
-
-uint8_t fpga_link_send_step_decrease(void)
-{
-    return fpga_link_send_command(FPGA_LINK_STEP_DECREASE_COMMAND);
-}
-
-#if defined(HAL_UART_MODULE_ENABLED)
 /**
- * @brief HAL Receive-to-IDLE 事件回调。
- * @param huart 产生事件的 UART。
- * @param size DMA 已写入的有效字节数。
- * @return 无；回调只更新一个兼作标志的接收长度变量。
+ * @brief 发送 ACK_FRAME，CRC 在线上低字节先传。
+ * @param frame_sequence 已校验的帧序号。
+ * @return HAL 发送成功返回 1，否则返回 0。
  */
-void HAL_UARTEx_RxEventCallback(UART_HandleTypeDef *huart, uint16_t size)
+static uint8_t fpga_link_send_ack(uint32_t frame_sequence)
 {
-    if ((huart == fpga_link_uart) && (size != 0u))
+    uint8_t frame[8];
+    uint16_t crc;
+    HAL_StatusTypeDef hal_status;
+
+    frame[0] = FPGA_PROTOCOL_COMMAND_PREFIX;
+    frame[1] = FPGA_PROTOCOL_COMMAND_ACK_FRAME;
+    fpga_protocol_write_u32_le(&frame[2], frame_sequence);
+    crc = fpga_protocol_crc16(frame, 6u);
+    frame[6] = (uint8_t)crc;
+    frame[7] = (uint8_t)(crc >> 8);
+
+    fpga_link_cs_low();
+    hal_status = HAL_SPI_Transmit(
+        fpga_link_spi, frame, sizeof(frame),
+        FPGA_LINK_SPI_TIMEOUT_MS);
+    fpga_link_cs_high();
+
+    if (hal_status != HAL_OK)
     {
-        fpga_link_rx_event_size = size;
+        fpga_link_diagnostics.ack_error_count++;
+        fpga_link_diagnostics.last_hal_error =
+            HAL_SPI_GetError(fpga_link_spi);
+        return 0u;
+    }
+
+    fpga_link_diagnostics.ack_count++;
+    return 1u;
+}
+
+/**
+ * @brief 将已校验的原始载荷复制到非活动快照并原子发布。
+ * @param header 已解析帧头。
+ * @return 无。
+ */
+static void fpga_link_publish_snapshot(
+    const fpga_protocol_frame_header_t *header)
+{
+    fpga_measurement_snapshot_t *snapshot;
+    uint32_t time_offset = FPGA_PROTOCOL_HEADER_BYTES;
+    uint32_t spectrum_offset =
+        time_offset + ((uint32_t)header->time_count * 2u);
+    uint16_t index;
+    uint8_t target_index =
+        (uint8_t)(fpga_link_active_snapshot_index ^ 1u);
+
+    snapshot = &fpga_link_snapshots[target_index];
+    memset((void *)snapshot, 0, sizeof(*snapshot));
+    snapshot->header = *header;
+
+    for (index = 0u; index < header->time_count; index++)
+    {
+        snapshot->time_samples[index] = fpga_protocol_read_i16_le(
+            &fpga_link_frame_buffer[
+                time_offset + ((uint32_t)index * 2u)]);
+    }
+    for (index = 0u; index < header->spectrum_count; index++)
+    {
+        snapshot->spectrum[index] = fpga_protocol_read_u16_le(
+            &fpga_link_frame_buffer[
+                spectrum_offset + ((uint32_t)index * 2u)]);
+    }
+
+    snapshot->valid = 1u;
+    __DMB();
+    fpga_link_active_snapshot_index = target_index;
+    fpga_link_diagnostics.published_snapshot_count++;
+}
+
+/**
+ * @brief 统计具体协议错误类型。
+ * @param result 协议解析结果。
+ * @return 无。
+ */
+static void fpga_link_record_frame_error(
+    fpga_protocol_result_t result)
+{
+    fpga_link_diagnostics.last_protocol_result = result;
+    if (result == FPGA_PROTOCOL_ERROR_CRC)
+    {
+        fpga_link_diagnostics.frame_crc_error_count++;
+    }
+    else
+    {
+        fpga_link_diagnostics.frame_format_error_count++;
     }
 }
 
-void fpga_link_handle_error(UART_HandleTypeDef *huart)
+/**
+ * @brief 校验 DMA 帧、按有效位发布并发送 ACK。
+ * @param now 当前毫秒计数。
+ * @return 无。
+ */
+static void fpga_link_finish_frame(uint32_t now)
 {
-    if (huart == fpga_link_uart)
+    fpga_protocol_frame_header_t header;
+    fpga_protocol_result_t result;
+    uint8_t is_duplicate;
+
+    fpga_link_invalidate_frame_cache(
+        fpga_link_current_status.frame_length);
+    result = fpga_protocol_parse_frame(
+        fpga_link_frame_buffer,
+        fpga_link_current_status.frame_length,
+        fpga_link_current_status.frame_seq,
+        &header);
+    fpga_link_diagnostics.last_protocol_result = result;
+
+    if (result != FPGA_PROTOCOL_OK)
     {
-        fpga_link_error_flag = 1u;
+        fpga_link_record_frame_error(result);
+        if (fpga_link_read_retry < FPGA_LINK_MAX_READ_RETRIES)
+        {
+            fpga_link_read_retry++;
+            fpga_link_diagnostics.frame_retry_count++;
+            if (fpga_link_start_frame_dma(now) != 0u)
+            {
+                return;
+            }
+        }
+
+        fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+        fpga_link_next_attempt_ms = now + FPGA_LINK_RETRY_DELAY_MS;
+        return;
     }
+
+    fpga_link_diagnostics.frame_valid_count++;
+    fpga_link_diagnostics.last_frame_sequence = header.frame_seq;
+    fpga_link_diagnostics.last_frame_length = header.total_bytes;
+    if ((fpga_link_current_status.state
+         & FPGA_PROTOCOL_STATUS_ADC_OTR) != 0u)
+    {
+        fpga_link_diagnostics.adc_overrange_count++;
+    }
+    if ((fpga_link_current_status.state
+         & FPGA_PROTOCOL_STATUS_FRAME_DROPPED) != 0u)
+    {
+        fpga_link_diagnostics.fpga_dropped_report_count++;
+    }
+
+    is_duplicate =
+        (fpga_link_snapshots[fpga_link_active_snapshot_index].valid != 0u)
+        && (fpga_link_snapshots[
+                fpga_link_active_snapshot_index].header.frame_seq
+            == header.frame_seq);
+    if ((fpga_link_current_status.state
+         & FPGA_PROTOCOL_STATUS_RESULT_INVALID) != 0u)
+    {
+        fpga_link_diagnostics.result_invalid_count++;
+    }
+    else if (is_duplicate != 0u)
+    {
+        fpga_link_diagnostics.duplicate_frame_count++;
+    }
+    else
+    {
+        fpga_link_publish_snapshot(&header);
+    }
+
+    (void)fpga_link_send_ack(header.frame_seq);
+    fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+    fpga_link_next_attempt_ms = now + 1u;
+}
+
+void fpga_link_init(void)
+{
+    memset((void *)fpga_link_frame_buffer, 0,
+           sizeof(fpga_link_frame_buffer));
+    memset((void *)fpga_link_dummy_tx_cache_line, 0,
+           sizeof(fpga_link_dummy_tx_cache_line));
+    memset((void *)fpga_link_status_dummy, 0,
+           sizeof(fpga_link_status_dummy));
+    memset((void *)fpga_link_status_response, 0,
+           sizeof(fpga_link_status_response));
+    memset((void *)fpga_link_snapshots, 0,
+           sizeof(fpga_link_snapshots));
+    memset((void *)&fpga_link_current_status, 0,
+           sizeof(fpga_link_current_status));
+    memset((void *)&fpga_link_diagnostics, 0,
+           sizeof(fpga_link_diagnostics));
+
+    fpga_link_spi = NULL;
+    fpga_link_active_snapshot_index = 0u;
+    fpga_link_dma_deadline_ms = 0u;
+    fpga_link_next_attempt_ms = 0u;
+    fpga_link_read_retry = 0u;
+    fpga_link_cs_active = 0u;
+    fpga_data_ready_flag = 0u;
+    fpga_spi_dma_complete_flag = 0u;
+    fpga_spi_dma_error_flag = 0u;
+    fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+    fpga_link_cs_high();
+}
+
+#if defined(HAL_SPI_MODULE_ENABLED)
+void fpga_link_bind_spi(SPI_HandleTypeDef *hspi)
+{
+    fpga_link_spi = hspi;
 }
 #endif
+
+void fpga_link_process(void)
+{
+    fpga_protocol_result_t status_result;
+    uint32_t now;
+    uint8_t ready_irq;
+    uint8_t dma_complete;
+    uint8_t dma_error;
+    uint8_t data_ready_level;
+
+    if (fpga_link_spi == NULL)
+    {
+        return;
+    }
+
+    now = HAL_GetTick();
+    fpga_link_claim_events(
+        &ready_irq, &dma_complete, &dma_error);
+    if (ready_irq != 0u)
+    {
+        fpga_link_diagnostics.data_ready_irq_count++;
+    }
+
+    if (fpga_link_diagnostics.state
+        == FPGA_LINK_STATE_WAIT_FRAME_DMA)
+    {
+        if (dma_error != 0u)
+        {
+            (void)HAL_SPI_Abort(fpga_link_spi);
+            if (fpga_link_cs_active != 0u)
+            {
+                fpga_link_cs_high();
+            }
+            fpga_link_diagnostics.frame_dma_error_count++;
+            fpga_link_diagnostics.last_hal_error =
+                HAL_SPI_GetError(fpga_link_spi);
+            fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+            fpga_link_next_attempt_ms =
+                now + FPGA_LINK_RETRY_DELAY_MS;
+            return;
+        }
+        if (dma_complete != 0u)
+        {
+            if (fpga_link_cs_active != 0u)
+            {
+                fpga_link_cs_high();
+            }
+            fpga_link_diagnostics.frame_dma_complete_count++;
+            fpga_link_finish_frame(now);
+            return;
+        }
+        if ((int32_t)(now - fpga_link_dma_deadline_ms) >= 0)
+        {
+            (void)HAL_SPI_Abort(fpga_link_spi);
+            if (fpga_link_cs_active != 0u)
+            {
+                fpga_link_cs_high();
+            }
+            fpga_link_diagnostics.frame_dma_timeout_count++;
+            fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+            fpga_link_next_attempt_ms =
+                now + FPGA_LINK_RETRY_DELAY_MS;
+        }
+        return;
+    }
+
+    data_ready_level = (HAL_GPIO_ReadPin(
+        FPGA_DATA_READY_GPIO_Port,
+        FPGA_DATA_READY_Pin) == GPIO_PIN_SET) ? 1u : 0u;
+    if ((ready_irq == 0u) && (data_ready_level == 0u))
+    {
+        return;
+    }
+    if ((int32_t)(now - fpga_link_next_attempt_ms) < 0)
+    {
+        return;
+    }
+
+    status_result = fpga_link_read_status(&fpga_link_current_status);
+    fpga_link_diagnostics.last_protocol_result = status_result;
+    if (status_result != FPGA_PROTOCOL_OK)
+    {
+        fpga_link_diagnostics.status_error_count++;
+        if (status_result == FPGA_PROTOCOL_ERROR_CRC)
+        {
+            fpga_link_diagnostics.status_crc_error_count++;
+        }
+        fpga_link_next_attempt_ms = now + FPGA_LINK_RETRY_DELAY_MS;
+        return;
+    }
+    fpga_link_diagnostics.status_valid_count++;
+    if ((fpga_link_current_status.state
+         & FPGA_PROTOCOL_STATUS_FRAME_READY) == 0u)
+    {
+        fpga_link_diagnostics.status_error_count++;
+        fpga_link_next_attempt_ms = now + FPGA_LINK_RETRY_DELAY_MS;
+        return;
+    }
+
+    fpga_link_read_retry = 0u;
+    if (fpga_link_start_frame_dma(now) == 0u)
+    {
+        fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+        fpga_link_next_attempt_ms = now + FPGA_LINK_RETRY_DELAY_MS;
+    }
+}
+
+uint8_t fpga_link_get_snapshot(
+    const fpga_measurement_snapshot_t **snapshot)
+{
+    const fpga_measurement_snapshot_t *active;
+
+    if (snapshot == NULL)
+    {
+        return 0u;
+    }
+
+    active = &fpga_link_snapshots[fpga_link_active_snapshot_index];
+    *snapshot = active;
+    return active->valid;
+}
+
+void HAL_GPIO_EXTI_Callback(uint16_t gpio_pin)
+{
+    if (gpio_pin == FPGA_DATA_READY_Pin)
+    {
+        fpga_data_ready_flag = 1u;
+    }
+}
+
+void HAL_SPI_TxRxCpltCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi == fpga_link_spi)
+    {
+        fpga_spi_dma_complete_flag = 1u;
+    }
+}
+
+void HAL_SPI_ErrorCallback(SPI_HandleTypeDef *hspi)
+{
+    if (hspi == fpga_link_spi)
+    {
+        fpga_spi_dma_error_flag = 1u;
+    }
+}

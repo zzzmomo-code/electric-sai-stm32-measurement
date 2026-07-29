@@ -1,28 +1,23 @@
 /**
  * @file system.h
- * @brief 用户代码统一头文件入口。
+ * @brief STM32 用户代码唯一统一头文件入口。
  *
- * 模块用途：集中包含 HAL 生成头文件与全部用户模块头文件。
- * GPIO 引脚映射：无直接 GPIO 引脚，各模块映射见对应模块说明。
- * 依赖的外设和 CubeIDE 配置：依赖 CubeMX 生成的 main.h、adc.h、tim.h、spi.h，
- * 串口屏 USART1 和 FPGA USART2 还依赖 usart.h。
- * 旧 ADS8688 模块已从片上 ADC 工程的活动构建中排除。
- * 初始化方法：HAL 与 MX_* 初始化完成后调用 system_init()。
- * 调用方法：main.c 及其他用户 .c 文件仅包含本头文件。
+ * 模块用途：集中包含 CubeMX 外设句柄和全部用户模块头文件，供 main.c 与 Core/User
+ *          下的实现文件统一使用。
+ * GPIO 引脚映射：本模块无直接 GPIO；FPGA SPI3 和串口屏 USART1 映射见对应模块。
+ * 依赖的外设和 CubeIDE 配置：SPI3、USART1、DMA、EXTI1，以及 CubeMX 仍保留的旧外设。
+ * 初始化方法：HAL 与全部 MX_*_Init() 完成后调用 system_init()。
+ * 调用方法：main.c 的 while(1) 仅持续调用 system_process()。
  */
 
 #ifndef SYSTEM_H
 #define SYSTEM_H
 
-/* DAC1/OPAMP1 由 CubeMX 初始化，PC4 作为 OPAMP1_VOUT 输出。 */
 #include "main.h"
-#include "dac.h"
-#include "opamp.h"
 #include "math.h"
+
+/* 保留旧模块头文件，使尚未从工程排除的历史源文件仍可独立编译。 */
 #include "measurement_result.h"
-#include "hmi_task2.h"
-#include "hmi_chart.h"
-#include "fpga_link.h"
 #include "measurement_fft.h"
 #include "fft_f32_65536.h"
 #include "adc_dual.h"
@@ -30,9 +25,15 @@
 #include "ad9834.h"
 #include "dds_control.h"
 #include "dac_output.h"
-#include "measurement_conversion.h"
 
-/* ADC1/ADC2 与 TIM2 由用户完成 CubeMX 配置并生成后自动启用真实采集实现。 */
+/* G 题正式链路：FPGA SPI 协议、测量换算和串口屏后台预装。 */
+#include "fpga_protocol.h"
+#include "fpga_link.h"
+#include "measurement_conversion.h"
+#include "hmi_chart.h"
+#include "hmi_task2.h"
+
+/* CubeMX 生成的旧外设声明继续提供给历史模块，正常主流程不主动启动它们。 */
 #if defined(__has_include)
 #if __has_include("adc.h") && __has_include("tim.h")
 #include "adc.h"
@@ -41,48 +42,56 @@
 #endif
 #endif
 
-/* SPI2由CubeMX生成后，统一头文件自动纳入其句柄声明。 */
+#if defined(__has_include)
+#if __has_include("dac.h")
+#include "dac.h"
+#endif
+#if __has_include("opamp.h")
+#include "opamp.h"
+#endif
+#endif
+
+/* SPI3 是 FPGA 正式通信外设；SPI2 仅为旧器件驱动保留。 */
 #if defined(__has_include)
 #if __has_include("spi.h")
 #include "spi.h"
 #define SYSTEM_SPI2_AVAILABLE 1
+#define SYSTEM_SPI3_AVAILABLE 1
 #endif
 #endif
 
-/* USART1/USART2 已由本工程 CubeMX 生成，统一纳入 huart1/huart2 声明。 */
+/* USART1 是淘晶驰串口屏正式通信外设。 */
 #if defined(__has_include)
 #if __has_include("usart.h")
 #include "usart.h"
 #define SYSTEM_USART1_AVAILABLE 1
-#define SYSTEM_USART2_AVAILABLE 1
 #endif
 #endif
 
-/** 双 ADC DMA 前半区完成标志，由 ADC1 DMA 回调与主循环共享。 */
+/** 双 ADC DMA 前半区完成标志，仅供仍参与编译的历史模块使用。 */
 extern volatile uint8_t adc_dual_dma_half_flag;
 
-/** 双 ADC DMA 后半区完成标志，由 ADC1 DMA 回调与主循环共享。 */
+/** 双 ADC DMA 后半区完成标志，仅供仍参与编译的历史模块使用。 */
 extern volatile uint8_t adc_dual_dma_full_flag;
 
-/** 双 ADC 错误标志，由 ADC 错误回调与主循环共享。 */
+/** 双 ADC 错误标志，仅供仍参与编译的历史模块使用。 */
 extern volatile uint8_t adc_dual_error_flag;
 
-/** FFT 运行诊断快照，仅供主循环和调试器读取最近一帧分析结果。 */
+/** FFT 诊断量，仅供仍参与编译的历史模块使用。 */
 extern measurement_fft_diagnostics_t measurement_fft_diagnostics;
 
 /**
- * @brief 初始化全部用户模块。
+ * @brief 初始化 FPGA SPI、测量转换和串口屏三个正式用户模块。
  * @param 无。
  * @return 无。
- * @note 必须在 CubeMX 生成的外设初始化完成后调用。
+ * @note 必须在 CubeMX 生成的 SPI3、USART1、DMA、GPIO 初始化后调用。
  */
 void system_init(void);
 
 /**
- * @brief 执行全部主循环用户功能。
+ * @brief 执行 FPGA 取帧、显示坐标转换和串口屏后台预装。
  * @param 无。
  * @return 无。
- * @note 依次处理测量链、FPGA 串口帧和串口屏，main.c 不放置业务逻辑。
  */
 void system_process(void);
 

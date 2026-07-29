@@ -1,12 +1,13 @@
 /**
  * @file measurement_conversion.h
- * @brief 外差测量结果换算接口。
+ * @brief FPGA 测量快照到串口屏显示缓存的转换接口。
  *
- * 模块用途：把中频测量值换算为被测信号的频率和幅度，并为后续实测拟合保留入口。
+ * 模块用途：把 FPGA 三周期时域和 1312 点频谱转换成三个 700 点显示缓存，
+ *          同时保存 Vpp、Vrms、基频和最多三个分量参数。
  * GPIO 引脚映射：无直接 GPIO 引脚。
  * 依赖的外设和 CubeIDE 配置：无直接外设依赖。
- * 初始化方法：无需初始化。
- * 调用方法：串口屏刷新时调用两个换算函数；得到标定数据后只修改本模块公式。
+ * 初始化方法：system_init() 调用 measurement_conversion_init()。
+ * 调用方法：收到新 FPGA 快照后调用 measurement_conversion_update()。
  */
 
 #ifndef MEASUREMENT_CONVERSION_H
@@ -14,25 +15,71 @@
 
 #include <stdint.h>
 
+#include "fpga_link.h"
+
+#define MEASUREMENT_DISPLAY_POINT_COUNT 700u
+#define MEASUREMENT_DISPLAY_Y_MIN       8u
+#define MEASUREMENT_DISPLAY_Y_MAX       247u
+
+/** 已转换的完整显示快照。 */
+typedef struct
+{
+    uint8_t waveform_1cycle[MEASUREMENT_DISPLAY_POINT_COUNT];
+    uint8_t waveform_3cycle[MEASUREMENT_DISPLAY_POINT_COUNT];
+    uint8_t spectrum_display[MEASUREMENT_DISPLAY_POINT_COUNT];
+    uint32_t frame_sequence;
+    uint64_t timestamp_50m;
+    uint32_t source_flags;
+    uint32_t vpp_uv;
+    uint32_t vrms_uv;
+    uint32_t fundamental_mhz;
+    int32_t dc_offset_uv;
+    fpga_protocol_component_t component[FPGA_PROTOCOL_COMPONENT_MAX];
+    uint32_t dropped_frames;
+    uint16_t calibration_revision;
+    uint8_t component_count;
+    uint8_t valid;
+} measurement_display_snapshot_t;
+
+/** 显示转换诊断量。 */
+typedef struct
+{
+    uint32_t conversion_count;
+    uint32_t invalid_source_count;
+    uint32_t last_frame_sequence;
+    int16_t last_time_min;
+    int16_t last_time_max;
+    uint16_t last_spectrum_max;
+    uint16_t last_one_cycle_samples;
+} measurement_conversion_diagnostics_t;
+
+extern volatile measurement_conversion_diagnostics_t
+    measurement_conversion_diagnostics;
+
+void measurement_conversion_init(void);
+
 /**
- * @brief 按低侧本振关系换算被测信号频率。
- * @param timer_frequency_hz TIM5 粗测频率，单位为 Hz，用作中频不可用时的后备值。
- * @param dds_frequency_hz AD9834 本振频率，单位为 Hz。
- * @param adc_frequency_hz ADC FFT 测得的中频，单位为 Hz。
- * @return 本振与中频均有效时返回二者之和，否则返回 TIM5 粗测频率。
- * @note 当前未加入频率拟合；后续只需在本函数内加入校准系数。
+ * @brief 将完整 FPGA 快照转换成三组 700 点显示数据。
+ * @param source 已通过协议和 CRC 校验的测量快照。
+ * @return 成功发布显示快照返回 1，输入无效返回 0。
+ */
+uint8_t measurement_conversion_update(
+    const fpga_measurement_snapshot_t *source);
+
+/**
+ * @brief 获取当前活动显示快照。
+ * @param snapshot 输出只读指针。
+ * @return 已有有效显示快照返回 1，否则返回 0。
+ */
+uint8_t measurement_conversion_get_snapshot(
+    const measurement_display_snapshot_t **snapshot);
+
+/*
+ * 旧页面仍参与编译时使用的兼容接口；新 G 题主流程不调用。
  */
 float measurement_conversion_frequency_hz(float timer_frequency_hz,
                                            float dds_frequency_hz,
                                            float adc_frequency_hz);
-
-/**
- * @brief 换算被测信号峰峰值幅度。
- * @param adc_amplitude_vpp ADC FFT 测得的中频峰峰值，单位为 Vpp。
- * @param vga_level 当前 VGA 档位，范围为 0 至 5。
- * @return 当前暂时原样返回 ADC 幅度。
- * @note 混频器、滤波器和 VGA 的实测拟合尚未完成，后续只需在本函数内替换公式。
- */
 float measurement_conversion_amplitude_vpp(float adc_amplitude_vpp,
                                             uint8_t vga_level);
 

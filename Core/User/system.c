@@ -1,127 +1,69 @@
 /**
  * @file system.c
- * @brief 用户自定义模块统一初始化入口。
+ * @brief G 题 STM32 正式数据链路的统一初始化和主循环入口。
  *
- * 模块用途：集中调用用户模块初始化函数，避免在 main.c 中堆放业务逻辑。
- * GPIO 引脚映射：PA6/ADC1_INP3、PB1/ADC2_INP5、PA0/TIM5_CH1，
- * PB12/AD9834_FSYNC、PB13/SPI2_SCK、PB15/SPI2_MOSI、
- * PB14/AD9834_FSELECT、PD8/AD9834_PSELECT、PA2/USART2_TX、PA3/USART2_RX。
- * 依赖的外设和 CubeIDE 配置：依赖 ADC1/ADC2、TIM2、TIM3、TIM5、SPI2、DMA 和 NVIC；
- * 串口屏依赖 USART1 9600 8N1；FPGA 链路依赖 USART2 1 Mbaud 和 DMA1_Stream1。
- * 初始化方法：在 main.c 的 USER CODE BEGIN 2 区域调用 system_init()。
- * 调用方法：系统启动时调用一次，主循环持续调用 system_process()。
+ * 模块用途：连接“FPGA SPI3 完整测量帧 -> 700 点显示快照 -> USART1 串口屏预装”。
+ * GPIO 引脚映射：PC10/SPI3_SCK、PC11/SPI3_MISO、PC12/SPI3_MOSI、
+ *          PA15/FPGA_CS_N、PD1/FPGA_DATA_READY、PA9/USART1_TX、PA10/USART1_RX。
+ * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0 20 MHz 双向 DMA，PD1 EXTI1；
+ *          USART1 512000 baud 8N1，TX/RX DMA 与全局中断。
+ * 初始化方法：main.c 的 USER CODE BEGIN 2 区域只调用 system_init()。
+ * 调用方法：main.c 的 while(1) 用户区只调用 system_process()。
  */
 
-/*
- * DAC 输出补充映射：PC4/OPAMP1_VOUT，DAC1_OUT1 通过片内连接进入 OPAMP1。
- * 依赖 DAC1 Channel 1 内部输出和 OPAMP1 Follower-DAC_OUT1-INP 配置。
- */
 #include "system.h"
 
-/**
- * 串口屏硬件联调开关：1 为发布固定自检结果，0 为等待真实测量算法结果。
- * 完成 PA9 到串口屏 RX 的实屏验证后，改为 0 并重新烧录。
- */
-#define HMI_TJC_SELF_TEST_ENABLE 0u
-
-/**
- * 串口屏曲线链路自检：1 时不等待 FPGA，启动后自动向 s0/s1 各发送 64 点。
- * FPGA 联调前改回 0，正式曲线将恢复使用 USART2 数据。
- */
+/** 串口屏三图链路自检开关；正常模式必须保持为零。 */
 #define HMI_CHART_SELF_TEST_ENABLE 0u
 
-#if (HMI_TJC_SELF_TEST_ENABLE != 0u)
-/**
- * @brief 发布用于验证串口屏通信的固定测量结果。
- * @param 无。
- * @return 无。
- * @note 仅用于 HMI 联调，不读取或修改双 ADC DMA 数据；关闭开关后该函数不会参与编译。
- */
-static void hmi_tjc_publish_self_test(void)
-{
-    measurement_result_t result;
+/** 已经转换为显示快照的最近 FPGA 帧序号。 */
+static uint32_t system_last_converted_sequence;
 
-    result.dc_voltage = 0.0f;
-    result.amplitude_vpp = 3.300f;
-    result.rms_voltage = 1.1667f;
-    result.frequency_hz = 12345.0f;
-    result.thd_percent = 0.10f;
-    result.phase_deg = -90.0f;
-    result.power_w = 1.234f;
-    result.wave_type = MEASUREMENT_WAVE_SINE;
-    result.mode = MEASUREMENT_MODE_AC;
-    result.valid_mask = MEASUREMENT_VALID_DC_VOLTAGE
-                        | MEASUREMENT_VALID_AMPLITUDE
-                        | MEASUREMENT_VALID_RMS
-                        | MEASUREMENT_VALID_FREQUENCY
-                        | MEASUREMENT_VALID_THD
-                        | MEASUREMENT_VALID_WAVE_TYPE
-                        | MEASUREMENT_VALID_PHASE
-                        | MEASUREMENT_VALID_POWER;
-    result.secondary_dc_voltage = 0.0f;
-    result.secondary_amplitude_vpp = 0.0f;
-    result.secondary_rms_voltage = 0.0f;
-    result.secondary_frequency_hz = 0.0f;
-    result.secondary_thd_percent = 0.0f;
-    result.secondary_wave_type = MEASUREMENT_WAVE_UNKNOWN;
-    result.secondary_mode = MEASUREMENT_MODE_UNKNOWN;
-    result.secondary_valid_mask = 0u;
-    result.estimated_mask = 0u;
-    result.secondary_estimated_mask = 0u;
-    result.fault_mask = 0u;
-    result.valid = 1u;
-    result.sequence = 1u;
-    measurement_result_publish(&result);
-}
-#endif
+/** 是否已经转换过至少一帧，避免 FPGA 首帧序号为零时被跳过。 */
+static uint8_t system_conversion_started;
 
-/**
- * @brief 初始化全部用户功能模块。
- * @param 无。
- * @return 无。
- * @note 先初始化 FFT 的 DWT 诊断，再启动复用 DWT 的外部频率测量模块。
- */
 void system_init(void)
 {
-    /* 先启动 VGA 控制电压输出，并以 0 档作为安全默认值。 */
-    (void)dac_output_init();
-    measurement_result_init();
-    measurement_fft_init();
-    frequency_measure_init();
-    dds_control_init();
+    system_last_converted_sequence = 0u;
+    system_conversion_started = 0u;
+
+    fpga_link_init();
+    measurement_conversion_init();
     hmi_task2_init();
+
 #if (HMI_CHART_SELF_TEST_ENABLE != 0u)
     hmi_task2_set_chart_self_test(1u);
 #endif
+
+#if defined(SYSTEM_SPI3_AVAILABLE)
+    fpga_link_bind_spi(&hspi3);
+#endif
+
 #if defined(SYSTEM_USART1_AVAILABLE)
     hmi_task2_bind_uart(&huart1);
 #endif
-    /* FPGA 数据链路：USART2 1 Mbaud + Receive-to-IDLE DMA。 */
-    fpga_link_init();
-#if defined(SYSTEM_USART2_AVAILABLE)
-    fpga_link_bind_uart(&huart2);
-    (void)fpga_link_start();
-#endif
-#if (HMI_TJC_SELF_TEST_ENABLE != 0u)
-    hmi_tjc_publish_self_test();
-#endif
-    adc_dual_init();
 }
 
-/**
- * @brief 执行外部频率、双 ADC、FFT 和串口屏主循环处理。
- * @param 无。
- * @return 无。
- * @note 第二次 adc_dual_process() 只同步 TIM2 启停状态，不重复处理已领取的 DMA 标志。
- */
 void system_process(void)
 {
-    frequency_measure_process();
-    dds_control_process();
-    adc_dual_process();
-    measurement_fft_process();
-    adc_dual_process();
+    const fpga_measurement_snapshot_t *fpga_snapshot;
+
     fpga_link_process();
+
+    if (fpga_link_get_snapshot(&fpga_snapshot) != 0u)
+    {
+        uint32_t sequence = fpga_snapshot->header.frame_seq;
+
+        if ((system_conversion_started == 0u)
+            || (sequence != system_last_converted_sequence))
+        {
+            if (measurement_conversion_update(fpga_snapshot) != 0u)
+            {
+                system_last_converted_sequence = sequence;
+                system_conversion_started = 1u;
+            }
+        }
+    }
+
     hmi_task2_process();
-    HAL_GPIO_TogglePin(GPIOC,GPIO_PIN_13);
 }

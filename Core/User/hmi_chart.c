@@ -1,81 +1,59 @@
 /**
  * @file hmi_chart.c
- * @brief TJC 串口屏幅频和相频曲线构帧实现。
+ * @brief 淘晶驰三个重叠 Waveform 控件构帧实现。
  *
- * 模块用途：把最多 1024 点 FPGA Bode 数据压缩为 256 点，构建 s0/s1
- *          Waveform 控件的 cle + add ASCII 指令。
+ * 模块用途：生成 cle/add/vis ASCII 指令，每条命令自动追加 FF FF FF。
  * GPIO 引脚映射：无直接 GPIO。
- * 依赖的外设和 CubeIDE 配置：HMI 当前页面必须存在 s0 和 s1，通道数 ch=1。
- * 初始化方法：无状态，无需初始化。
- * 调用方法：由 hmi_task2 在主循环构建最新一帧曲线。
+ * 依赖的外设和 CubeIDE 配置：页面存在 s_t1、s_t3、s_spec。
+ * 初始化方法：无需初始化。
+ * 调用方法：由 hmi_task2 在主循环调用，函数不可在中断中调用。
  */
 
 #include "system.h"
 
 #include <stdio.h>
+#include <string.h>
 
-#define HMI_CHART_AMPLITUDE_OBJECT "s0.id"
-#define HMI_CHART_PHASE_OBJECT     "s1.id"
-#define HMI_CHART_TERMINATOR       0xffu
-
-/**
- * 256 点降采样工作区。
- * 使用静态存储，避免 512 字节临时数组占用主循环栈；构帧函数不可重入。
- */
-static uint8_t hmi_chart_amplitude_workspace[HMI_CHART_POINT_COUNT];
-static uint8_t hmi_chart_phase_workspace[HMI_CHART_POINT_COUNT];
+#define HMI_CHART_TERMINATOR 0xffu
 
 /**
- * @brief 计算 16 位无符号整数平方根的向下取整值。
- * @param value FPGA 发送的幅度平方高 16 位。
- * @return 0~255 的整数平方根。
+ * @brief 追加三个 FF 结束符。
+ * @param frame 输出缓冲区。
+ * @param capacity 总容量。
+ * @param used 当前长度并在成功时更新。
+ * @return 成功返回 1，否则返回 0。
  */
-static uint16_t hmi_chart_isqrt_u16(uint16_t value)
+static uint8_t hmi_chart_append_terminator(
+    uint8_t *frame,
+    uint16_t capacity,
+    uint16_t *used)
 {
-    uint32_t operand = value;
-    uint32_t result = 0u;
-    uint32_t bit = 1uL << 14;
-
-    while (bit > operand)
+    if (((uint32_t)*used + 3u) > capacity)
     {
-        bit >>= 2;
+        return 0u;
     }
 
-    while (bit != 0u)
-    {
-        if (operand >= (result + bit))
-        {
-            operand -= result + bit;
-            result = (result >> 1) + bit;
-        }
-        else
-        {
-            result >>= 1;
-        }
-        bit >>= 2;
-    }
-
-    return (uint16_t)result;
+    frame[(*used)++] = HMI_CHART_TERMINATOR;
+    frame[(*used)++] = HMI_CHART_TERMINATOR;
+    frame[(*used)++] = HMI_CHART_TERMINATOR;
+    return 1u;
 }
 
 /**
- * @brief 追加一条以 FF FF FF 结尾的格式化 TJC 指令。
+ * @brief 追加一条 cle 或 add 指令。
  * @param frame 输出缓冲区。
- * @param capacity 缓冲区总容量。
- * @param used 当前已使用字节数，成功后更新。
- * @param format 只允许本模块内部固定格式字符串。
- * @param object_expression s0.id 或 s1.id。
- * @param channel Waveform 通道。
- * @param value add 数值；cle 调用时传入负数。
- * @return 成功返回 1，空间不足返回 0。
+ * @param capacity 总容量。
+ * @param used 当前长度。
+ * @param object_name 控件名。
+ * @param value 小于零时生成 cle，否则生成 add。
+ * @return 成功返回 1，否则返回 0。
  */
-static uint8_t hmi_chart_append_command(uint8_t *frame,
-                                        uint16_t capacity,
-                                        uint16_t *used,
-                                        const char *format,
-                                        const char *object_expression,
-                                        uint8_t channel,
-                                        int16_t value)
+static uint8_t hmi_chart_append_curve_command(
+    uint8_t *frame,
+    uint16_t capacity,
+    uint16_t *used,
+    const char *object_name,
+    int16_t value)
 {
     uint16_t remaining;
     int length;
@@ -88,189 +66,174 @@ static uint8_t hmi_chart_append_command(uint8_t *frame,
 
     if (value < 0)
     {
-        length = snprintf((char *)&frame[*used], remaining,
-                          format, object_expression,
-                          (unsigned int)channel);
+        length = snprintf(
+            (char *)&frame[*used],
+            remaining,
+            "cle %s.id,0",
+            object_name);
     }
     else
     {
-        length = snprintf((char *)&frame[*used], remaining,
-                          format, object_expression,
-                          (unsigned int)channel,
-                          (unsigned int)value);
+        length = snprintf(
+            (char *)&frame[*used],
+            remaining,
+            "add %s.id,0,%u",
+            object_name,
+            (unsigned int)value);
     }
 
-    if ((length < 0) || (((uint16_t)length + 3u) > remaining))
+    if ((length < 0) || ((uint16_t)length >= remaining))
+    {
+        return 0u;
+    }
+    *used = (uint16_t)(*used + (uint16_t)length);
+    return hmi_chart_append_terminator(
+        frame, capacity, used);
+}
+
+/**
+ * @brief 追加一条 vis 指令。
+ * @param frame 输出缓冲区。
+ * @param capacity 总容量。
+ * @param used 当前长度。
+ * @param object_name 控件名。
+ * @param visible 非零显示，零隐藏。
+ * @return 成功返回 1，否则返回 0。
+ */
+static uint8_t hmi_chart_append_visibility(
+    uint8_t *frame,
+    uint16_t capacity,
+    uint16_t *used,
+    const char *object_name,
+    uint8_t visible)
+{
+    uint16_t remaining;
+    int length;
+
+    if (*used >= capacity)
+    {
+        return 0u;
+    }
+    remaining = (uint16_t)(capacity - *used);
+    length = snprintf(
+        (char *)&frame[*used],
+        remaining,
+        "vis %s,%u",
+        object_name,
+        (unsigned int)((visible != 0u) ? 1u : 0u));
+    if ((length < 0) || ((uint16_t)length >= remaining))
     {
         return 0u;
     }
 
     *used = (uint16_t)(*used + (uint16_t)length);
-    frame[(*used)++] = HMI_CHART_TERMINATOR;
-    frame[(*used)++] = HMI_CHART_TERMINATOR;
-    frame[(*used)++] = HMI_CHART_TERMINATOR;
-    return 1u;
+    return hmi_chart_append_terminator(
+        frame, capacity, used);
 }
 
-/**
- * @brief 将原始 Bode 点按频率顺序压缩到 256 点。
- * @param bode 原始数据。
- * @param amplitude 输出幅频纵轴值。
- * @param phase 输出相频纵轴值。
- * @return 无。
- */
-static void hmi_chart_downsample(const fpga_link_bode_t *bode,
-                                 uint8_t *amplitude,
-                                 uint8_t *phase)
-{
-    uint16_t output_index;
-    uint8_t amplitude_min = HMI_CHART_VALUE_MAX;
-    uint8_t amplitude_max = 0u;
-
-    for (output_index = 0u;
-         output_index < HMI_CHART_POINT_COUNT;
-         output_index++)
-    {
-        uint32_t begin =
-            ((uint32_t)output_index * bode->point_count)
-            / HMI_CHART_POINT_COUNT;
-        uint32_t end =
-            ((uint32_t)(output_index + 1u) * bode->point_count)
-            / HMI_CHART_POINT_COUNT;
-        uint32_t input_index;
-        uint32_t sample_count;
-        uint32_t magnitude_sum = 0u;
-        int32_t phase_sum = 0;
-        uint16_t mean_magnitude;
-        int16_t mean_phase;
-        uint16_t magnitude_root;
-        int32_t phase_shifted;
-
-        if (begin >= bode->point_count)
-        {
-            begin = (uint32_t)bode->point_count - 1u;
-        }
-        if (end <= begin)
-        {
-            end = begin + 1u;
-        }
-        if (end > bode->point_count)
-        {
-            end = bode->point_count;
-        }
-
-        sample_count = end - begin;
-        for (input_index = begin; input_index < end; input_index++)
-        {
-            magnitude_sum += bode->mag2_hi[input_index];
-            phase_sum += bode->phase[input_index];
-        }
-        mean_magnitude = (uint16_t)(magnitude_sum / sample_count);
-        mean_phase = (int16_t)(phase_sum / (int32_t)sample_count);
-
-        /* mag2_hi 是 (I²+Q²)[63:48]，均值开方后得到幅度响应。 */
-        magnitude_root = hmi_chart_isqrt_u16(mean_magnitude);
-        amplitude[output_index] = (uint8_t)magnitude_root;
-        if (amplitude[output_index] < amplitude_min)
-        {
-            amplitude_min = amplitude[output_index];
-        }
-        if (amplitude[output_index] > amplitude_max)
-        {
-            amplitude_max = amplitude[output_index];
-        }
-
-        /* 相位按 int16 有符号值求均值，再将 -32768~32767 映射到 0~255。 */
-        phase_shifted = (int32_t)mean_phase + 32768;
-        phase[output_index] = (uint8_t)(
-            ((uint32_t)phase_shifted * HMI_CHART_VALUE_MAX) / 65535u);
-    }
-
-    /*
-     * s0 使用本帧自动量程：本帧最小幅度放在纵轴底部，最大幅度放在顶部。
-     * 全帧幅度相等时没有可展开范围，统一显示在纵轴底部。
-     */
-    if (amplitude_max > amplitude_min)
-    {
-        uint16_t amplitude_range =
-            (uint16_t)amplitude_max - amplitude_min;
-
-        for (output_index = 0u;
-             output_index < HMI_CHART_POINT_COUNT;
-             output_index++)
-        {
-            amplitude[output_index] = (uint8_t)(
-                ((uint32_t)(amplitude[output_index] - amplitude_min)
-                 * HMI_CHART_VALUE_MAX)
-                / amplitude_range);
-        }
-    }
-    else
-    {
-        for (output_index = 0u;
-             output_index < HMI_CHART_POINT_COUNT;
-             output_index++)
-        {
-            amplitude[output_index] = 0u;
-        }
-    }
-}
-
-hmi_chart_status_t hmi_chart_build_bode_frame(
-    const fpga_link_bode_t *bode,
+hmi_chart_status_t hmi_chart_build_waveform(
+    const char *object_name,
+    const uint8_t *points,
+    uint16_t point_count,
     uint8_t *frame,
     uint16_t frame_capacity,
     uint16_t *frame_size)
 {
     uint16_t index;
 
-    if ((bode == NULL) || (frame == NULL) || (frame_size == NULL)
-        || (bode->valid == 0u) || (bode->point_count == 0u)
-        || (bode->point_count > FPGA_LINK_MAX_POINTS))
+    if ((object_name == NULL) || (points == NULL)
+        || (frame == NULL) || (frame_size == NULL)
+        || (point_count != MEASUREMENT_DISPLAY_POINT_COUNT))
     {
         return HMI_CHART_STATUS_INVALID_ARGUMENT;
     }
-    if (frame_capacity < HMI_CHART_FRAME_SIZE_TOTAL)
+    if (frame_capacity < HMI_CHART_FRAME_MAX_BYTES)
     {
         return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
     }
 
     *frame_size = 0u;
-    hmi_chart_downsample(
-        bode, hmi_chart_amplitude_workspace, hmi_chart_phase_workspace);
-
-    if (hmi_chart_append_command(
+    if (hmi_chart_append_curve_command(
             frame, frame_capacity, frame_size,
-            "cle %s,%u", HMI_CHART_AMPLITUDE_OBJECT, 0u, -1) == 0u)
+            object_name, -1) == 0u)
     {
         return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
     }
-    for (index = 0u; index < HMI_CHART_POINT_COUNT; index++)
+
+    for (index = 0u; index < point_count; index++)
     {
-        if (hmi_chart_append_command(
-            frame, frame_capacity, frame_size,
-            "add %s,%u,%u", HMI_CHART_AMPLITUDE_OBJECT,
-            0u, (int16_t)hmi_chart_amplitude_workspace[index]) == 0u)
+        if (hmi_chart_append_curve_command(
+                frame, frame_capacity, frame_size,
+                object_name, (int16_t)points[index]) == 0u)
         {
             return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
         }
     }
 
-    if (hmi_chart_append_command(
+    return HMI_CHART_STATUS_OK;
+}
+
+hmi_chart_status_t hmi_chart_build_visibility(
+    hmi_chart_mode_t mode,
+    uint8_t *frame,
+    uint16_t frame_capacity,
+    uint16_t *frame_size)
+{
+    uint8_t one_visible;
+    uint8_t three_visible;
+    uint8_t spectrum_visible;
+
+    if ((frame == NULL) || (frame_size == NULL)
+        || ((mode != HMI_CHART_MODE_ONE_CYCLE)
+            && (mode != HMI_CHART_MODE_THREE_CYCLE)
+            && (mode != HMI_CHART_MODE_SPECTRUM)))
+    {
+        return HMI_CHART_STATUS_INVALID_ARGUMENT;
+    }
+
+    one_visible = (mode == HMI_CHART_MODE_ONE_CYCLE) ? 1u : 0u;
+    three_visible = (mode == HMI_CHART_MODE_THREE_CYCLE) ? 1u : 0u;
+    spectrum_visible = (mode == HMI_CHART_MODE_SPECTRUM) ? 1u : 0u;
+    *frame_size = 0u;
+
+    if ((hmi_chart_append_visibility(
             frame, frame_capacity, frame_size,
-            "cle %s,%u", HMI_CHART_PHASE_OBJECT, 0u, -1) == 0u)
+            HMI_CHART_T1_OBJECT, one_visible) == 0u)
+        || (hmi_chart_append_visibility(
+            frame, frame_capacity, frame_size,
+            HMI_CHART_T3_OBJECT, three_visible) == 0u)
+        || (hmi_chart_append_visibility(
+            frame, frame_capacity, frame_size,
+            HMI_CHART_SPECTRUM_OBJECT, spectrum_visible) == 0u))
     {
         return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
     }
-    for (index = 0u; index < HMI_CHART_POINT_COUNT; index++)
+
+    return HMI_CHART_STATUS_OK;
+}
+
+hmi_chart_status_t hmi_chart_build_hide_all(
+    uint8_t *frame,
+    uint16_t frame_capacity,
+    uint16_t *frame_size)
+{
+    if ((frame == NULL) || (frame_size == NULL))
     {
-        if (hmi_chart_append_command(
+        return HMI_CHART_STATUS_INVALID_ARGUMENT;
+    }
+
+    *frame_size = 0u;
+    if ((hmi_chart_append_visibility(
             frame, frame_capacity, frame_size,
-            "add %s,%u,%u", HMI_CHART_PHASE_OBJECT,
-            0u, (int16_t)hmi_chart_phase_workspace[index]) == 0u)
-        {
-            return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
-        }
+            HMI_CHART_T1_OBJECT, 0u) == 0u)
+        || (hmi_chart_append_visibility(
+            frame, frame_capacity, frame_size,
+            HMI_CHART_T3_OBJECT, 0u) == 0u)
+        || (hmi_chart_append_visibility(
+            frame, frame_capacity, frame_size,
+            HMI_CHART_SPECTRUM_OBJECT, 0u) == 0u))
+    {
+        return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
     }
 
     return HMI_CHART_STATUS_OK;

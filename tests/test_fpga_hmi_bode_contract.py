@@ -6,192 +6,195 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-class FpgaHmiBodeContractTest(unittest.TestCase):
+def crc16_ccitt_false(data: bytes) -> int:
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x1021) & 0xFFFF if crc & 0x8000 else (
+                crc << 1
+            ) & 0xFFFF
+    return crc
+
+
+def function_body(source: str, function_name: str) -> str:
+    start = source.index(f"void {function_name}")
+    brace = source.index("{", start)
+    depth = 0
+    for index in range(brace, len(source)):
+        if source[index] == "{":
+            depth += 1
+        elif source[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return source[brace + 1 : index]
+    raise AssertionError(f"unterminated function: {function_name}")
+
+
+class FpgaSpiHmiContractTest(unittest.TestCase):
     def setUp(self):
-        self.fpga = (ROOT / "Core/User/fpga_link.c").read_text(encoding="utf-8")
-        self.fpga_h = (
-            ROOT / "Core/User/fpga_link.h"
-        ).read_text(encoding="utf-8")
-        self.chart = (ROOT / "Core/User/hmi_chart.c").read_text(encoding="utf-8")
-        self.chart_h = (
-            ROOT / "Core/User/hmi_chart.h"
-        ).read_text(encoding="utf-8")
-        self.hmi = (ROOT / "Core/User/hmi_task2.c").read_text(encoding="utf-8")
-        self.system = (ROOT / "Core/User/system.c").read_text(encoding="utf-8")
-        self.result_h = (
-            ROOT / "Core/User/measurement_result.h"
-        ).read_text(encoding="utf-8")
-        self.result_c = (
-            ROOT / "Core/User/measurement_result.c"
-        ).read_text(encoding="utf-8")
-        self.fpga_guide = (
-            ROOT / "docs/FPGA_UART_PROTOCOL_GUIDE.md"
-        ).read_text(encoding="utf-8")
-
-    def test_fpga_uses_receive_to_idle_dma_and_cache_maintenance(self):
-        self.assertIn("HAL_UARTEx_ReceiveToIdle_DMA", self.fpga)
-        self.assertIn("SCB_CleanInvalidateDCache_by_Addr", self.fpga)
-        self.assertIn("SCB_InvalidateDCache_by_Addr", self.fpga)
-        self.assertIn("__attribute__((aligned(32)))", self.fpga)
-
-    def test_rx_event_callback_only_sets_event_size(self):
-        body = self.fpga.split(
-            "void HAL_UARTEx_RxEventCallback", 1
-        )[1].split("\n}", 1)[0]
-        assignments = re.findall(
-            r"\b(fpga_link_[a-z0-9_]+)\s*=", body
+        self.protocol = (ROOT / "Core/User/fpga_protocol.c").read_text(
+            encoding="utf-8"
         )
-        self.assertEqual(assignments, ["fpga_link_rx_event_size"])
-        self.assertNotIn("fpga_link_parse_frame", body)
+        self.protocol_h = (ROOT / "Core/User/fpga_protocol.h").read_text(
+            encoding="utf-8"
+        )
+        self.link = (ROOT / "Core/User/fpga_link.c").read_text(
+            encoding="utf-8"
+        )
+        self.link_h = (ROOT / "Core/User/fpga_link.h").read_text(
+            encoding="utf-8"
+        )
+        self.conversion = (
+            ROOT / "Core/User/measurement_conversion.c"
+        ).read_text(encoding="utf-8")
+        self.conversion_h = (
+            ROOT / "Core/User/measurement_conversion.h"
+        ).read_text(encoding="utf-8")
+        self.chart = (ROOT / "Core/User/hmi_chart.c").read_text(
+            encoding="utf-8"
+        )
+        self.chart_h = (ROOT / "Core/User/hmi_chart.h").read_text(
+            encoding="utf-8"
+        )
 
-    def test_fpga_guide_matches_current_binary_contract(self):
-        for contract in (
-            "AA 55  N_H N_L",
-            "MAG_H MAG_L PHASE_H PHASE_L",
-            "`1 ≤ N ≤ 1024`",
-            "`4102` 字节",
-            "`1,000,000 bit/s`",
-            "`50 ms`",
+    def test_crc_reference_vector_and_c_parameters_match_ccitt_false(self):
+        self.assertEqual(crc16_ccitt_false(b"123456789"), 0x29B1)
+        self.assertIn("uint16_t crc = 0xffffu;", self.protocol)
+        self.assertIn("^ 0x1021u", self.protocol)
+        self.assertNotIn("crc >> 1", self.protocol)
+
+    def test_protocol_constants_match_final_v1_contract(self):
+        expected = {
+            "FPGA_PROTOCOL_COMMAND_PREFIX": "0xa5u",
+            "FPGA_PROTOCOL_COMMAND_GET_STATUS": "0x01u",
+            "FPGA_PROTOCOL_COMMAND_READ_FRAME": "0x02u",
+            "FPGA_PROTOCOL_COMMAND_ACK_FRAME": "0x03u",
+            "FPGA_PROTOCOL_STATUS_BYTES": "16u",
+            "FPGA_PROTOCOL_HEADER_BYTES": "128u",
+            "FPGA_PROTOCOL_MAX_TIME_SAMPLES": "3750u",
+            "FPGA_PROTOCOL_SPECTRUM_COUNT": "1312u",
+            "FPGA_PROTOCOL_MAX_FRAME_BYTES": "10254u",
+        }
+        for name, value in expected.items():
+            self.assertRegex(
+                self.protocol_h,
+                rf"#define\s+{name}\s+{re.escape(value)}",
+            )
+
+    def test_header_offsets_and_little_endian_reads_are_explicit(self):
+        for offset, field in (
+            (8, "total_bytes"),
+            (12, "frame_seq"),
+            (28, "time_sample_rate_hz"),
+            (32, "time_count"),
+            (42, "spectrum_count"),
+            (52, "vpp_uv"),
+            (56, "vrms_uv"),
+            (60, "fundamental_mhz"),
+            (108, "dropped_frames"),
         ):
-            self.assertIn(contract, self.fpga_guide)
+            self.assertRegex(
+                self.protocol,
+                rf"parsed\.{field}\s*=\s*fpga_protocol_read_[ui]\d+_le"
+                rf"\(&frame\[{offset}\]\)",
+            )
+        self.assertNotIn("(fpga_protocol_frame_header_t *)", self.protocol)
 
-    def test_chart_uses_cle_add_without_transparent_mode(self):
-        self.assertIn('"cle %s,%u"', self.chart)
-        self.assertIn('"add %s,%u,%u"', self.chart)
-        self.assertIn('"s0.id"', self.chart)
-        self.assertIn('"s1.id"', self.chart)
+    def test_same_cs_immediate_response_is_used_for_status_and_frame(self):
+        status_start = self.link.index("static fpga_protocol_result_t")
+        status_end = self.link.index(
+            "static uint8_t fpga_link_start_frame_dma", status_start
+        )
+        status_body = self.link[status_start:status_end]
+        self.assertLess(
+            status_body.index("fpga_link_cs_low();"),
+            status_body.index("HAL_SPI_Transmit("),
+        )
+        self.assertLess(
+            status_body.index("HAL_SPI_Transmit("),
+            status_body.index("HAL_SPI_TransmitReceive("),
+        )
+        self.assertLess(
+            status_body.index("HAL_SPI_TransmitReceive("),
+            status_body.index("fpga_link_cs_high();"),
+        )
+        self.assertIn("HAL_SPI_TransmitReceive_DMA", self.link)
+        self.assertIn("fpga_link_dummy_tx_cache_line", self.link)
+
+    def test_spi_dma_buffers_are_static_aligned_and_cache_maintained(self):
+        self.assertIn("__attribute__((aligned(32)))", self.link)
+        self.assertIn("SCB_CleanInvalidateDCache_by_Addr", self.link)
+        self.assertIn("SCB_InvalidateDCache_by_Addr", self.link)
+        self.assertIn("fpga_link_snapshots[2]", self.link)
+        self.assertNotIn("malloc(", self.link)
+
+    def test_crc_failure_retries_without_ack_and_valid_frame_is_acked(self):
+        self.assertIn("FPGA_LINK_MAX_READ_RETRIES      3u", self.link)
+        error_start = self.link.index("if (result != FPGA_PROTOCOL_OK)")
+        ack_start = self.link.index(
+            "(void)fpga_link_send_ack(header.frame_seq);"
+        )
+        self.assertLess(error_start, ack_start)
+        error_block = self.link[error_start:ack_start]
+        self.assertNotIn("fpga_link_send_ack", error_block)
+        self.assertIn("FPGA_PROTOCOL_STATUS_RESULT_INVALID", self.link)
+        self.assertIn("result_invalid_count++", self.link)
+
+    def test_spi_callbacks_only_set_their_one_event_flag(self):
+        expected = (
+            ("HAL_GPIO_EXTI_Callback", "fpga_data_ready_flag"),
+            ("HAL_SPI_TxRxCpltCallback", "fpga_spi_dma_complete_flag"),
+            ("HAL_SPI_ErrorCallback", "fpga_spi_dma_error_flag"),
+        )
+        for function_name, flag_name in expected:
+            body = function_body(self.link, function_name)
+            assignments = re.findall(
+                r"\b(fpga_[a-z0-9_]+)\s*=", body
+            )
+            self.assertEqual(assignments, [flag_name])
+            self.assertNotIn("fpga_protocol_parse", body)
+
+    def test_conversion_outputs_three_700_point_buffers(self):
+        self.assertRegex(
+            self.conversion_h,
+            r"MEASUREMENT_DISPLAY_POINT_COUNT\s+700u",
+        )
+        for name in (
+            "waveform_1cycle",
+            "waveform_3cycle",
+            "spectrum_display",
+        ):
+            self.assertIn(
+                f"{name}[MEASUREMENT_DISPLAY_POINT_COUNT]",
+                self.conversion_h,
+            )
+        self.assertIn("bucket_maximum", self.conversion)
+        self.assertIn("sum += source[input_index]", self.conversion)
+        self.assertNotIn("sqrt", self.conversion)
+
+    def test_chart_buffer_covers_worst_case_700_ascii_add_commands(self):
+        capacity = int(
+            re.search(
+                r"HMI_CHART_FRAME_MAX_BYTES\s+(\d+)u", self.chart_h
+            ).group(1)
+        )
+        worst_case = len("cle s_spec.id,0") + 3
+        worst_case += 700 * (len("add s_spec.id,0,255") + 3)
+        self.assertGreaterEqual(capacity, worst_case)
+        self.assertIn('"cle %s.id,0"', self.chart)
+        self.assertIn('"add %s.id,0,%u"', self.chart)
         self.assertNotIn("addt", self.chart)
 
-    def test_chart_buffer_covers_worst_case_ascii_commands(self):
-        point_count_match = re.search(
-            r"HMI_CHART_POINT_COUNT\s+(\d+)u",
-            self.chart_h,
-        )
-        capacity_match = re.search(
-            r"HMI_CHART_FRAME_SIZE_PER_COMPONENT\s+(\d+)u",
-            self.chart_h,
-        )
-        self.assertIsNotNone(point_count_match)
-        self.assertIsNotNone(capacity_match)
-        point_count = int(point_count_match.group(1))
-        capacity = int(capacity_match.group(1))
-        worst_case_bytes = len("cle s0.id,0") + 3
-        worst_case_bytes += point_count * (len("add s0.id,0,255") + 3)
-        self.assertEqual(point_count, 256)
-        self.assertGreaterEqual(capacity, worst_case_bytes)
-
-    def test_chart_uses_static_downsample_workspace(self):
-        self.assertIn(
-            "static uint8_t hmi_chart_amplitude_workspace"
-            "[HMI_CHART_POINT_COUNT]",
-            self.chart,
-        )
-        self.assertIn(
-            "static uint8_t hmi_chart_phase_workspace"
-            "[HMI_CHART_POINT_COUNT]",
-            self.chart,
-        )
-        self.assertNotIn(
-            "uint8_t amplitude[HMI_CHART_POINT_COUNT]",
-            self.chart,
-        )
-        self.assertNotIn(
-            "uint8_t phase[HMI_CHART_POINT_COUNT]",
-            self.chart,
-        )
-
-    def test_chart_downsampling_uses_bucket_means(self):
-        self.assertIn(
-            "magnitude_sum += bode->mag2_hi[input_index]",
-            self.chart,
-        )
-        self.assertIn(
-            "phase_sum += bode->phase[input_index]",
-            self.chart,
-        )
-        self.assertIn(
-            "mean_magnitude = (uint16_t)(magnitude_sum / sample_count)",
-            self.chart,
-        )
-        self.assertNotIn("best_magnitude", self.chart)
-        self.assertNotIn("best_index", self.chart)
-
-    def test_chart_restores_amplitude_from_mag2_high_word(self):
-        self.assertIn(
-            "magnitude_root = hmi_chart_isqrt_u16(mean_magnitude)",
-            self.chart,
-        )
-        self.assertIn(
-            "amplitude[output_index] = (uint8_t)magnitude_root",
-            self.chart,
-        )
-        self.assertIn("(I²+Q²)[63:48]", self.chart)
-
-    def test_fpga_step_commands_use_usart2_single_byte_contract(self):
-        self.assertIn(
-            "#define FPGA_LINK_STEP_INCREASE_COMMAND 0x2bu",
-            self.fpga,
-        )
-        self.assertIn(
-            "#define FPGA_LINK_STEP_DECREASE_COMMAND 0x2du",
-            self.fpga,
-        )
-        self.assertIn(
-            "HAL_UART_Transmit(\n"
-            "        fpga_link_uart, &command, 1u,",
-            self.fpga,
-        )
-        self.assertIn("fpga_link_send_step_increase", self.fpga_h)
-        self.assertIn("fpga_link_send_step_decrease", self.fpga_h)
-        self.assertIn("command_tx_count", self.fpga_h)
-        self.assertIn("command_tx_error_count", self.fpga_h)
-        self.assertIn("last_tx_command", self.fpga_h)
-
-    def test_s0_autoscales_frame_minimum_and_maximum(self):
-        self.assertIn(
-            "uint8_t amplitude_min = HMI_CHART_VALUE_MAX",
-            self.chart,
-        )
-        self.assertIn("uint8_t amplitude_max = 0u", self.chart)
-        self.assertIn(
-            "amplitude[output_index] - amplitude_min",
-            self.chart,
-        )
-        self.assertIn("/ amplitude_range", self.chart)
-        self.assertIn("amplitude[output_index] = 0u", self.chart)
-
-    def test_bode_transmit_is_split_at_complete_command_boundaries(self):
-        self.assertIn("hmi_task2_send_next_bode_command", self.hmi)
-        self.assertIn("terminator_found", self.hmi)
-        self.assertIn("HMI_TASK2_COMMAND_TX_TIMEOUT_MS", self.hmi)
-        self.assertNotRegex(
-            self.hmi,
-            r"HAL_UART_Transmit\([^;]*hmi_task2_bode_frame[^;]*"
-            r"hmi_task2_bode_frame_size",
-        )
-
-    def test_power_interface_is_exposed_and_persistent(self):
-        self.assertIn("MEASUREMENT_VALID_POWER", self.result_h)
-        self.assertIn("float power_w;", self.result_h)
-        self.assertIn("measurement_result_set_power_w", self.result_h)
-        self.assertIn("measurement_result_clear_power", self.result_h)
-        self.assertIn("saved_power_valid", self.result_c)
-
-    def test_chart_self_test_uses_the_production_frame_path(self):
-        self.assertIn("hmi_task2_generate_chart_self_test", self.hmi)
-        self.assertIn(
-            "bode->point_count = HMI_CHART_POINT_COUNT",
-            self.hmi,
-        )
-        self.assertIn("hmi_chart_build_bode_frame", self.hmi)
-        self.assertIn(
-            "#define HMI_CHART_SELF_TEST_ENABLE 0u",
-            self.system,
-        )
-        self.assertIn(
-            "hmi_task2_set_chart_self_test(1u);",
-            self.system,
-        )
+    def test_no_legacy_fpga_uart_protocol_remains_in_active_link(self):
+        for legacy in (
+            "HAL_UART",
+            "AA 55",
+            "fpga_link_bind_uart",
+            "fpga_link_send_step_increase",
+        ):
+            self.assertNotIn(legacy, self.link)
+            self.assertNotIn(legacy, self.link_h)
 
 
 if __name__ == "__main__":
