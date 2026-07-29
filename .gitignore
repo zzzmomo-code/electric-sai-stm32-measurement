@@ -1,6 +1,11 @@
 # STM32CubeIDE build analysis files
 *.su
 *.cyclo
+*.o
+*.d
+*.elf
+*.list
+*.map
 
 # Python test cache
 __pycache__/

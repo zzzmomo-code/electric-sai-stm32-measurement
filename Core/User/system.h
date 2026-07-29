@@ -4,8 +4,9 @@
  *
  * 模块用途：集中包含 CubeMX 外设句柄和全部用户模块头文件，供 main.c 与 Core/User
  *          下的实现文件统一使用。
- * GPIO 引脚映射：本模块无直接 GPIO；FPGA SPI3 和串口屏 USART1 映射见对应模块。
- * 依赖的外设和 CubeIDE 配置：SPI3、USART1、DMA、EXTI1，以及 CubeMX 仍保留的旧外设。
+ * GPIO 引脚映射：PA6/ADC1_INP3 为唯一模拟输入；PA9/PA10 为串口屏。
+ * 依赖的外设和 CubeIDE 配置：ADC1、TIM2、DMA1 Stream0、USART1；
+ *          FPGA SPI3/EXTI1 配置只保留，不由本固件启动。
  * 初始化方法：HAL 与全部 MX_*_Init() 完成后调用 system_init()。
  * 调用方法：main.c 的 while(1) 仅持续调用 system_process()。
  */
@@ -29,6 +30,8 @@
 /* G 题正式链路：FPGA SPI 协议、测量换算和串口屏后台预装。 */
 #include "fpga_protocol.h"
 #include "fpga_link.h"
+#include "onchip_fft_8192.h"
+#include "onchip_measurement.h"
 #include "measurement_conversion.h"
 #include "hmi_chart.h"
 #include "hmi_task2.h"
@@ -38,7 +41,6 @@
 #if __has_include("adc.h") && __has_include("tim.h")
 #include "adc.h"
 #include "tim.h"
-#define SYSTEM_ADC_DUAL_AVAILABLE 1
 #endif
 #endif
 
@@ -81,15 +83,15 @@ extern volatile uint8_t adc_dual_error_flag;
 extern measurement_fft_diagnostics_t measurement_fft_diagnostics;
 
 /**
- * @brief 初始化 FPGA SPI、测量转换和串口屏三个正式用户模块。
+ * @brief 初始化片上 ADC 测量、显示转换和串口屏三个正式用户模块。
  * @param 无。
  * @return 无。
- * @note 必须在 CubeMX 生成的 SPI3、USART1、DMA、GPIO 初始化后调用。
+ * @note 必须在 CubeMX 生成的 ADC1、TIM2、DMA、USART1、GPIO 初始化后调用。
  */
 void system_init(void);
 
 /**
- * @brief 执行 FPGA 取帧、显示坐标转换和串口屏后台预装。
+ * @brief 执行片上 ADC 采集分析、显示坐标转换和串口屏后台预装。
  * @param 无。
  * @return 无。
  */
