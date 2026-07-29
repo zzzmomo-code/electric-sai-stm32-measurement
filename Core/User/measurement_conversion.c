@@ -25,9 +25,9 @@ volatile measurement_conversion_diagnostics_t
  * 本模块只改变“显示点数和纵轴坐标”，不重新计算 Vpp、Vrms、频率或谐波。
  *
  * FPGA快照                           显示快照
- * time_samples[最多3750]  ────────> waveform_3cycle[700]
- * 中间一个完整周期       ─────────> waveform_1cycle[700]
- * spectrum[1312]          ─────────> spectrum_display[700]
+ * time_samples[最多3750]  ────────> waveform_3cycle[350]
+ * 中间一个完整周期       ─────────> waveform_1cycle[350]
+ * spectrum[1312]          ─────────> spectrum_display[350]
  * 帧头参数                ─────────> Vpp/Vrms/基频/三个分量
  *
  * 三个输出数组带同一个 frame_sequence；HMI 只有看到完整发布的显示快照后
@@ -65,12 +65,12 @@ static uint8_t measurement_conversion_map_time(
 }
 
 /**
- * @brief 将任意长度时域片段重采样为 700 点。
+ * @brief 将任意长度时域片段重采样为屏幕控件宽度对应的点数。
  * @param source 原始 int16 样点。
  * @param source_count 原始点数。
  * @param minimum 整帧最小值。
  * @param maximum 整帧最大值。
- * @param output 700 点输出。
+ * @param output 固定宽度显示点输出。
  * @return 无。
  */
 static void measurement_conversion_resample_time(
@@ -85,7 +85,7 @@ static void measurement_conversion_resample_time(
     if (source_count >= MEASUREMENT_DISPLAY_POINT_COUNT)
     {
         /*
-         * 原始点多于 700 时，把输入分成 700 个连续区间，每区间取均值。
+         * 原始点较多时，把输入分成固定数量的连续区间，每区间取均值。
          * 这样横轴始终铺满控件，并抑制单个采样毛刺。
          */
         for (output_index = 0u;
@@ -122,7 +122,7 @@ static void measurement_conversion_resample_time(
     else
     {
         /*
-         * 原始点少于 700 时，相邻样点做线性插值。不能简单重复最后一个点，
+         * 原始点少于显示点数时，相邻样点做线性插值。不能简单重复最后一个点，
          * 否则有效波形只会挤在横轴左侧。
          */
         for (output_index = 0u;
@@ -170,10 +170,10 @@ static void measurement_conversion_resample_time(
 }
 
 /**
- * @brief 将 1312 点频谱分桶取最大值并映射到 700 点。
+ * @brief 将 1312 点频谱分桶取最大值并映射到屏幕控件宽度。
  * @param source 原始频谱。
  * @param source_count 原始点数。
- * @param output 输出 700 点。
+ * @param output 输出固定宽度显示点。
  * @return 原始频谱最大值。
  */
 static uint16_t measurement_conversion_compress_spectrum(
@@ -195,7 +195,7 @@ static uint16_t measurement_conversion_compress_spectrum(
 
     /*
      * 频谱与时域不同：每个横向桶取最大值而不是均值，避免很窄的谐波谱线
-     * 在 1312 -> 700 压缩过程中被平均掉。
+     * 在 1312 点频谱压缩过程中被平均掉。
      */
     for (output_index = 0u;
          output_index < MEASUREMENT_DISPLAY_POINT_COUNT;
@@ -259,7 +259,7 @@ void measurement_conversion_init(void)
 }
 
 /**
- * @brief 把一份完整 FPGA 快照转换为三组 700 点显示数据并原子发布。
+ * @brief 把一份完整 FPGA 快照转换为三组 350 点显示数据并原子发布。
  * @param source 已通过协议、长度和 CRC 校验的只读快照。
  * @return 转换成功返回 1，输入字段无效返回 0。
  */

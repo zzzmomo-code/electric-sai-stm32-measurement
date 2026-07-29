@@ -141,16 +141,16 @@ static uint8_t hmi_chart_append_visibility(
 }
 
 /**
- * @brief 构建一整条 700 点曲线的清空和追加命令。
+ * @brief 构建一整条 350 点曲线的清空和追加命令。
  * @param object_name 淘晶驰 Waveform 控件名。
- * @param points 已映射到 8~247 的 700 个纵坐标。
+ * @param points 已映射到 8~247 的 350 个纵坐标。
  * @param point_count 点数，必须等于 MEASUREMENT_DISPLAY_POINT_COUNT。
  * @param frame 输出命令字节流。
  * @param frame_capacity 输出缓冲区容量。
  * @param frame_size 输出实际字节数。
  * @return 构帧状态；本函数不启动 UART 发送。
  *
- * @note 先发送 cle，再为每个点发送 add。700 个点对应控件的 700 个横向位置，
+ * @note 先发送 cle，再为每个点发送 add。350 个点对应控件的 350 个横向位置，
  *       因此不会出现只占横轴左侧一部分的问题。
  */
 hmi_chart_status_t hmi_chart_build_waveform(
@@ -196,14 +196,15 @@ hmi_chart_status_t hmi_chart_build_waveform(
 }
 
 /**
- * @brief 构建三个重叠曲线控件的可见性切换命令。
+ * @brief 构建双时域重叠控件与独立频谱控件的可见性切换命令。
  * @param mode 需要显示的模式。
  * @param frame 输出命令字节流。
  * @param frame_capacity 输出缓冲区容量。
  * @param frame_size 输出实际字节数。
  * @return 构帧状态。
  *
- * @note 该函数只改变 vis 属性，不清空或重发曲线数据，所以按键切换很快。
+ * @note 一周期和三周期互斥显示；频谱位于独立区域并保持显示。该函数只改变
+ *       vis 属性，不清空或重发曲线数据，所以按键切换很快。
  */
 hmi_chart_status_t hmi_chart_build_visibility(
     hmi_chart_mode_t mode,
@@ -225,7 +226,7 @@ hmi_chart_status_t hmi_chart_build_visibility(
 
     one_visible = (mode == HMI_CHART_MODE_ONE_CYCLE) ? 1u : 0u;
     three_visible = (mode == HMI_CHART_MODE_THREE_CYCLE) ? 1u : 0u;
-    spectrum_visible = (mode == HMI_CHART_MODE_SPECTRUM) ? 1u : 0u;
+    spectrum_visible = 1u;
     *frame_size = 0u;
 
     if ((hmi_chart_append_visibility(

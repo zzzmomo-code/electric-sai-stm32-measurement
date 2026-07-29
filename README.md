@@ -6,9 +6,9 @@
 
 1. 通过 SPI3 从 FPGA 读取完整测量帧；
 2. 校验状态、长度、序号和 CRC16；
-3. 将时域和频谱数据转换为三组 700 点显示缓存；
+3. 将时域和频谱数据转换为三组 350 点显示缓存；
 4. 通过 USART1 驱动淘晶驰串口屏；
-5. 提前把三组曲线写入重叠的隐藏控件，按键时只切换可见性。
+5. 提前把三组曲线写入对应控件；按键只切换左侧一周期/三周期，右侧频谱持续显示。
 
 FPGA 负责 ADC 采集、滤波、FFT 和参数测量。旧工程中的片内 ADC、DAC、DDS、
 TIM 测频和 USART2 FPGA 链路不参与当前正式运行。
@@ -151,24 +151,26 @@ FPGA 缓冲区，但不会覆盖上一份有效显示快照。
 | `t_comp1`～`t_comp3` | Text | 三个分量 |
 | `t_status` | Text | 帧序号和丢帧状态 |
 
-三个 Waveform 控件放在相同位置，宽度按 700 点设计。横纵轴、单位和刻度使用页面
-静态控件绘制。
+`s_t1` 与 `s_t3` 放在左侧相同位置并相互重叠；`s_spec` 独立放在右侧，不与时域
+波形重叠。三个 Waveform 控件宽度统一为 350，横纵轴、单位和刻度使用页面静态控件绘制。
 
-三个按钮的按下事件分别发送：
+两个按钮的按下事件分别发送：
 
 ```text
 printh A5 01 5A  // 一周期
 printh A5 02 5A  // 三周期
-printh A5 03 5A  // 频谱
 ```
+
+固件仍兼容历史命令 `A5 03 5A`，但当前页面不需要频谱按钮，因为右侧 `s_spec`
+在显示一周期或三周期时都会保持可见。
 
 上电后 STM32 先隐藏三图。收到有效 FPGA 帧后，先生成三组缓存，再依次把默认优先
 模式、其他两图和参数文本预装到屏幕；在收到第一次有效按键命令前始终不显示曲线。
 新 FPGA 帧到来时保留一份稳定工作快照，完成当前三图预装后才切换到更新快照，
 避免连续新帧造成预装饥饿。
 
-当前使用普通 `cle` + 700 条 `add` 指令，一条曲线最坏约 18 KB；512000 baud 下
-线缆传输约 352 ms。按键后的正常路径只发送可见性命令，因此响应远小于 2 秒。
+当前使用普通 `cle` + 350 条 `add` 指令，一条曲线最坏不超过 7.8 KB；512000 baud 下
+纯线缆传输约 151 ms。按键后的正常路径只发送可见性命令，因此响应远小于 2 秒。
 
 注意：仓库中的旧 `fpga1.HMI` 仍可能只有旧对象，必须先在 USART HMI 工具中按上表
 创建控件并重新下载页面。隐藏 Waveform 控件是否能可靠接收并保留数据仍需实板验证。
@@ -177,7 +179,7 @@ printh A5 03 5A  // 频谱
 
 - `Core/User/fpga_protocol.c/.h`：小端字段读取、CRC、状态帧和测量帧校验；
 - `Core/User/fpga_link.c/.h`：SPI3 事务、DMA、重试、ACK 和双测量快照；
-- `Core/User/measurement_conversion.c/.h`：一周期、三周期和频谱三组 700 点缓存；
+- `Core/User/measurement_conversion.c/.h`：一周期、三周期和频谱三组 350 点缓存；
 - `Core/User/hmi_chart.c/.h`：Waveform 清空、写点和可见性命令构建；
 - `Core/User/hmi_task2.c/.h`：USART1 DMA、按键解析、预装调度和参数文本；
 - `Core/User/system.c/.h`：唯一用户初始化和主循环入口。
@@ -238,7 +240,7 @@ hmi_task2_process()
 5. `Core/User/fpga_link.c`
    - 看同一 CS 的 GET_STATUS/READ_FRAME/ACK，以及 DMA 重试和双缓冲发布。
 6. `Core/User/measurement_conversion.c`
-   - 看最多 3750 点时域和 1312 点频谱怎样变成三组 700 点。
+   - 看最多 3750 点时域和 1312 点频谱怎样变成三组 350 点。
 7. `Core/User/hmi_chart.c`
    - 看 `cle`、`add`、`vis` 如何变成以三个 `0xFF` 结尾的命令。
 8. `Core/User/hmi_task2.c`
@@ -268,16 +270,16 @@ hmi_task2_process()
 - `spectrum[]` 仍是 FPGA 的无符号幅值；
 - Vpp、Vrms、基频和三个分量保留 FPGA 约定的 µV、mHz 单位。
 
-这一层不含淘晶驰控件名，也不关心 700 像素。
+这一层不含淘晶驰控件名，也不关心 350 像素。
 
 #### 3. 显示快照
 
 `measurement_display_snapshot_t` 是屏幕专用缓存：
 
 ```c
-waveform_1cycle[700]
-waveform_3cycle[700]
-spectrum_display[700]
+waveform_1cycle[350]
+waveform_3cycle[350]
+spectrum_display[350]
 ```
 
 三个数组都已经映射为 `8~247` 的单字节纵坐标。上下保留 8 个单位，避免曲线顶住
@@ -334,15 +336,15 @@ A5 03 + frame_seq小端4字节 + CRC16小端2字节
 FPGA 标记 `RESULT_INVALID` 时仍发送 ACK，避免 FPGA 一直卡住，但不会覆盖上一份
 有效显示结果。
 
-#### 第五步：转换为三组 700 点
+#### 第五步：转换为三组 350 点
 
 `measurement_conversion_update()` 对同一个 FPGA 快照生成：
 
-- 一周期：从三周期捕获数据中取中间一个完整周期，再重采样为 700 点；
-- 三周期：使用整段有效时域数据，重采样为 700 点；
-- 频谱：把 1312 个谱点分成 700 个横向区间，每个区间取最大值。
+- 一周期：从三周期捕获数据中取中间一个完整周期，再重采样为 350 点；
+- 三周期：使用整段有效时域数据，重采样为 350 点；
+- 频谱：把 1312 个谱点分成 350 个横向区间，每个区间取最大值。
 
-时域降采样采用分桶平均，防止单点抽取造成波形抖动；原始点少于 700 时采用线性
+时域降采样采用分桶平均，防止单点抽取造成波形抖动；原始点少于 350 时采用线性
 插值，保证曲线占满横轴。频谱采用区间最大值而不是平均值，避免很窄的谱峰被稀释。
 
 时域纵轴用本帧最小值和最大值线性映射，频谱用本帧最大值线性映射。FPGA 发来的
@@ -370,11 +372,12 @@ UART TX DMA 动作：
 预装完成时，只发送三条 `vis` 命令：
 
 ```text
-目标控件 vis=1
-另外两个控件 vis=0
+s_t1/s_t3 中目标控件 vis=1
+s_t1/s_t3 中另一个控件 vis=0
+s_spec vis=1
 ```
 
-因此按键不触发重新采样、重新 FFT、重新换算或重发 700 个点。
+因此按键不触发重新采样、重新 FFT、重新换算或重发 350 个点。
 
 ### 代码中几个容易看不懂的写法
 
@@ -477,7 +480,7 @@ hmi_task2_diagnostics
 
 | 变量 | 含义 |
 |---|---|
-| `conversion_count` | 成功生成 700 点显示快照的次数 |
+| `conversion_count` | 成功生成 350 点显示快照的次数 |
 | `invalid_source_count` | 输入点数或字段不合法次数 |
 | `last_frame_sequence` | 最近成功换算的 FPGA 帧序号 |
 | `last_time_min` / `last_time_max` | 最近时域原始数据范围 |
@@ -498,17 +501,17 @@ hmi_task2_diagnostics
 | `last_source_sequence` | 跟随换算序号 | 不变：屏幕层没有取得新快照 |
 | `command_count` | 每按一次有效按钮增加 | 不增加：检查 PA10、按钮事件和波特率 |
 | `invalid_command_count` | 应保持 0 | 增加：按钮返回格式或串口数据不正确 |
-| `requested_mode` | 1/2/3 | 当前用户请求的一周期/三周期/频谱 |
-| `visible_mode` | 1/2/3 | 当前真正已经执行 vis 的模式 |
+| `requested_mode` | 通常为 1/2 | 当前用户请求的一周期/三周期；3 为历史频谱命令 |
+| `visible_mode` | 通常为 1/2 | 当前真正已经执行 vis 的时域模式；频谱保持可见 |
 | `last_visible_sequence` | 当前可见曲线的数据序号 | 可判断显示的是不是最新已装帧 |
 
 ## 资源占用与实时性
 
 - 不使用 `malloc()`，所有大数组静态分配，运行时间和内存占用可预测；
 - 最大 FPGA 帧约 10.3 KB，SPI 20 MHz 纯线缆时间约 4.1 ms；
-- 每条 700 点普通曲线命令最坏约 18 KB，512000 baud 纯线缆时间约 352 ms；
+- 每条 350 点普通曲线命令最坏不超过 7.8 KB，512000 baud 纯线缆时间约 151 ms；
 - 三图后台预装需要多次 DMA，但按键正常路径只有 `vis` 命令；
-- 最近一次完整 ELF 链接结果：`text=62944`、`data=472`、`bss=59440` 字节；
+- 最近一次完整 ELF 链接结果：`text=63028`、`data=472`、`bss=47520` 字节；
 - `.bss` 主要来自双测量快照、原始帧和 HMI TX 缓冲区，H743 RAM 仍有余量。
 
 ## 编译、烧录和联调
@@ -527,7 +530,7 @@ hmi_task2_diagnostics
 - `status_crc_error_count`、`frame_crc_error_count`、`frame_dma_timeout_count` 应保持 0；
 - `frame_retry_count` 只应在坏帧/超时后增加；
 - `preload_complete_count` 应随完整屏幕快照增加；
-- `command_count` 应随三个按钮操作增加；
+- `command_count` 应随两个按钮操作增加；
 - `tx_error_count` 应保持 0。
 
 ## 当前验证边界
@@ -536,7 +539,8 @@ hmi_task2_diagnostics
 - 新增模块已使用 CubeIDE 随附 GCC 完成编译和 ELF 链接；
 - 旧 ADC/DAC/DDS/TIM 合同测试仍对应历史运行链路，不代表本 G 题链路失败；
 - SPI 电气时序、DMA/D-Cache、隐藏控件保留行为和整机 2 秒指标均待实板验证；
-- 当前正常模式 `HMI_CHART_SELF_TEST_ENABLE=0`，不会发送自检图；
+- 当前为串口屏联调模式 `HMI_CHART_SELF_TEST_ENABLE=1`；确认 350 点布局后必须改回 `0`，
+  再接入 FPGA 正式数据；
 - 当前 `.ioc`、SPI3/USART1/DMA/GPIO 生成配置已作为本功能基线保留；
 - IDE 工作区元数据、Debug 构建产物和本机启动配置不属于功能源码，不应混入提交；
 - 未经明确许可不推送远程分支。

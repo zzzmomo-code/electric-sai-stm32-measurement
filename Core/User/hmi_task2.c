@@ -2,8 +2,8 @@
  * @file hmi_task2.c
  * @brief G 题淘晶驰串口屏后台预装与按键切换实现。
  *
- * 模块用途：把 measurement_conversion 生成的三组 700 点缓存依次写入 s_t1、s_t3、
- *          s_spec，随后更新参数文本；屏幕按键仅返回 A5 CMD 5A，STM32 只切换控件可见性。
+ * 模块用途：把 measurement_conversion 生成的三组 350 点缓存依次写入 s_t1、s_t3、
+ *          s_spec，随后更新参数文本；屏幕按键互斥切换时域控件，独立频谱保持可见。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init() 并绑定 huart1。
@@ -16,7 +16,7 @@
 #include <string.h>
 
 #define HMI_TASK2_RX_BYTES            32u
-#define HMI_TASK2_TX_STORAGE_BYTES    18016u
+#define HMI_TASK2_TX_STORAGE_BYTES    9248u
 #define HMI_TASK2_TX_TIMEOUT_MS       1000u
 #define HMI_TASK2_COMMAND_HEAD        0xa5u
 #define HMI_TASK2_COMMAND_TAIL        0x5au
@@ -58,7 +58,7 @@ static UART_HandleTypeDef *hmi_task2_uart;
 static uint8_t hmi_task2_rx_buffer[HMI_TASK2_RX_BYTES]
     __attribute__((aligned(32)));
 
-/** TX DMA 缓冲区，实际可构建区为 18000 字节，尾部用于缓存行取整。 */
+/** TX DMA 缓冲区，实际可构建区为 9216 字节，尾部用于缓存行取整。 */
 static uint8_t hmi_task2_tx_buffer[HMI_TASK2_TX_STORAGE_BYTES]
     __attribute__((aligned(32)));
 
@@ -413,6 +413,34 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
 }
 
 /**
+ * @brief 生成横轴恰好包含指定周期数的三角波自检点。
+ * @param index 当前显示点下标，范围为 0 至显示点数减一。
+ * @param cycle_count 整个横轴需要显示的完整周期数。
+ * @return 映射到 8 至 247 的串口屏纵轴值。
+ *
+ * @note 首尾点均位于波谷，因此横轴从第一个点到最后一个点正好覆盖整数周期。
+ */
+static uint8_t hmi_task2_generate_triangle_point(
+    uint16_t index,
+    uint8_t cycle_count)
+{
+    const uint32_t value_min = 8u;
+    const uint32_t value_span = 239u;
+    const uint32_t full_phase = value_span * 2u;
+    uint32_t phase;
+
+    phase = ((uint32_t)index * (uint32_t)cycle_count * full_phase)
+        / (MEASUREMENT_DISPLAY_POINT_COUNT - 1u);
+    phase %= full_phase;
+    if (phase > value_span)
+    {
+        phase = full_phase - phase;
+    }
+
+    return (uint8_t)(value_min + phase);
+}
+
+/**
  * @brief 生成一份与正式路径尺寸完全一致的三图自检快照。
  * @param snapshot 输出显示快照。
  * @return 无。
@@ -420,6 +448,8 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
 static void hmi_task2_generate_self_test(
     measurement_display_snapshot_t *snapshot)
 {
+    const uint16_t spectrum_center =
+        (uint16_t)((MEASUREMENT_DISPLAY_POINT_COUNT - 1u) / 2u);
     uint16_t index;
 
     memset(snapshot, 0, sizeof(*snapshot));
@@ -436,16 +466,14 @@ static void hmi_task2_generate_self_test(
 
     for (index = 0u; index < MEASUREMENT_DISPLAY_POINT_COUNT; index++)
     {
-        uint16_t phase = (uint16_t)(index % 100u);
-        uint16_t triangle = (phase < 50u) ? phase : (uint16_t)(99u - phase);
-        uint16_t distance = (index > 350u)
-            ? (uint16_t)(index - 350u) : (uint16_t)(350u - index);
+        uint16_t distance = (index > spectrum_center)
+            ? (uint16_t)(index - spectrum_center)
+            : (uint16_t)(spectrum_center - index);
 
         snapshot->waveform_1cycle[index] =
-            (uint8_t)(8u + ((239u * triangle) / 49u));
+            hmi_task2_generate_triangle_point(index, 1u);
         snapshot->waveform_3cycle[index] =
-            (uint8_t)(8u + ((239u * ((index % 34u) < 17u
-                ? (index % 34u) : (33u - (index % 34u)))) / 16u));
+            hmi_task2_generate_triangle_point(index, 3u);
         snapshot->spectrum_display[index] =
             (distance < 18u) ? (uint8_t)(247u - (distance * 12u)) : 8u;
     }
@@ -944,7 +972,7 @@ void hmi_task2_process(void)
 
     /*
      * 先固定本轮需要预装的显示快照，再选择一个 DMA 动作。
-     * 每轮最多启动一项发送，主循环不会被约 18 KB 的曲线命令阻塞。
+     * 每轮最多启动一项发送，主循环不会被约 7.8 KB 的曲线命令阻塞。
      */
     hmi_task2_refresh_work_snapshot();
     if (hmi_task2_tx_active == 0u)

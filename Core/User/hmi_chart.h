@@ -1,12 +1,12 @@
 /**
  * @file hmi_chart.h
- * @brief 淘晶驰三个重叠 Waveform 控件的构帧接口。
+ * @brief 淘晶驰双时域重叠控件和独立频谱控件的构帧接口。
  *
- * 模块用途：把已生成的 700 点缓存构建为 cle/add 指令，并生成一周期、
- *          三周期和频谱控件的可见性切换指令。
+ * 模块用途：把已生成的 350 点缓存构建为 cle/add 指令，并生成一周期、
+ *          三周期互斥切换及独立频谱常显的可见性指令。
  * GPIO 引脚映射：无直接 GPIO；字节流由 hmi_task2 经 USART1 发送。
  * 依赖的外设和 CubeIDE 配置：页面包含 s_t1、s_t3、s_spec，均为单通道
- *          Waveform 控件且横向容纳 700 点。
+ *          Waveform 控件且横向容纳 350 点；s_t1 与 s_t3 重叠，s_spec 独立放置。
  * 初始化方法：无状态，无需初始化。
  * 调用方法：hmi_task2 在后台预装曲线或按键切换时调用。
  */
@@ -21,7 +21,7 @@
 #define HMI_CHART_T1_OBJECT       "s_t1"
 #define HMI_CHART_T3_OBJECT       "s_t3"
 #define HMI_CHART_SPECTRUM_OBJECT "s_spec"
-#define HMI_CHART_FRAME_MAX_BYTES 18000u
+#define HMI_CHART_FRAME_MAX_BYTES 9216u
 
 /** 当前显示模式，与屏幕按键命令 1~3 对齐。 */
 typedef enum
@@ -40,10 +40,10 @@ typedef enum
 } hmi_chart_status_t;
 
 /**
- * @brief 构建单个 Waveform 的 cle 加 700 条 add 指令。
+ * @brief 构建单个 Waveform 的 cle 加 350 条 add 指令。
  * @param object_name 控件名，不含 .id。
- * @param points 700 点 8 位纵轴数组。
- * @param point_count 必须为 700。
+ * @param points 350 点 8 位纵轴数组。
+ * @param point_count 必须为 350。
  * @param frame 输出 UART 字节流。
  * @param frame_capacity 输出容量。
  * @param frame_size 输出实际长度。

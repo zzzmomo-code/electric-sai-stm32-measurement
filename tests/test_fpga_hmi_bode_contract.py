@@ -155,10 +155,10 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             self.assertEqual(assignments, [flag_name])
             self.assertNotIn("fpga_protocol_parse", body)
 
-    def test_conversion_outputs_three_700_point_buffers(self):
+    def test_conversion_outputs_three_350_point_buffers(self):
         self.assertRegex(
             self.conversion_h,
-            r"MEASUREMENT_DISPLAY_POINT_COUNT\s+700u",
+            r"MEASUREMENT_DISPLAY_POINT_COUNT\s+350u",
         )
         for name in (
             "waveform_1cycle",
@@ -173,14 +173,14 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("sum += source[input_index]", self.conversion)
         self.assertNotIn("sqrt", self.conversion)
 
-    def test_chart_buffer_covers_worst_case_700_ascii_add_commands(self):
+    def test_chart_buffer_covers_worst_case_350_ascii_add_commands(self):
         capacity = int(
             re.search(
                 r"HMI_CHART_FRAME_MAX_BYTES\s+(\d+)u", self.chart_h
             ).group(1)
         )
         worst_case = len("cle s_spec.id,0") + 3
-        worst_case += 700 * (len("add s_spec.id,0,255") + 3)
+        worst_case += 350 * (len("add s_spec.id,0,255") + 3)
         self.assertGreaterEqual(capacity, worst_case)
         self.assertIn('"cle %s.id,0"', self.chart)
         self.assertIn('"add %s.id,0,%u"', self.chart)

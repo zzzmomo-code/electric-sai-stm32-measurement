@@ -2,8 +2,8 @@
  * @file hmi_task2.h
  * @brief G 题淘晶驰串口屏后台预装与按键切换接口。
  *
- * 模块用途：经 USART1 DMA 把一周期、三周期和频谱三组 700 点数据预装到重叠曲线控件，
- *          并解析屏幕返回的模式按键，在不重新测量和计算的情况下立即切换可见控件。
+ * 模块用途：经 USART1 DMA 把一周期、三周期和频谱三组 350 点数据预装到屏幕控件，
+ *          并解析屏幕按键，在不重新测量和计算的情况下切换时域控件并保持频谱可见。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init()，再绑定 huart1。
@@ -70,7 +70,7 @@ extern volatile hmi_task2_diagnostics_t hmi_task2_diagnostics;
 void hmi_task2_init(void);
 
 /**
- * @brief 启用或关闭不依赖 FPGA 的 700 点三图自检数据。
+ * @brief 启用或关闭不依赖 FPGA 的 350 点三图自检数据。
  * @param enable 非零启用，零恢复使用 FPGA 测量快照。
  * @return 无。
  * @note 正常发布版本保持为零，仅用于串口屏工程联调。

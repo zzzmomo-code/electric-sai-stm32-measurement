@@ -2,7 +2,7 @@
  * @file system.c
  * @brief G 题 STM32 正式数据链路的统一初始化和主循环入口。
  *
- * 模块用途：连接“FPGA SPI3 完整测量帧 -> 700 点显示快照 -> USART1 串口屏预装”。
+ * 模块用途：连接“FPGA SPI3 完整测量帧 -> 350 点显示快照 -> USART1 串口屏预装”。
  * GPIO 引脚映射：PC10/SPI3_SCK、PC11/SPI3_MISO、PC12/SPI3_MOSI、
  *          PA15/FPGA_CS_N、PD1/FPGA_DATA_READY、PA9/USART1_TX、PA10/USART1_RX。
  * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0 20 MHz 双向 DMA，PD1 EXTI1；
@@ -14,7 +14,7 @@
 #include "system.h"
 
 /** 串口屏三图链路自检开关；正常模式必须保持为零。 */
-#define HMI_CHART_SELF_TEST_ENABLE 0u
+#define HMI_CHART_SELF_TEST_ENABLE 1u
 
 /** 已经转换为显示快照的最近 FPGA 帧序号。 */
 static uint32_t system_last_converted_sequence;
@@ -67,7 +67,7 @@ void system_process(void)
     /* 第一步：推进 SPI3 命令、DMA、CRC、ACK 状态机并发布最新有效快照。 */
     fpga_link_process();
 
-    /* 第二步：仅对新 frame_seq 执行一次 700 点显示换算。 */
+    /* 第二步：仅对新 frame_seq 执行一次 350 点显示换算。 */
     if (fpga_link_get_snapshot(&fpga_snapshot) != 0u)
     {
         uint32_t sequence = fpga_snapshot->header.frame_seq;

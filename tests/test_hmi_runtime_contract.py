@@ -29,6 +29,9 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.header = (ROOT / "Core/User/hmi_task2.h").read_text(
             encoding="utf-8"
         )
+        self.chart = (ROOT / "Core/User/hmi_chart.c").read_text(
+            encoding="utf-8"
+        )
         self.system = (ROOT / "Core/User/system.c").read_text(
             encoding="utf-8"
         )
@@ -48,6 +51,7 @@ class HmiRuntimeContractTest(unittest.TestCase):
         for text_name in ("t_vpp", "t_vrms", "t_freq", "t_status"):
             self.assertIn(text_name, self.source)
         self.assertIn('"t_comp%u.txt=', self.source)
+        self.assertIn("spectrum_visible = 1u;", self.chart)
 
     def test_buttons_use_a5_command_5a_and_only_change_display_mode(self):
         self.assertIn("#define HMI_TASK2_COMMAND_HEAD        0xa5u", self.source)

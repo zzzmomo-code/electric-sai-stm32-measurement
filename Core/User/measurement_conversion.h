@@ -2,7 +2,7 @@
  * @file measurement_conversion.h
  * @brief FPGA 测量快照到串口屏显示缓存的转换接口。
  *
- * 模块用途：把 FPGA 三周期时域和 1312 点频谱转换成三个 700 点显示缓存，
+ * 模块用途：把 FPGA 三周期时域和 1312 点频谱转换成三个 350 点显示缓存，
  *          同时保存 Vpp、Vrms、基频和最多三个分量参数。
  * GPIO 引脚映射：无直接 GPIO 引脚。
  * 依赖的外设和 CubeIDE 配置：无直接外设依赖。
@@ -17,8 +17,8 @@
 
 #include "fpga_link.h"
 
-/** 每个 Waveform 恰好发送 700 个横向显示点。 */
-#define MEASUREMENT_DISPLAY_POINT_COUNT 700u
+/** 每个 Waveform 恰好发送 350 个横向显示点，与页面控件宽度一致。 */
+#define MEASUREMENT_DISPLAY_POINT_COUNT 350u
 /** 纵轴最低显示值，保留 8 个单位下边距。 */
 #define MEASUREMENT_DISPLAY_Y_MIN       8u
 /** 纵轴最高显示值，保留 8 个单位上边距。 */
@@ -68,7 +68,7 @@ extern volatile measurement_conversion_diagnostics_t
 void measurement_conversion_init(void);
 
 /**
- * @brief 将完整 FPGA 快照转换成三组 700 点显示数据。
+ * @brief 将完整 FPGA 快照转换成三组 350 点显示数据。
  * @param source 已通过协议和 CRC 校验的测量快照。
  * @return 成功发布显示快照返回 1，输入无效返回 0。
  */
