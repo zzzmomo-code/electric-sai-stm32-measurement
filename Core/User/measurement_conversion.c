@@ -39,7 +39,7 @@ volatile measurement_conversion_diagnostics_t
  * @param value 当前样点。
  * @param minimum 当前快照最小值。
  * @param maximum 当前快照最大值。
- * @return 8~247；常量输入返回中点。
+ * @return 8~201；常量输入返回中点。
  */
 static uint8_t measurement_conversion_map_time(
     int32_t value,

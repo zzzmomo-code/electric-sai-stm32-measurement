@@ -143,7 +143,7 @@ static uint8_t hmi_chart_append_visibility(
 /**
  * @brief 构建一整条 350 点曲线的清空和追加命令。
  * @param object_name 淘晶驰 Waveform 控件名。
- * @param points 已映射到 8~247 的 350 个纵坐标。
+ * @param points 已映射到 8~201 的 350 个纵坐标。
  * @param point_count 点数，必须等于 MEASUREMENT_DISPLAY_POINT_COUNT。
  * @param frame 输出命令字节流。
  * @param frame_capacity 输出缓冲区容量。

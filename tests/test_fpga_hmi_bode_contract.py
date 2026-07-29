@@ -160,6 +160,14 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             self.conversion_h,
             r"MEASUREMENT_DISPLAY_POINT_COUNT\s+350u",
         )
+        self.assertRegex(
+            self.conversion_h,
+            r"MEASUREMENT_DISPLAY_Y_MIN\s+8u",
+        )
+        self.assertRegex(
+            self.conversion_h,
+            r"MEASUREMENT_DISPLAY_Y_MAX\s+201u",
+        )
         for name in (
             "waveform_1cycle",
             "waveform_3cycle",

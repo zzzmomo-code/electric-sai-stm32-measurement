@@ -416,7 +416,7 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
  * @brief 生成横轴恰好包含指定周期数的三角波自检点。
  * @param index 当前显示点下标，范围为 0 至显示点数减一。
  * @param cycle_count 整个横轴需要显示的完整周期数。
- * @return 映射到 8 至 247 的串口屏纵轴值。
+ * @return 映射到串口屏控件安全纵轴范围内的值。
  *
  * @note 首尾点均位于波谷，因此横轴从第一个点到最后一个点正好覆盖整数周期。
  */
@@ -424,8 +424,9 @@ static uint8_t hmi_task2_generate_triangle_point(
     uint16_t index,
     uint8_t cycle_count)
 {
-    const uint32_t value_min = 8u;
-    const uint32_t value_span = 239u;
+    const uint32_t value_min = MEASUREMENT_DISPLAY_Y_MIN;
+    const uint32_t value_span =
+        MEASUREMENT_DISPLAY_Y_MAX - MEASUREMENT_DISPLAY_Y_MIN;
     const uint32_t full_phase = value_span * 2u;
     uint32_t phase;
 
@@ -474,8 +475,20 @@ static void hmi_task2_generate_self_test(
             hmi_task2_generate_triangle_point(index, 1u);
         snapshot->waveform_3cycle[index] =
             hmi_task2_generate_triangle_point(index, 3u);
-        snapshot->spectrum_display[index] =
-            (distance < 18u) ? (uint8_t)(247u - (distance * 12u)) : 8u;
+        if (distance < 18u)
+        {
+            snapshot->spectrum_display[index] = (uint8_t)(
+                MEASUREMENT_DISPLAY_Y_MAX
+                - (((uint32_t)distance
+                    * (MEASUREMENT_DISPLAY_Y_MAX
+                       - MEASUREMENT_DISPLAY_Y_MIN))
+                   / 17u));
+        }
+        else
+        {
+            snapshot->spectrum_display[index] =
+                MEASUREMENT_DISPLAY_Y_MIN;
+        }
     }
 }
 

@@ -21,8 +21,8 @@
 #define MEASUREMENT_DISPLAY_POINT_COUNT 350u
 /** 纵轴最低显示值，保留 8 个单位下边距。 */
 #define MEASUREMENT_DISPLAY_Y_MIN       8u
-/** 纵轴最高显示值，保留 8 个单位上边距。 */
-#define MEASUREMENT_DISPLAY_Y_MAX       247u
+/** 210 像素高控件的纵轴最高显示值，保留约 8 个像素上边距。 */
+#define MEASUREMENT_DISPLAY_Y_MAX       201u
 
 /** 已转换的完整显示快照。 */
 typedef struct
