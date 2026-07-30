@@ -337,6 +337,8 @@ static uint16_t measurement_conversion_compress_spectrum(
          output_index < MEASUREMENT_DISPLAY_POINT_COUNT;
          output_index++)
     {
+        uint16_t display_index = (uint16_t)(
+            MEASUREMENT_DISPLAY_POINT_COUNT - 1u - output_index);
         uint32_t begin =
             ((uint32_t)output_index * source_count)
             / MEASUREMENT_DISPLAY_POINT_COUNT;
@@ -364,11 +366,15 @@ static uint16_t measurement_conversion_compress_spectrum(
 
         if (source_maximum == 0u)
         {
-            output[output_index] = MEASUREMENT_DISPLAY_Y_MIN;
+            output[display_index] = MEASUREMENT_DISPLAY_Y_MIN;
         }
         else
         {
-            output[output_index] = (uint8_t)(
+            /*
+             * 淘晶驰曲线控件使用add逐点滚动，最终屏幕上的横向排列与发送数组相反。
+             * 因此这里反向存储，使低频落在左侧、高频落在右侧。
+             */
+            output[display_index] = (uint8_t)(
                 MEASUREMENT_DISPLAY_Y_MIN
                 + (((uint32_t)bucket_maximum
                     * (MEASUREMENT_DISPLAY_Y_MAX

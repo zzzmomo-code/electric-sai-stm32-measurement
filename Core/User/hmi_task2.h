@@ -44,6 +44,9 @@ typedef struct
     uint32_t stable_accept_count;  /**< 首帧立即接受或后续连续三帧稳定锁存的次数。 */
     uint32_t stable_reject_count;  /**< 与当前锁存结果相近、无需重画的帧数。 */
     uint32_t calibration_toggle_count; /**< 已校准/未校准按键切换次数。 */
+    uint32_t probe_count;          /**< 已发送的 sendme 在线探测次数。 */
+    uint32_t probe_reply_count;    /**< 已收到的页面号回复次数。 */
+    uint32_t reconnect_count;      /**< 检测到屏幕重新上线并重放显示的次数。 */
     uint32_t chart_chunk_count;    /**< 已完成的曲线小批次发送次数。 */
     uint32_t chart_pass_count;     /**< 已完成的整条 350 点曲线发送遍数。 */
     uint32_t last_source_sequence; /**< 当前刷新工作快照序号。 */
@@ -55,6 +58,8 @@ typedef struct
     uint8_t visible_mode;          /**< 屏幕当前已切换的模式。 */
     uint8_t stable_candidate_count;/**< 当前候选结果已连续稳定的帧数，范围0~3。 */
     uint8_t calibration_enabled;   /**< 当前数字显示模式：1=已校准，0=未校准。 */
+    uint8_t screen_online;         /**< 1=屏幕在线，0=未连接或回复已超时。 */
+    uint8_t current_page;          /**< 最近一次 sendme 返回的页面号。 */
     hmi_task2_state_t state;       /**< 当前刷新状态。 */
 } hmi_task2_diagnostics_t;
 

@@ -223,6 +223,47 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn("HMI_CHART_MODE_SPECTRUM", initialize_body)
         self.assertNotIn("hmi_chart_build_hide_all(", initialize_body)
 
+    def test_screen_reconnect_probe_replays_cached_display(self):
+        self.assertIn('"sendme"', self.source)
+        self.assertIn("HMI_TASK2_PAGE_REPLY_HEAD", self.source)
+        self.assertIn("hmi_task2_parse_page_reply_byte(byte);", self.source)
+        self.assertIn("hmi_task2_request_display_replay();", self.source)
+        self.assertIn("hmi_task2_initialize_done = 0u;", self.source)
+        self.assertIn(
+            "memset(hmi_task2_loaded_valid, 0, "
+            "sizeof(hmi_task2_loaded_valid));",
+            self.source,
+        )
+        self.assertIn(
+            "hmi_task2_waveform_redraw_pending =\n"
+            "        hmi_task2_display_requested;",
+            self.source,
+        )
+        for field in (
+            "probe_count",
+            "probe_reply_count",
+            "reconnect_count",
+            "screen_online",
+            "current_page",
+        ):
+            self.assertIn(field, self.header)
+
+    def test_reconnect_replay_does_not_touch_fpga_transport(self):
+        replay_start = self.source.index(
+            "static void hmi_task2_request_display_replay"
+        )
+        replay_end = self.source.index(
+            "static void hmi_task2_mark_screen_alive", replay_start
+        )
+        replay_body = self.source[replay_start:replay_end]
+        for forbidden in (
+            "fpga_link",
+            "HAL_SPI",
+            "FPGA_CS",
+            "DATA_READY",
+        ):
+            self.assertNotIn(forbidden, replay_body)
+
     def test_uart_callbacks_only_set_one_shared_value(self):
         expected = (
             ("HAL_UARTEx_RxEventCallback", "hmi_uart_rx_event_size"),
@@ -318,6 +359,30 @@ class HmiRuntimeContractTest(unittest.TestCase):
     def test_normal_mode_keeps_chart_self_test_disabled(self):
         self.assertIn("#define HMI_CHART_SELF_TEST_ENABLE 0u", self.system)
         self.assertIn("hmi_task2_set_chart_self_test(1u);", self.system)
+
+    def test_spectrum_array_is_reversed_for_tjc_scroll_direction(self):
+        conversion = (
+            ROOT / "Core/User/measurement_conversion.c"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "MEASUREMENT_DISPLAY_POINT_COUNT - 1u - output_index",
+            conversion,
+        )
+        self.assertIn("output[display_index]", conversion)
+
+    def test_non_contiguous_component_slots_follow_valid_flags(self):
+        self.assertIn(
+            "left_index < FPGA_PROTOCOL_COMPONENT_MAX",
+            self.source,
+        )
+        self.assertIn(
+            "right_index < FPGA_PROTOCOL_COMPONENT_MAX",
+            self.source,
+        )
+        self.assertNotIn(
+            "index < hmi_task2_work_snapshot.component_count",
+            self.source,
+        )
 
 
 if __name__ == "__main__":

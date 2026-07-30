@@ -15,14 +15,31 @@
 #include <string.h>
 
 /**
- * 打表后只需要修改下面这一段系数。
+ * 打表后优先修改下面这组“每 mV 对应的 FPGA 原始码值”。
+ *
+ * 2026-07-30 打表稳健拟合结果：
+ *     K_UPP  = 6405.50 raw/mV
+ *     K_URMS = 6404.76 raw/mV
+ *     K_SPEC = 6399.19 raw/mV
+ *
+ * 三者非常接近，比赛固件统一采用 6400 raw/mV，避免样本较少时过拟合。
+ * 校准接口对外仍返回 uV，因此内部换算为：
+ *     calibrated_uV = raw_value * 1000 / raw_per_mV
+ *
+ * 如果后续重新打表，只需要修改下面三个常量，不需要改 HMI 或调用接口。
+ */
+#define MEASUREMENT_CALIBRATION_VPP_RAW_PER_MV       6400.0
+#define MEASUREMENT_CALIBRATION_VRMS_RAW_PER_MV      6400.0
+#define MEASUREMENT_CALIBRATION_COMPONENT_RAW_PER_MV 6400.0
+
+/**
+ * 频率和直流偏置继续保留通用多项式接口。
  *
  * 统一拟合公式：
  *     y = c0 + c1*x + c2*x*x + c3*x*x*x
  *
- * 电压类曲线的 x、y 单位都是 V；频率曲线的 x、y 单位都是 Hz。
- * 拟合时应把“FPGA 原始读数”作为 x，把“标准仪器参考值”作为 y。
- * 当前全部为 y=x：c0=0、c1=1、c2=0、c3=0。
+ * 当前频率和直流偏置均为 y=x；频率字段保持 mHz 约定，
+ * 即串口屏格式化后仍满足 f_Hz = raw_freq / 1000。
  */
 typedef struct
 {
@@ -32,27 +49,8 @@ typedef struct
     double c3;
 } measurement_calibration_curve_t;
 
-/* 峰峰值 UPP 拟合系数，输入/输出单位 V。 */
-static const measurement_calibration_curve_t calibration_vpp_curve =
-{
-    0.0, 1.0, 0.0, 0.0
-};
-
-/* 真有效值 URMS 拟合系数，输入/输出单位 V。 */
-static const measurement_calibration_curve_t calibration_vrms_curve =
-{
-    0.0, 1.0, 0.0, 0.0
-};
-
 /* 基频及各频率分量共用的拟合系数，输入/输出单位 Hz。 */
 static const measurement_calibration_curve_t calibration_frequency_curve =
-{
-    0.0, 1.0, 0.0, 0.0
-};
-
-/* 各频率分量峰值幅度的拟合系数，输入/输出单位 V。 */
-static const measurement_calibration_curve_t
-    calibration_component_amplitude_curve =
 {
     0.0, 1.0, 0.0, 0.0
 };
@@ -125,27 +123,25 @@ static int32_t measurement_calibration_saturate_i32(double value)
 }
 
 /**
- * @brief 对 uV 电压值使用指定曲线拟合。
- * @param curve 电压曲线，输入/输出单位 V。
- * @param raw_uv 原始电压，单位 uV。
- * @return 拟合电压，单位 uV。
+ * @brief 按打表比例把 FPGA 原始电压码值换算为 uV。
+ * @param raw_value FPGA 原始码值；未校准模式下原样返回。
+ * @param raw_per_mv 每 1 mV 对应的 FPGA 原始码值。
+ * @return 校准后的电压，单位 uV；未校准模式返回原始码值。
  */
-static uint32_t measurement_calibration_apply_voltage(
-    const measurement_calibration_curve_t *curve,
-    uint32_t raw_uv)
+static uint32_t measurement_calibration_apply_voltage_scale(
+    uint32_t raw_value,
+    double raw_per_mv)
 {
-    double input_v;
-    double output_v;
+    double output_uv;
 
     if (measurement_calibration_enabled == 0u)
     {
-        return raw_uv;
+        return raw_value;
     }
 
-    input_v = (double)raw_uv / 1000000.0;
-    output_v = measurement_calibration_evaluate(curve, input_v);
+    output_uv = ((double)raw_value * 1000.0) / raw_per_mv;
     measurement_calibration_diagnostics.apply_count++;
-    return measurement_calibration_saturate_u32(output_v * 1000000.0);
+    return measurement_calibration_saturate_u32(output_uv);
 }
 
 /**
@@ -201,24 +197,24 @@ uint8_t measurement_calibration_is_enabled(void)
 
 /**
  * @brief 对峰峰值应用当前校准策略。
- * @param raw_uv FPGA 原始峰峰值，单位 uV。
- * @return 拟合值或原始值，单位 uV。
+ * @param raw_uv FPGA 原始峰峰值码值。
+ * @return 已校准模式返回 uV；未校准模式原样返回码值。
  */
 uint32_t measurement_calibration_apply_vpp_uv(uint32_t raw_uv)
 {
-    return measurement_calibration_apply_voltage(
-        &calibration_vpp_curve, raw_uv);
+    return measurement_calibration_apply_voltage_scale(
+        raw_uv, MEASUREMENT_CALIBRATION_VPP_RAW_PER_MV);
 }
 
 /**
  * @brief 对真有效值应用当前校准策略。
- * @param raw_uv FPGA 原始真有效值，单位 uV。
- * @return 拟合值或原始值，单位 uV。
+ * @param raw_uv FPGA 原始真有效值码值。
+ * @return 已校准模式返回 uV；未校准模式原样返回码值。
  */
 uint32_t measurement_calibration_apply_vrms_uv(uint32_t raw_uv)
 {
-    return measurement_calibration_apply_voltage(
-        &calibration_vrms_curve, raw_uv);
+    return measurement_calibration_apply_voltage_scale(
+        raw_uv, MEASUREMENT_CALIBRATION_VRMS_RAW_PER_MV);
 }
 
 /**
@@ -245,14 +241,14 @@ uint32_t measurement_calibration_apply_frequency_mhz(uint32_t raw_mhz)
 
 /**
  * @brief 对频率分量峰值幅度应用当前校准策略。
- * @param raw_uv FPGA 原始分量峰值幅度，单位 uV。
- * @return 拟合值或原始值，单位 uV。
+ * @param raw_uv FPGA 原始分量峰值幅度码值；表示正弦峰值而非峰峰值。
+ * @return 已校准模式返回峰值幅度 uV；未校准模式原样返回码值。
  */
 uint32_t measurement_calibration_apply_component_amplitude_uv(
     uint32_t raw_uv)
 {
-    return measurement_calibration_apply_voltage(
-        &calibration_component_amplitude_curve, raw_uv);
+    return measurement_calibration_apply_voltage_scale(
+        raw_uv, MEASUREMENT_CALIBRATION_COMPONENT_RAW_PER_MV);
 }
 
 /**

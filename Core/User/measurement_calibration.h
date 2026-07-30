@@ -62,16 +62,16 @@ uint8_t measurement_calibration_toggle(void);
 uint8_t measurement_calibration_is_enabled(void);
 
 /**
- * @brief 对峰峰值执行拟合。
- * @param raw_uv FPGA 原始峰峰值，单位 uV。
- * @return 当前显示模式对应的峰峰值，单位 uV。
+ * @brief 对峰峰值原始码执行打表比例校准。
+ * @param raw_uv FPGA 原始峰峰值码值。
+ * @return 已校准模式返回 uV；未校准模式原样返回码值。
  */
 uint32_t measurement_calibration_apply_vpp_uv(uint32_t raw_uv);
 
 /**
- * @brief 对真有效值执行拟合。
- * @param raw_uv FPGA 原始真有效值，单位 uV。
- * @return 当前显示模式对应的真有效值，单位 uV。
+ * @brief 对真有效值原始码执行打表比例校准。
+ * @param raw_uv FPGA 原始真有效值码值。
+ * @return 已校准模式返回 uV；未校准模式原样返回码值。
  */
 uint32_t measurement_calibration_apply_vrms_uv(uint32_t raw_uv);
 
@@ -83,9 +83,9 @@ uint32_t measurement_calibration_apply_vrms_uv(uint32_t raw_uv);
 uint32_t measurement_calibration_apply_frequency_mhz(uint32_t raw_mhz);
 
 /**
- * @brief 对频率分量的峰值幅度执行拟合。
- * @param raw_uv FPGA 原始分量峰值幅度，单位 uV。
- * @return 当前显示模式对应的分量峰值幅度，单位 uV。
+ * @brief 对频率分量的峰值幅度原始码执行打表比例校准。
+ * @param raw_uv FPGA 原始分量峰值幅度码值；它是正弦峰值而非峰峰值。
+ * @return 已校准模式返回峰值幅度 uV；未校准模式原样返回码值。
  */
 uint32_t measurement_calibration_apply_component_amplitude_uv(
     uint32_t raw_uv);

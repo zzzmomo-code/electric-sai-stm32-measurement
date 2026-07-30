@@ -29,6 +29,9 @@
 #define HMI_TASK2_VOLTAGE_FLOOR_UV    1000u
 #define HMI_TASK2_CHART_PASS_COUNT    2u
 #define HMI_TASK2_CHART_GAP_MS        3u
+#define HMI_TASK2_PROBE_INTERVAL_MS   1000u
+#define HMI_TASK2_OFFLINE_TIMEOUT_MS  2500u
+#define HMI_TASK2_PAGE_REPLY_HEAD     0x66u
 
 /*
  * 稳定锁存显示状态机的核心规则：
@@ -54,7 +57,8 @@ typedef enum
     HMI_TX_ACTION_SPECTRUM,
     HMI_TX_ACTION_TEXT,
     HMI_TX_ACTION_VISIBILITY,
-    HMI_TX_ACTION_CALIBRATION
+    HMI_TX_ACTION_CALIBRATION,
+    HMI_TX_ACTION_PROBE
 } hmi_tx_action_t;
 
 volatile uint16_t hmi_uart_rx_event_size;
@@ -100,6 +104,10 @@ static uint8_t hmi_task2_tx_calibration_enabled;
 /** 接收 A5 CMD 5A 的三状态解析器状态。 */
 static uint8_t hmi_task2_command_state;
 static uint8_t hmi_task2_command_candidate;
+static uint8_t hmi_task2_page_reply_state;
+static uint8_t hmi_task2_page_candidate;
+/** 屏幕是否至少成功回复过一次，用于区分首次握手和真正的断线重连。 */
+static uint8_t hmi_task2_screen_seen_once;
 
 /** 软件状态标志。 */
 static uint8_t hmi_task2_rx_active;
@@ -127,6 +135,8 @@ static uint16_t hmi_task2_chart_next_point;
 static uint16_t hmi_task2_tx_chart_emitted_points;
 /** 两批 add 之间的最小间隔，让串口屏有时间执行已收到的普通指令。 */
 static uint32_t hmi_task2_next_chart_tx_ms;
+static uint32_t hmi_task2_next_probe_ms;
+static uint32_t hmi_task2_last_reply_ms;
 
 /**
  * @brief 对 DMA 接收缓冲区执行接收前缓存维护。
@@ -261,6 +271,109 @@ static uint8_t hmi_task2_append_command(uint8_t *buffer,
     buffer[(*offset)++] = 0xffu;
     buffer[(*offset)++] = 0xffu;
     return 1u;
+}
+
+/**
+ * @brief 屏幕重新上电后，使STM32忘记“已经发送过”的显示缓存并安排完整重放。
+ * @param 无。
+ * @return 无。
+ *
+ * @note 这里只重置STM32到串口屏的显示状态，不会触碰FPGA SPI、测量快照或校准模式。
+ */
+static void hmi_task2_request_display_replay(void)
+{
+    hmi_task2_initialize_done = 0u;
+    hmi_task2_text_valid = 0u;
+    memset(hmi_task2_loaded_valid, 0, sizeof(hmi_task2_loaded_valid));
+    hmi_task2_visibility_pending = 1u;
+    hmi_task2_calibration_pending = 1u;
+    hmi_task2_chart_active_mode = 0u;
+    hmi_task2_chart_passes_remaining = 0u;
+    hmi_task2_chart_next_point = 0u;
+    hmi_task2_tx_chart_emitted_points = 0u;
+    hmi_task2_next_chart_tx_ms = HAL_GetTick();
+    hmi_task2_waveform_redraw_pending =
+        hmi_task2_display_requested;
+    hmi_task2_diagnostics.visible_mode = 0u;
+    hmi_task2_diagnostics.state = (hmi_task2_work_valid != 0u)
+        ? HMI_TASK2_STATE_PRELOADING : HMI_TASK2_STATE_WAIT_DATA;
+}
+
+/**
+ * @brief 记录屏幕在线，并在首次握手或断线重连时完整恢复屏幕内容。
+ * @param page 屏幕通过sendme返回的当前页面号。
+ * @return 无。
+ */
+static void hmi_task2_mark_screen_alive(uint8_t page)
+{
+    uint8_t was_online = hmi_task2_diagnostics.screen_online;
+
+    hmi_task2_diagnostics.screen_online = 1u;
+    hmi_task2_diagnostics.current_page = page;
+    hmi_task2_last_reply_ms = HAL_GetTick();
+
+    if (was_online == 0u)
+    {
+        if (hmi_task2_screen_seen_once != 0u)
+        {
+            hmi_task2_diagnostics.reconnect_count++;
+        }
+        else
+        {
+            hmi_task2_screen_seen_once = 1u;
+        }
+        /*
+         * 首次握手也必须重放：STM32可能早于串口屏启动并已经把初始化命令发完，
+         * 此时软件缓存为“已发送”，但屏幕实际上没有收到。
+         */
+        hmi_task2_request_display_replay();
+    }
+}
+
+/**
+ * @brief 从混合RX字节流中识别sendme返回的 66 PAGE FF FF FF。
+ * @param byte 本次收到的一个字节。
+ * @return 无。
+ */
+static void hmi_task2_parse_page_reply_byte(uint8_t byte)
+{
+    switch (hmi_task2_page_reply_state)
+    {
+        case 0u:
+            if (byte == HMI_TASK2_PAGE_REPLY_HEAD)
+            {
+                hmi_task2_page_reply_state = 1u;
+            }
+            break;
+
+        case 1u:
+            hmi_task2_page_candidate = byte;
+            hmi_task2_page_reply_state = 2u;
+            break;
+
+        case 2u:
+        case 3u:
+            if (byte == 0xffu)
+            {
+                hmi_task2_page_reply_state++;
+            }
+            else
+            {
+                hmi_task2_page_reply_state =
+                    (byte == HMI_TASK2_PAGE_REPLY_HEAD) ? 1u : 0u;
+            }
+            break;
+
+        default:
+            if (byte == 0xffu)
+            {
+                hmi_task2_diagnostics.probe_reply_count++;
+                hmi_task2_mark_screen_alive(hmi_task2_page_candidate);
+            }
+            hmi_task2_page_reply_state =
+                (byte == HMI_TASK2_PAGE_REPLY_HEAD) ? 1u : 0u;
+            break;
+    }
 }
 
 /**
@@ -434,9 +547,7 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
         const fpga_protocol_component_t *component =
             &hmi_task2_work_snapshot.component[index];
 
-        if ((index < hmi_task2_work_snapshot.component_count)
-            && ((component->flags
-                 & FPGA_PROTOCOL_COMPONENT_VALID) != 0u))
+        if ((component->flags & FPGA_PROTOCOL_COMPONENT_VALID) != 0u)
         {
             uint32_t display_component_frequency_mhz =
                 measurement_calibration_apply_frequency_mhz(
@@ -642,18 +753,26 @@ static uint8_t hmi_task2_snapshots_are_stable(
      * 因此不能按数组下标逐项比较；这里按谐波次数、频率和幅度进行无序匹配。
      */
     for (left_index = 0u;
-         left_index < left->component_count;
+         left_index < FPGA_PROTOCOL_COMPONENT_MAX;
          left_index++)
     {
         uint8_t found_match = 0u;
 
+        if ((left->component[left_index].flags
+             & FPGA_PROTOCOL_COMPONENT_VALID) == 0u)
+        {
+            continue;
+        }
+
         for (right_index = 0u;
-             right_index < right->component_count;
+             right_index < FPGA_PROTOCOL_COMPONENT_MAX;
              right_index++)
         {
             uint8_t right_bit = (uint8_t)(1u << right_index);
 
             if (((matched_right_mask & right_bit) == 0u)
+                && ((right->component[right_index].flags
+                     & FPGA_PROTOCOL_COMPONENT_VALID) != 0u)
                 && (left->component[left_index].harmonic_order
                     == right->component[right_index].harmonic_order)
                 && (hmi_task2_value_is_close(
@@ -862,6 +981,7 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
     {
         uint8_t byte = data[index];
         hmi_task2_diagnostics.rx_byte_count++;
+        hmi_task2_parse_page_reply_byte(byte);
 
         if (hmi_task2_command_state == 0u)
         {
@@ -891,6 +1011,12 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
         {
             if (byte == HMI_TASK2_COMMAND_TAIL)
             {
+                /*
+                 * 能收到按键命令就说明屏幕UART已经恢复。即使sendme回复尚未来得及
+                 * 到达，也立即重放屏幕缓存，避免用户按键后仍看不到旧测量结果。
+                 */
+                hmi_task2_mark_screen_alive(
+                    hmi_task2_diagnostics.current_page);
                 hmi_task2_diagnostics.last_command =
                     hmi_task2_command_candidate;
                 hmi_task2_diagnostics.command_count++;
@@ -1026,6 +1152,21 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
             return 1u;
         }
 
+        case HMI_TX_ACTION_PROBE:
+        {
+            uint16_t size = 0u;
+            if (hmi_task2_append_command(
+                    hmi_task2_tx_buffer,
+                    HMI_CHART_FRAME_MAX_BYTES,
+                    &size,
+                    "sendme") == 0u)
+            {
+                return 0u;
+            }
+            *frame_size = size;
+            return 1u;
+        }
+
         default:
             return 0u;
     }
@@ -1063,6 +1204,10 @@ static hmi_tx_action_t hmi_task2_select_action(void)
     }
     if (hmi_task2_work_valid == 0u)
     {
+        if ((int32_t)(HAL_GetTick() - hmi_task2_next_probe_ms) >= 0)
+        {
+            return HMI_TX_ACTION_PROBE;
+        }
         return HMI_TX_ACTION_NONE;
     }
 
@@ -1104,6 +1249,10 @@ static hmi_tx_action_t hmi_task2_select_action(void)
     {
         hmi_task2_begin_chart(HMI_CHART_MODE_SPECTRUM);
         return HMI_TX_ACTION_SPECTRUM;
+    }
+    if ((int32_t)(HAL_GetTick() - hmi_task2_next_probe_ms) >= 0)
+    {
+        return HMI_TX_ACTION_PROBE;
     }
     return HMI_TX_ACTION_NONE;
 }
@@ -1202,6 +1351,9 @@ static void hmi_task2_complete_action(void)
             }
             break;
 
+        case HMI_TX_ACTION_PROBE:
+            break;
+
         default:
             break;
     }
@@ -1260,6 +1412,12 @@ static uint8_t hmi_task2_start_tx(hmi_tx_action_t action)
         ? hmi_task2_work_snapshot.frame_sequence : 0u;
     hmi_task2_tx_started_ms = HAL_GetTick();
     hmi_task2_tx_active = 1u;
+    if (action == HMI_TX_ACTION_PROBE)
+    {
+        hmi_task2_diagnostics.probe_count++;
+        hmi_task2_next_probe_ms =
+            hmi_task2_tx_started_ms + HMI_TASK2_PROBE_INTERVAL_MS;
+    }
     hmi_task2_diagnostics.last_tx_bytes = frame_size;
     hmi_task2_diagnostics.tx_start_count++;
     return 1u;
@@ -1293,6 +1451,9 @@ void hmi_task2_init(void)
         measurement_calibration_is_enabled();
     hmi_task2_command_state = 0u;
     hmi_task2_command_candidate = 0u;
+    hmi_task2_page_reply_state = 0u;
+    hmi_task2_page_candidate = 0u;
+    hmi_task2_screen_seen_once = 0u;
     hmi_task2_rx_active = 0u;
     hmi_task2_tx_active = 0u;
     hmi_task2_initialize_done = 0u;
@@ -1310,6 +1471,8 @@ void hmi_task2_init(void)
     hmi_task2_chart_next_point = 0u;
     hmi_task2_tx_chart_emitted_points = 0u;
     hmi_task2_next_chart_tx_ms = 0u;
+    hmi_task2_next_probe_ms = HAL_GetTick();
+    hmi_task2_last_reply_ms = 0u;
     hmi_task2_diagnostics.requested_mode =
         (uint8_t)HMI_CHART_MODE_ONE_CYCLE;
     hmi_task2_diagnostics.calibration_enabled =
@@ -1386,6 +1549,17 @@ void hmi_task2_process(void)
     if (hmi_task2_uart == NULL)
     {
         return;
+    }
+
+    if ((hmi_task2_diagnostics.screen_online != 0u)
+        && ((uint32_t)(HAL_GetTick() - hmi_task2_last_reply_ms)
+            > HMI_TASK2_OFFLINE_TIMEOUT_MS))
+    {
+        /*
+         * 只标记离线，不立即清空工作快照。屏幕重新上线后仍可用最后一份稳定
+         * FPGA数据完整恢复文字、频谱及用户已经选择显示的时域波形。
+         */
+        hmi_task2_diagnostics.screen_online = 0u;
     }
 
     /*
