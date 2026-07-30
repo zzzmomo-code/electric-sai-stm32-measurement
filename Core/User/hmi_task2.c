@@ -362,7 +362,8 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
             &hmi_task2_work_snapshot.component[index];
 
         if ((index < hmi_task2_work_snapshot.component_count)
-            && ((component->flags & 0x01u) != 0u))
+            && ((component->flags
+                 & FPGA_PROTOCOL_COMPONENT_VALID) != 0u))
         {
             hmi_task2_format_frequency(component->frequency_mhz,
                                        frequency, sizeof(frequency));

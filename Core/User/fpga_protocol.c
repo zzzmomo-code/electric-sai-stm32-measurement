@@ -183,14 +183,23 @@ fpga_protocol_result_t fpga_protocol_parse_status(
     parsed.frame_length = fpga_protocol_read_u32_le(&data[8]);
     parsed.reserved = fpga_protocol_read_u16_le(&data[12]);
 
-    if ((parsed.reserved != 0u)
-        || (parsed.frame_length
-         < (FPGA_PROTOCOL_HEADER_BYTES + FPGA_PROTOCOL_FRAME_CRC_BYTES))
-        || (parsed.frame_length > FPGA_PROTOCOL_MAX_FRAME_BYTES))
+    if (parsed.reserved != 0u)
     {
-        return (parsed.reserved != 0u)
-                   ? FPGA_PROTOCOL_ERROR_RESERVED
-                   : FPGA_PROTOCOL_ERROR_LENGTH;
+        return FPGA_PROTOCOL_ERROR_RESERVED;
+    }
+
+    /*
+     * STM32-R2 允许在 DATA_READY=0 时用 GET_STATUS 做通信自检。此时
+     * FRAME_READY=0，FPGA 没有待取帧，frame_length 可以为 0；只有真正
+     * 声明 FRAME_READY 后，才要求长度落在完整帧的安全范围内。
+     */
+    if (((parsed.state & FPGA_PROTOCOL_STATUS_FRAME_READY) != 0u)
+        && ((parsed.frame_length
+             < (FPGA_PROTOCOL_HEADER_BYTES
+                + FPGA_PROTOCOL_FRAME_CRC_BYTES))
+            || (parsed.frame_length > FPGA_PROTOCOL_MAX_FRAME_BYTES)))
+    {
+        return FPGA_PROTOCOL_ERROR_LENGTH;
     }
 
     *status = parsed;
@@ -237,6 +246,7 @@ fpga_protocol_result_t fpga_protocol_parse_frame(
     uint16_t received_crc;
     uint16_t calculated_crc;
     uint8_t component_index;
+    uint8_t valid_component_count = 0u;
 
     if ((frame == NULL) || (header == NULL))
     {
@@ -349,16 +359,19 @@ fpga_protocol_result_t fpga_protocol_parse_frame(
         {
             return FPGA_PROTOCOL_ERROR_RESERVED;
         }
-        if ((component_index < parsed.component_count)
-            && ((component->flags & FPGA_PROTOCOL_COMPONENT_VALID) == 0u))
+        if ((component->flags & FPGA_PROTOCOL_COMPONENT_VALID) != 0u)
         {
-            return FPGA_PROTOCOL_ERROR_FIELD;
+            valid_component_count++;
         }
-        if ((component_index >= parsed.component_count)
-            && (component->flags != 0u))
-        {
-            return FPGA_PROTOCOL_ERROR_FIELD;
-        }
+    }
+    /*
+     * FPGA 的三个候选槽位独立有效且不保证连续排列，例如 VALID=101、
+     * component_count=2 是合法帧。这里只核对 VALID 位总数，不按槽位
+     * 下标推断有效性；后续转换层同样遍历全部三个槽位。
+     */
+    if (valid_component_count != parsed.component_count)
+    {
+        return FPGA_PROTOCOL_ERROR_FIELD;
     }
 
     expected_length = FPGA_PROTOCOL_HEADER_BYTES

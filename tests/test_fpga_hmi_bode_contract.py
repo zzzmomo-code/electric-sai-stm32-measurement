@@ -1,5 +1,8 @@
 import re
+import shutil
 import struct
+import subprocess
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -58,6 +61,12 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.chart_h = (ROOT / "Core/User/hmi_chart.h").read_text(
             encoding="utf-8"
         )
+        self.ioc = (ROOT / "h743_task2_20260727.ioc").read_text(
+            encoding="utf-8"
+        )
+        self.spi_generated = (ROOT / "Core/Src/spi.c").read_text(
+            encoding="utf-8"
+        )
 
     def test_crc_reference_vector_and_c_parameters_match_ccitt_false(self):
         self.assertEqual(crc16_ccitt_false(b"123456789"), 0x29B1)
@@ -113,9 +122,109 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("component->fft_delta_q15", self.protocol)
         self.assertIn("* FPGA_PROTOCOL_COMPONENT_BYTES", self.protocol)
 
+    def test_component_slots_are_independent_and_packed_for_hmi(self):
+        self.assertIn(
+            "uint8_t valid_component_count = 0u;", self.protocol
+        )
+        self.assertIn(
+            "valid_component_count != parsed.component_count",
+            self.protocol,
+        )
+        self.assertNotIn(
+            "component_index < parsed.component_count", self.protocol
+        )
+        self.assertIn(
+            "uint8_t output_component_index = 0u;", self.conversion
+        )
+        self.assertIn(
+            "target->component[output_component_index] = *component;",
+            self.conversion,
+        )
+        self.assertIn(
+            "target->component_count = output_component_index;",
+            self.conversion,
+        )
+        expected_popcounts = {
+            0b000: 0,
+            0b001: 1,
+            0b010: 1,
+            0b100: 1,
+            0b011: 2,
+            0b101: 2,
+            0b110: 2,
+            0b111: 3,
+        }
+        for valid_pattern, expected_count in expected_popcounts.items():
+            flags = tuple(
+                0x01 if valid_pattern & (1 << index) else 0x00
+                for index in range(3)
+            )
+            self.assertEqual(
+                sum(bool(value & 0x01) for value in flags),
+                expected_count,
+            )
+
+    def test_all_eight_component_valid_patterns_execute_in_c_parser(self):
+        compiler = shutil.which("gcc")
+        if compiler is None:
+            self.skipTest("host gcc is not installed")
+
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            executable = (
+                Path(temporary_directory) / "fpga_protocol_slots_test.exe"
+            )
+            build = subprocess.run(
+                [
+                    compiler,
+                    "-std=c11",
+                    "-Wall",
+                    "-Wextra",
+                    "-Werror",
+                    "-I",
+                    str(ROOT / "Core/User"),
+                    str(
+                        ROOT
+                        / "tests/fpga_protocol_component_slots_host_test.c"
+                    ),
+                    str(ROOT / "Core/User/fpga_protocol.c"),
+                    "-o",
+                    str(executable),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                build.returncode,
+                0,
+                msg=build.stdout + build.stderr,
+            )
+            run = subprocess.run(
+                [str(executable)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                run.returncode,
+                0,
+                msg=run.stdout + run.stderr,
+            )
+
     def test_latest_frozen_protocol_reference_vectors(self):
         sequence = 0x01020304
         frame_length = 128 + 75 * 2 + 1312 * 2 + 2
+        valid_status = bytearray.fromhex(
+            "5A A5 01 01 04 03 02 01 58 0B 00 00 00 00"
+        )
+        valid_status += struct.pack(
+            "<H", crc16_ccitt_false(valid_status)
+        )
+        self.assertEqual(
+            valid_status.hex(" ").upper(),
+            "5A A5 01 01 04 03 02 01 58 0B 00 00 00 00 2E 7C",
+        )
+
         status = bytearray.fromhex(
             "5A A5 01 11 04 03 02 01 58 0B 00 00 00 00"
         )
@@ -154,6 +263,44 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("HAL_SPI_TransmitReceive_DMA", self.link)
         self.assertIn("fpga_link_dummy_tx_cache_line", self.link)
 
+    def test_spi3_is_generated_for_fixed_20mhz_mode0_soft_nss(self):
+        for setting in (
+            "SPI3.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_4",
+            "SPI3.CalculateBaudRate=20.0 MBits/s",
+            "SPI3.DataSize=SPI_DATASIZE_8BIT",
+            "SPI3.Direction=SPI_DIRECTION_2LINES",
+            "SPI3.Mode=SPI_MODE_MASTER",
+            "SPI3.NSSPMode=SPI_NSS_PULSE_DISABLE",
+        ):
+            self.assertIn(setting, self.ioc)
+        for setting in (
+            "hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;",
+            "hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;",
+            "hspi3.Init.NSS = SPI_NSS_SOFT;",
+            "hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;",
+            "hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;",
+        ):
+            self.assertIn(setting, self.spi_generated)
+
+    def test_idle_status_can_use_zero_length_but_ready_status_cannot(self):
+        self.assertIn(
+            "parsed.state & FPGA_PROTOCOL_STATUS_FRAME_READY",
+            self.protocol,
+        )
+        self.assertIn(
+            "parsed.frame_length > FPGA_PROTOCOL_MAX_FRAME_BYTES",
+            self.protocol,
+        )
+        status_without_frame = bytearray.fromhex(
+            "5A A5 01 00 00 00 00 00 00 00 00 00 00 00"
+        )
+        status_without_frame += struct.pack(
+            "<H", crc16_ccitt_false(status_without_frame)
+        )
+        self.assertEqual(len(status_without_frame), 16)
+        self.assertEqual(status_without_frame[3], 0)
+        self.assertEqual(struct.unpack_from("<I", status_without_frame, 8)[0], 0)
+
     def test_spi_dma_buffers_are_static_aligned_and_cache_maintained(self):
         self.assertIn("__attribute__((aligned(32)))", self.link)
         self.assertIn("SCB_CleanInvalidateDCache_by_Addr", self.link)
@@ -165,7 +312,7 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("FPGA_LINK_MAX_READ_RETRIES      3u", self.link)
         error_start = self.link.index("if (result != FPGA_PROTOCOL_OK)")
         ack_start = self.link.index(
-            "(void)fpga_link_send_ack(header.frame_seq);"
+            "if (fpga_link_send_ack(header.frame_seq) == 0u)"
         )
         self.assertLess(error_start, ack_start)
         error_block = self.link[error_start:ack_start]
@@ -173,6 +320,34 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("FPGA_PROTOCOL_STATUS_RESULT_INVALID", self.link)
         self.assertIn("FPGA_PROTOCOL_HEADER_MEASUREMENT_VALID", self.link)
         self.assertIn("result_invalid_count++", self.link)
+
+    def test_ack_waits_for_observed_data_ready_low(self):
+        self.assertIn(
+            "FPGA_LINK_STATE_WAIT_DATA_READY_LOW", self.link_h
+        )
+        self.assertIn(
+            "FPGA_LINK_ACK_READY_LOW_TIMEOUT_MS 10u", self.link
+        )
+        self.assertIn(
+            "fpga_link_observe_ready_low_fast()", self.link
+        )
+        self.assertIn(
+            "ack_ready_low_count++", self.link
+        )
+        self.assertIn(
+            "ack_ready_low_timeout_count++", self.link
+        )
+        ack_call = self.link.index(
+            "if (fpga_link_send_ack(header.frame_seq) == 0u)"
+        )
+        wait_state = self.link.index(
+            "FPGA_LINK_STATE_WAIT_DATA_READY_LOW", ack_call
+        )
+        self.assertLess(ack_call, wait_state)
+        self.assertIn(
+            "fpga_link_next_attempt_ms = now;",
+            self.link[wait_state:],
+        )
 
     def test_spi_callbacks_only_set_their_one_event_flag(self):
         expected = (

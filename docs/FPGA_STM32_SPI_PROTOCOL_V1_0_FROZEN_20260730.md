@@ -1,9 +1,11 @@
-# FPGA—STM32 SPI 通信协议 V1.0（2026-07-30 最终冻结版）
+# FPGA—STM32 SPI 通信协议 V1.0（2026-07-30 STM32-R2 对齐冻结版）
 
 ## 0. 文档地位
 
 本文是 FPGA 与 STM32H743 之间的最终字节级接口约定，已经与 FPGA 队友提供的
-`FPGA-SPI.md` 逐字段对齐，并与当前 STM32 固件实现一致。
+`FPGA_STM32_SPI_PROTOCOL_V1_0_STM32.md`（STM32-R2）逐字段对齐，并与
+当前 STM32 固件实现一致。STM32-R2 不改变 V1.0 线协议，只收紧 20 MHz、
+ACK 后 DATA_READY 确认、DMA/Cache 和联调验收要求。
 
 - 协议版本：V1.0；
 - 状态：冻结；
@@ -27,7 +29,7 @@
 - 3.3 V 逻辑电平；
 - STM32H743 为 SPI Master，FPGA 为 SPI Slave；
 - SPI Mode 0：CPOL=0、CPHA=0；
-- 初始 SCK 为 20 MHz；
+- 联调、运行和验收 SCK 固定为 20 MHz，周期 50 ns；
 - 8 bit 数据宽度，MSB-first；
 - 多字节整数在字节流中采用 little-endian；
 - `CS_N=1` 时 FPGA 的 MISO 必须为高阻态；
@@ -96,7 +98,7 @@ MISO:
 | bit | 名称 | 含义 |
 |---:|---|---|
 | 0 | `FRAME_READY` | 当前有稳定完整帧 |
-| 1 | `FPGA_BUSY` | FPGA 正在计算 |
+| 1 | `FPGA_BUSY` | FPGA 正在构建或发布测量帧，不代表全部 FFT/IQ 计算活动 |
 | 2 | `ADC_OTR` | ADC 出现超量程 |
 | 3 | `FRAME_DROPPED` | 出现过快照丢弃 |
 | 4 | `RESULT_INVALID` | 当前测量结果无效 |
@@ -117,6 +119,23 @@ MISO: 00 00 + frame[0] ... frame[frame_length-1]
 - 下次 READ_FRAME 必须重新从 `frame[0]` 开始；
 - STM32 只在完整帧 CRC 与全部格式检查通过后发送 ACK。
 
+### 5.1 STM32 当前 DMA 分段实现
+
+线上事务始终是连续的 `A5 02 + frame_length 个 dummy`，总线字节数为
+`frame_length+2`。当前 STM32 工程为了配合 TX DMA 的
+`Memory Increment Disable` 配置，在同一次 CS 低电平期间分两次调用 HAL：
+
+1. 阻塞发送 2 字节 `A5 02`，丢弃命令阶段收到的字节；
+2. CS 不抬高，立即启动 `frame_length` 字节全双工 DMA，TX 重复发送一个
+   `00`，RX 缓冲区从下标 0 接收 `frame[0]`。
+
+因此 HAL 调用虽然分段，FPGA 在线上看到的仍是本节规定的一次连续事务。FPGA
+不得依赖 STM32 内部的 HAL/DMA 分段方式，只需按 CS、SCK 和字节位置响应。
+
+若后续改成单次 `frame_length+2` 全 DMA，STM32 必须先在 `.ioc` 中把 SPI3 TX
+DMA 的 Memory Increment 改为 Enable，再使用 32 字节对齐的 10256 字节 TX/RX
+缓冲区；此时测量帧从 RX 下标 2 开始。该优化不改变线协议。
+
 ## 6. ACK_FRAME
 
 ```text
@@ -135,7 +154,9 @@ MISO: 00 00 00   00   00   00   00   00
 - 高电平表示存在完整、稳定、可重复读取的帧；
 - 发布帧后保持高电平，直到收到正确 ACK；
 - STM32 同时使用 EXTI 上升沿和 GPIO 电平检查，避免漏掉上电前已经拉高的情况；
-- 正确 ACK 后，FPGA 必须在 2 个 50 MHz 时钟周期内拉低 DATA_READY；
+- 正确 ACK 后，FPGA 经跨时钟域同步拉低 DATA_READY；
+- STM32 必须实际读到 DATA_READY 为低，不能依赖固定两个 FPGA 时钟周期；
+- STM32 等待低电平超时后重新 GET_STATUS，不得盲目认为 ACK 成功；
 - 即使内部已有下一帧，重新拉高前也必须保持低至少 50 个 50 MHz 周期，即 1 µs；
 - STM32 读取期间 FPGA 不得覆盖当前快照；
 - `CS_N` 上升只结束事务，不释放快照；只有正确 ACK 能释放快照。
@@ -216,7 +237,7 @@ header `flags`：
 | `+0x00` | 4 | frequency_mHz | 精测频率，mHz |
 | `+0x04` | 4 | amplitude_peak_uV | 正弦峰值幅度，µV |
 | `+0x08` | 2 | fft_bin | FFT 粗定位 bin |
-| `+0x0A` | 2 | fft_delta_q15 | 有符号 Q1.15 插值偏移 |
+| `+0x0A` | 2 | fft_delta_q15 | 有符号 Q1.15 插值偏移；当前 RTL V1.0 固定发送 0 |
 | `+0x0C` | 1 | harmonic_order | 1=基波，2/3/...=谐波 |
 | `+0x0D` | 1 | flags | 见下表 |
 | `+0x0E` | 2 | reserved | 固定为 0 |
@@ -232,10 +253,20 @@ header `flags`：
 
 STM32 V1.0 的严格接收要求：
 
-- 前 `component_count` 个分量必须设置 `VALID`；
-- `component_count` 之后的未使用分量 `flags` 必须为 0；
+- 三个候选槽位独立有效，有效分量不保证连续排列，也不保证按频率、幅度或
+  谐波次数排序；
+- `component_count` 必须等于三个 `component.flags.VALID` 位的置位数量；
+- STM32 遍历 `component[0..2]`，只处理 `VALID=1` 的槽位；
+- `VALID=0` 的槽位不参与计算和显示；
 - 三个分量的 `reserved` 均必须为 0；
 - 所有未定义 header/component flag 均必须为 0。
+
+因此 `VALID=101、component_count=2` 是合法输出，STM32 不得按“前 N 个连续
+有效”拒绝该帧。
+
+STM32 不得假定 `component[0]` 一定是基波。需要在 component 槽位中识别基波
+时，条件是 `VALID=1 && harmonic_order=1`；页面的基频数值直接使用帧头
+`fundamental_mHz`。
 
 ### 8.3 时域数组
 
@@ -400,8 +431,10 @@ CRC = 0xDB1E
 - [ ] 在正确 ACK 前不覆盖当前快照；
 - [ ] ACK 序号和 CRC 均正确才释放；
 - [ ] DATA_READY 正确 ACK 后先拉低，再发布下一帧；
+- [ ] STM32 ACK 后实际观察 DATA_READY 低电平，超时则重新 GET_STATUS；
 - [ ] 128 字节头偏移与本文完全一致；
 - [ ] component 固定为 16 字节；
+- [ ] `component_count` 等于三个独立 VALID 位数量，不要求连续排列；
 - [ ] `dc_uV` 位于 `0x3C`，`fundamental_mHz` 位于 `0x40`；
 - [ ] 所有 reserved 和保留 flag 发送为 0；
 - [ ] 最小/最大长度公式正确；

@@ -37,10 +37,10 @@ typedef struct
     uint32_t vrms_uv; /**< 真有效值，单位 µV。 */
     uint32_t fundamental_mhz; /**< 基频，单位 0.001 Hz。 */
     int32_t dc_offset_uv; /**< 直流偏置，单位 µV。 */
-    fpga_protocol_component_t component[FPGA_PROTOCOL_COMPONENT_MAX]; /**< 分量参数。 */
+    fpga_protocol_component_t component[FPGA_PROTOCOL_COMPONENT_MAX]; /**< 已按 VALID 压紧的分量参数。 */
     uint32_t dropped_frames; /**< FPGA 累计丢帧计数。 */
     uint16_t calibration_revision; /**< FPGA 校准版本。 */
-    uint8_t component_count; /**< 有效分量个数，范围 1~3。 */
+    uint8_t component_count; /**< 有效分量个数，范围 0~3。 */
     uint8_t valid; /**< 非零表示整份显示快照已完整发布。 */
 } measurement_display_snapshot_t;
 

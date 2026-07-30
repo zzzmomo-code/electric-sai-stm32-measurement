@@ -27,7 +27,8 @@
 typedef enum
 {
     FPGA_LINK_STATE_IDLE = 0,
-    FPGA_LINK_STATE_WAIT_FRAME_DMA
+    FPGA_LINK_STATE_WAIT_FRAME_DMA,
+    FPGA_LINK_STATE_WAIT_DATA_READY_LOW
 } fpga_link_state_t;
 
 /** 一份已经通过格式和 CRC 校验的完整测量快照。 */
@@ -47,6 +48,7 @@ typedef struct
     uint32_t status_valid_count; /**< magic、版本、长度和 CRC 均正确的状态数。 */
     uint32_t status_error_count; /**< 所有状态响应错误的总数。 */
     uint32_t status_crc_error_count; /**< 状态响应 CRC 错误数。 */
+    uint32_t status_not_ready_count; /**< 状态合法但 FRAME_READY=0 的次数。 */
     uint32_t frame_read_count; /**< 已发起 READ_FRAME 的次数，包含重试。 */
     uint32_t frame_dma_start_count; /**< 成功启动帧 DMA 的次数。 */
     uint32_t frame_dma_complete_count; /**< 帧 DMA 正常完成次数。 */
@@ -62,6 +64,8 @@ typedef struct
     uint32_t fpga_dropped_report_count; /**< FPGA 状态报告内部丢帧的次数。 */
     uint32_t ack_count; /**< ACK_FRAME 成功发送次数。 */
     uint32_t ack_error_count; /**< ACK_FRAME HAL 发送失败次数。 */
+    uint32_t ack_ready_low_count; /**< ACK 后实际观察到 DATA_READY 拉低的次数。 */
+    uint32_t ack_ready_low_timeout_count; /**< ACK 后等待 DATA_READY 拉低超时次数。 */
     uint32_t published_snapshot_count; /**< 成功发布给显示层的新快照数。 */
     uint32_t last_frame_sequence; /**< 最近一帧通过校验的序号。 */
     uint32_t last_frame_length; /**< 最近一帧通过校验的总字节数。 */

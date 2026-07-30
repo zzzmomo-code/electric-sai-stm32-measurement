@@ -88,7 +88,8 @@ CubeMX 重新生成前必须勾选
 
 最高参考是
 `docs/FPGA_STM32_SPI_PROTOCOL_V1_0_FROZEN_20260730.md`。该文档已经按 FPGA
-队友最新的 `D:\QQ\FPGA-SPI.md` 对齐，并包含双方联调 CRC 测试向量。
+队友最新的 `D:\QQ\FPGA_STM32_SPI_PROTOCOL_V1_0_STM32.md`（STM32-R2）
+再次对齐，并保留双方联调 CRC 测试向量。
 
 每条读命令在同一次 CS 事务中完成：
 
@@ -134,6 +135,13 @@ V1 固定约束：
 - `spectrum_count=1312`，频谱数据为 10 µV_peak/LSB；
 - `fft_length=4096`，`bin_spacing_mHz=381470`；
 - 最大帧长 10254 字节。
+
+三个 `component` 是 FPGA 独立候选槽位，有效槽位不保证连续。STM32 遍历
+`component[0..2]`，要求 `component_count` 等于三个 `VALID` 位的置位数，
+只把 `VALID=1` 的槽位压紧后交给 `t_comp1`～`t_comp3` 显示。例如
+`VALID=101、component_count=2` 是合法帧，不会被拒收。
+槽位也不保证按频率、幅度或谐波次数排序，代码不会把 `component[0]` 当作
+基波；基频文本直接采用帧头 `fundamental_mHz`。
 
 CRC 或长度错误时不发送 ACK，最多重新读取三次。`RESULT_INVALID` 帧会 ACK 释放
 FPGA 缓冲区，但不会覆盖上一份有效显示快照。
@@ -333,7 +341,10 @@ D-Cache、解析头部并校验完整帧 CRC。超时、SPI 错误或坏 CRC 都
 A5 03 + frame_seq小端4字节 + CRC16小端2字节
 ```
 
-只有 ACK 成功后 FPGA 才能释放当前缓冲区。代码把解析结果先写入“非活动”快照，
+只有 ACK 成功后 FPGA 才能释放当前缓冲区。STM32 发送 ACK 后会实际读取 PD1，
+只有观察到 DATA_READY 拉低才确认本次 ACK 完成；10 ms 内仍为高会记录超时并
+重新执行 GET_STATUS，而不会假定固定两个 FPGA 时钟后已经释放。代码把解析结果
+先写入“非活动”快照，
 执行 `__DMB()` 后再切换活动索引。读者因此只会看到完整旧快照或完整新快照，
 不会看到复制到一半的数据。
 
@@ -466,6 +477,7 @@ hmi_task2_diagnostics
 | `status_read_count` | 有数据时增加 | 不增加：主循环或 DATA_READY 未进入链路 |
 | `status_valid_count` | 状态正确时增加 | 不增加：检查同一 CS 返回时序和状态格式 |
 | `status_crc_error_count` | 应保持 0 | 增加：字节错位、端序或信号完整性问题 |
+| `status_not_ready_count` | DATA_READY/状态竞争时可偶增 | 状态有效但 FRAME_READY=0，不属于 CRC/格式错误 |
 | `frame_dma_start_count` | 每个读取尝试增加 | 不增加：状态未通过或 DMA 启动失败 |
 | `frame_dma_complete_count` | 应跟随启动数 | 落后：SPI/DMA 中断或时钟存在问题 |
 | `frame_dma_timeout_count` | 应保持 0 | 增加：FPGA 未持续输出、DMA 未完成 |
@@ -474,6 +486,8 @@ hmi_task2_diagnostics
 | `frame_retry_count` | 正常应为 0 | 增加：STM32 正在不 ACK 地重读坏帧 |
 | `frame_valid_count` | 每个正确帧增加 | 表示完整格式和 CRC 已通过 |
 | `ack_count` | 通常跟随已处理帧 | 不增加：ACK SPI 发送失败 |
+| `ack_ready_low_count` | 应跟随 `ack_count` | 表示实际观察到 DATA_READY 拉低 |
+| `ack_ready_low_timeout_count` | 应保持 0 | 增加：ACK 未被 FPGA 接受、接线或时序异常 |
 | `published_snapshot_count` | 有效结果时增加 | 帧有效但不增加：检查 RESULT_INVALID |
 | `last_protocol_result` | 正常为 OK | 可定位最近一次具体协议错误 |
 
@@ -515,7 +529,7 @@ hmi_task2_diagnostics
 - 最大 FPGA 帧约 10.3 KB，SPI 20 MHz 纯线缆时间约 4.1 ms；
 - 每条 350 点普通曲线命令最坏不超过 7.8 KB，512000 baud 纯线缆时间约 151 ms；
 - 三图后台预装需要多次 DMA，但按键正常路径只有 `vis` 命令；
-- 最近一次完整 ELF 链接结果：`text=63028`、`data=472`、`bss=47520` 字节；
+- 最近一次完整 ELF 链接结果：`text=63192`、`data=472`、`bss=47616` 字节；
 - `.bss` 主要来自双测量快照、原始帧和 HMI TX 缓冲区，H743 RAM 仍有余量。
 
 ## 编译、烧录和联调
@@ -530,8 +544,10 @@ hmi_task2_diagnostics
 
 关键诊断量：
 
-- `status_valid_count`、`frame_valid_count`、`ack_count` 应持续增加；
+- `status_valid_count`、`frame_valid_count`、`ack_count`、
+  `ack_ready_low_count` 应持续增加；
 - `status_crc_error_count`、`frame_crc_error_count`、`frame_dma_timeout_count` 应保持 0；
+- `ack_ready_low_timeout_count` 应保持 0；
 - `frame_retry_count` 只应在坏帧/超时后增加；
 - `preload_complete_count` 应随完整屏幕快照增加；
 - `command_count` 应随两个按钮操作增加；
@@ -539,20 +555,21 @@ hmi_task2_diagnostics
 
 ## 当前验证边界
 
-- 2026-07-29 使用 CubeIDE 随附 GNU Tools for STM32 13.3 完成 Debug 全量编译和 ELF
-  链接：`text=64004`、`data=472`、`bss=47520`，构建成功；
-- `python -m unittest discover -s tests -v` 共执行 50 项，44 项通过；G 题 SPI
-  协议、CRC、DMA/D-Cache、350 点转换等合同均通过；
-- 6 项未通过中，5 项仍检查历史 ADC/DAC/DDS/TIM 运行链路，1 项要求关闭自检，
-  而当前因 FPGA 尚未接入而有意保持 `HMI_CHART_SELF_TEST_ENABLE=1`；
+- 2026-07-30 使用 CubeIDE 随附 GNU Tools for STM32 13.3 完成 Debug 实际编译和 ELF
+  链接：`text=63192`、`data=472`、`bss=47616`，构建成功；
+- SPI V1.0/R2 专项合同测试 16 项全部通过；其中主机测试直接编译并运行
+  `fpga_protocol.c`，验证 `000`～`111` 全部 8 种 component VALID 排列均按
+  `component_count=popcount(VALID)` 正确接收；
+- `python -m unittest discover -s tests -v` 共执行 56 项，51 项通过；
+  5 项未通过仍检查当前 FPGA+HMI 运行路径之外的历史 ADC/DAC/DDS/TIM 链路，
+  本次未修改这些非活动模块；
 - 串口屏 USART1 收发、隐藏曲线预装、按键命令、一周期/三周期切换及独立频谱显示
   已用固件自检数据完成实板验证；
 - 曲线纵坐标已限制在 210 像素控件的安全范围内，当前映射范围为 8～201，避免
   淘晶驰单字节点超过控件高度后产生削顶；
 - FPGA SPI 电气时序、DMA/D-Cache、正式帧解析、测量精度和整机 2 秒指标仍待
   FPGA 完成后进行实板验证；
-- 当前为串口屏联调模式 `HMI_CHART_SELF_TEST_ENABLE=1`；确认 350 点布局后必须改回 `0`，
-  再接入 FPGA 正式数据；
+- 当前 `HMI_CHART_SELF_TEST_ENABLE=0`，已切回 FPGA 正式数据主链路；
 - 当前 `.ioc`、SPI3/USART1/DMA/GPIO 生成配置已作为本功能基线保留；
 - IDE 工作区元数据、Debug 构建产物和本机启动配置不属于功能源码，不应混入提交；
 - 本功能只在 `codex/fpga-hmi-bode` 分支开发和推送，不覆盖 `main`、`h743_pre1`

@@ -273,6 +273,7 @@ uint8_t measurement_conversion_update(
     uint16_t one_cycle_start;
     int16_t time_minimum;
     int16_t time_maximum;
+    uint8_t output_component_index = 0u;
 
     if ((source == NULL) || (source->valid == 0u)
         || (source->header.time_count == 0u)
@@ -351,7 +352,6 @@ uint8_t measurement_conversion_update(
     target->vrms_uv = source->header.vrms_uv;
     target->fundamental_mhz = source->header.fundamental_mhz;
     target->dc_offset_uv = source->header.dc_uv;
-    target->component_count = source->header.component_count;
     target->dropped_frames = source->header.dropped_frame_count;
     target->calibration_revision =
         source->header.calibration_version;
@@ -359,8 +359,21 @@ uint8_t measurement_conversion_update(
          index < FPGA_PROTOCOL_COMPONENT_MAX;
          index++)
     {
-        target->component[index] = source->header.component[index];
+        const fpga_protocol_component_t *component =
+            &source->header.component[index];
+
+        /*
+         * FPGA 三个候选槽位独立有效，可能出现 101 这种非连续排列。
+         * 显示快照把所有 VALID 槽位依次压紧，HMI 才能稳定使用
+         * t_comp1~t_comp3；无效槽位完全不参与参数显示。
+         */
+        if ((component->flags & FPGA_PROTOCOL_COMPONENT_VALID) != 0u)
+        {
+            target->component[output_component_index] = *component;
+            output_component_index++;
+        }
     }
+    target->component_count = output_component_index;
 
     target->valid = 1u;
     /* 保证数组和参数先写完，再让读取者看到新的活动索引。 */

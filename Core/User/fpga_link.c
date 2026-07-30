@@ -19,6 +19,8 @@
 #define FPGA_LINK_DMA_TIMEOUT_MS        20u
 #define FPGA_LINK_RETRY_DELAY_MS        2u
 #define FPGA_LINK_MAX_READ_RETRIES      3u
+#define FPGA_LINK_ACK_READY_LOW_TIMEOUT_MS 10u
+#define FPGA_LINK_ACK_READY_LOW_FAST_POLLS 512u
 #define FPGA_LINK_DMA_BUFFER_BYTES \
     ((FPGA_PROTOCOL_MAX_FRAME_BYTES + 31u) & ~31u)
 
@@ -42,6 +44,7 @@ static uint8_t fpga_link_status_response[FPGA_PROTOCOL_STATUS_BYTES];
 static fpga_protocol_status_t fpga_link_current_status;
 static SPI_HandleTypeDef *fpga_link_spi;
 static uint32_t fpga_link_dma_deadline_ms;
+static uint32_t fpga_link_ack_deadline_ms;
 static uint32_t fpga_link_next_attempt_ms;
 static uint8_t fpga_link_read_retry;
 static uint8_t fpga_link_cs_active;
@@ -63,6 +66,10 @@ volatile fpga_link_diagnostics_t fpga_link_diagnostics;
  *   ├─ DMA 完成 -> 拉高 CS、校验完整帧、发布快照、发送 ACK
  *   ├─ 帧格式/CRC 错 -> 不发 ACK，同一稳定 FPGA 帧最多重读 3 次
  *   └─ DMA 错误/超时 -> 中止 SPI、拉高 CS、回到 IDLE
+ *
+ * WAIT_DATA_READY_LOW
+ *   ├─ 实际读到 PD1 为低 -> 确认 ACK 已被 FPGA 接受，回到 IDLE
+ *   └─ 10 ms 内仍为高 -> 记录超时并回到 IDLE，下一轮重新 GET_STATUS
  *
  * 中断回调只产生 ready/complete/error 三个事件；全部 HAL 调用、CRC 和数据复制
  * 都在 fpga_link_process() 中完成，因此不会在中断里阻塞约 4 ms 的大帧传输。
@@ -116,6 +123,41 @@ static void fpga_link_invalidate_frame_cache(uint32_t length)
     SCB_InvalidateDCache_by_Addr(
         (uint32_t *)fpga_link_frame_buffer,
         (int32_t)rounded_length);
+}
+
+/**
+ * @brief 读取 FPGA DATA_READY 当前实际电平。
+ * @param 无。
+ * @return 高电平返回 1，低电平返回 0。
+ */
+static uint8_t fpga_link_data_ready_is_high(void)
+{
+    return (HAL_GPIO_ReadPin(
+                FPGA_DATA_READY_GPIO_Port,
+                FPGA_DATA_READY_Pin) == GPIO_PIN_SET) ? 1u : 0u;
+}
+
+/**
+ * @brief ACK 发送完成后短时间连续采样 DATA_READY，捕获至少 1 us 的低脉冲。
+ * @param 无。
+ * @return 观察到低电平返回 1；快速采样窗口内仍为高返回 0。
+ * @note STM32-R2 要求依据实际 GPIO 电平确认 ACK，不能假定固定两个 FPGA 时钟后已拉低。
+ */
+static uint8_t fpga_link_observe_ready_low_fast(void)
+{
+    uint32_t poll;
+
+    for (poll = 0u;
+         poll < FPGA_LINK_ACK_READY_LOW_FAST_POLLS;
+         poll++)
+    {
+        if (fpga_link_data_ready_is_high() == 0u)
+        {
+            return 1u;
+        }
+    }
+
+    return 0u;
 }
 
 /**
@@ -456,9 +498,30 @@ static void fpga_link_finish_frame(uint32_t now)
         fpga_link_publish_snapshot(&header);
     }
 
-    (void)fpga_link_send_ack(header.frame_seq);
-    fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
-    fpga_link_next_attempt_ms = now + 1u;
+    if (fpga_link_send_ack(header.frame_seq) == 0u)
+    {
+        fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+        fpga_link_next_attempt_ms = now + FPGA_LINK_RETRY_DELAY_MS;
+        return;
+    }
+
+    /*
+     * 正确 ACK 后不立即读取下一帧。先连续采样一次，以可靠捕获 FPGA 保证
+     * 至少 1 us 的 DATA_READY 低电平；若此窗口仍未观察到低电平，则转入
+     * 非阻塞等待状态，超时后重新 GET_STATUS，而不是盲目认定 ACK 成功。
+     */
+    if (fpga_link_observe_ready_low_fast() != 0u)
+    {
+        fpga_link_diagnostics.ack_ready_low_count++;
+        fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+        fpga_link_next_attempt_ms = now;
+        return;
+    }
+
+    fpga_link_diagnostics.state =
+        FPGA_LINK_STATE_WAIT_DATA_READY_LOW;
+    fpga_link_ack_deadline_ms =
+        now + FPGA_LINK_ACK_READY_LOW_TIMEOUT_MS;
 }
 
 /**
@@ -487,6 +550,7 @@ void fpga_link_init(void)
     fpga_link_spi = NULL;
     fpga_link_active_snapshot_index = 0u;
     fpga_link_dma_deadline_ms = 0u;
+    fpga_link_ack_deadline_ms = 0u;
     fpga_link_next_attempt_ms = 0u;
     fpga_link_read_retry = 0u;
     fpga_link_cs_active = 0u;
@@ -581,9 +645,26 @@ void fpga_link_process(void)
         return;
     }
 
-    data_ready_level = (HAL_GPIO_ReadPin(
-        FPGA_DATA_READY_GPIO_Port,
-        FPGA_DATA_READY_Pin) == GPIO_PIN_SET) ? 1u : 0u;
+    if (fpga_link_diagnostics.state
+        == FPGA_LINK_STATE_WAIT_DATA_READY_LOW)
+    {
+        if (fpga_link_data_ready_is_high() == 0u)
+        {
+            fpga_link_diagnostics.ack_ready_low_count++;
+            fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+            fpga_link_next_attempt_ms = now;
+            return;
+        }
+        if ((int32_t)(now - fpga_link_ack_deadline_ms) >= 0)
+        {
+            fpga_link_diagnostics.ack_ready_low_timeout_count++;
+            fpga_link_diagnostics.state = FPGA_LINK_STATE_IDLE;
+            fpga_link_next_attempt_ms = now;
+        }
+        return;
+    }
+
+    data_ready_level = fpga_link_data_ready_is_high();
     if ((ready_irq == 0u) && (data_ready_level == 0u))
     {
         return;
@@ -609,7 +690,7 @@ void fpga_link_process(void)
     if ((fpga_link_current_status.state
          & FPGA_PROTOCOL_STATUS_FRAME_READY) == 0u)
     {
-        fpga_link_diagnostics.status_error_count++;
+        fpga_link_diagnostics.status_not_ready_count++;
         fpga_link_next_attempt_ms = now + FPGA_LINK_RETRY_DELAY_MS;
         return;
     }
