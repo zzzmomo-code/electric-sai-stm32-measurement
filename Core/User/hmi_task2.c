@@ -1,10 +1,10 @@
 /**
  * @file hmi_task2.c
- * @brief G 题淘晶驰串口屏双时域常显、稳定锁存刷新与前景切换实现。
+ * @brief G 题淘晶驰串口屏双时域同步刷新、稳定平均与显示切换实现。
  *
- * 模块用途：连续接收测量快照，首帧立即显示、后续连续三帧稳定后锁存；
+ * 模块用途：连续接收测量快照，首帧立即显示、后续连续五帧稳定后平均锁存；
  *          每份接受的稳定快照同时刷新数字、一周期、三周期和频谱。
- *          一周期/三周期键只切换重叠控件前景，启动键仅强制重画三条曲线。
+ *          一周期/三周期键只切换重叠控件显示，启动键仅强制重画三条曲线。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init() 并绑定 huart1。
@@ -24,7 +24,7 @@
 #define HMI_TASK2_COMMAND_START       0x04u
 #define HMI_TASK2_COMMAND_MODE_UNUSED 0x10u
 #define HMI_TASK2_COMMAND_CALIBRATION 0x20u
-#define HMI_TASK2_STABLE_FRAME_COUNT  3u
+#define HMI_TASK2_STABLE_FRAME_COUNT  5u
 #define HMI_TASK2_FREQUENCY_FLOOR_MHZ 100000u
 #define HMI_TASK2_VOLTAGE_FLOOR_UV    1000u
 #define HMI_TASK2_CHART_PASS_COUNT    2u
@@ -36,12 +36,12 @@
 /*
  * 稳定锁存显示状态机的核心规则：
  *
- * 1. 上电立即显示两个重叠时域控件和独立频谱，默认一周期处于前景；
- * 2. 首份有效数据立即成为工作快照，后续变化需连续三帧稳定；
+ * 1. 上电默认显示一周期控件和独立频谱，三周期控件同步接收缓存数据；
+ * 2. 首份有效数据立即成为工作快照，后续连续五帧稳定后平均文字参数；
  * 3. 每份接受的工作快照依次刷新数字、一周期、三周期和频谱；
  * 4. 曲线按 32 点小批量发送，整条曲线完成后才记为“已装载”；
- * 5. 周期键只选择前景，不清空或重画曲线；启动键只强制重画三条曲线；
- * 6. 三条曲线完成后再恢复用户选择的前景，避免分批发送期间反复切层；
+ * 5. 周期键只切换显示，不清空或重画曲线；启动键只强制重画三条曲线；
+ * 6. 三条曲线完成后再恢复用户选择，避免分批发送期间反复切换；
  * 7. 一份工作快照未显示完整前不换新快照，避免 FPGA 持续产帧导致当前帧永远发不完。
  *
  * 中断回调只写事件标志，所有解析、构帧和状态迁移均在主循环执行。
@@ -60,6 +60,17 @@ typedef enum
     HMI_TX_ACTION_CALIBRATION,
     HMI_TX_ACTION_PROBE
 } hmi_tx_action_t;
+
+/** 连续稳定帧的文字参数累加器；波形和频谱不做跨帧平均。 */
+typedef struct
+{
+    uint64_t vpp_uv;
+    uint64_t vrms_uv;
+    uint64_t fundamental_mhz;
+    int64_t dc_offset_uv;
+    uint64_t component_frequency_mhz[FPGA_PROTOCOL_COMPONENT_MAX];
+    uint64_t component_amplitude_uv[FPGA_PROTOCOL_COMPONENT_MAX];
+} hmi_task2_scalar_accumulator_t;
 
 volatile uint16_t hmi_uart_rx_event_size;
 volatile uint8_t hmi_uart_tx_complete_flag;
@@ -81,6 +92,9 @@ static uint8_t hmi_task2_tx_buffer[HMI_TASK2_TX_STORAGE_BYTES]
 static measurement_display_snapshot_t hmi_task2_work_snapshot;
 /** 正在进行连续稳定性确认的候选快照。 */
 static measurement_display_snapshot_t hmi_task2_candidate_snapshot;
+/** 当前连续稳定候选组的文字参数累加值。 */
+static hmi_task2_scalar_accumulator_t
+    hmi_task2_candidate_scalar_sum;
 
 /** 每个控件已经装载的快照序号，索引 1~3 对应显示模式。 */
 static uint32_t hmi_task2_loaded_sequence[4];
@@ -806,6 +820,91 @@ static uint8_t hmi_task2_snapshots_are_stable(
 }
 
 /**
+ * @brief 清零连续稳定候选组的文字参数累加值。
+ * @param 无。
+ * @return 无。
+ */
+static void hmi_task2_reset_scalar_average(void)
+{
+    memset(&hmi_task2_candidate_scalar_sum, 0,
+           sizeof(hmi_task2_candidate_scalar_sum));
+}
+
+/**
+ * @brief 把一帧文字参数加入当前稳定候选组。
+ * @param snapshot 已按谐波次数排序的显示快照。
+ * @return 无。
+ */
+static void hmi_task2_add_scalar_average(
+    const measurement_display_snapshot_t *snapshot)
+{
+    uint8_t index;
+
+    hmi_task2_candidate_scalar_sum.vpp_uv += snapshot->vpp_uv;
+    hmi_task2_candidate_scalar_sum.vrms_uv += snapshot->vrms_uv;
+    hmi_task2_candidate_scalar_sum.fundamental_mhz +=
+        snapshot->fundamental_mhz;
+    hmi_task2_candidate_scalar_sum.dc_offset_uv +=
+        snapshot->dc_offset_uv;
+
+    for (index = 0u; index < snapshot->component_count; index++)
+    {
+        hmi_task2_candidate_scalar_sum.component_frequency_mhz[index] +=
+            snapshot->component[index].frequency_mhz;
+        hmi_task2_candidate_scalar_sum.component_amplitude_uv[index] +=
+            snapshot->component[index].amplitude_peak_uv;
+    }
+}
+
+/**
+ * @brief 将稳定候选组的文字参数平均值写入最新帧副本。
+ * @param snapshot 已复制最新波形和频谱的工作快照。
+ * @param count 当前稳定候选组帧数。
+ * @return 无。
+ *
+ * @note 只平均文字数值；波形、频谱、标志和序号均保留候选组最新完整帧。
+ */
+static void hmi_task2_apply_scalar_average(
+    measurement_display_snapshot_t *snapshot,
+    uint8_t count)
+{
+    uint64_t rounding;
+    uint8_t index;
+
+    if (count == 0u)
+    {
+        return;
+    }
+
+    rounding = count / 2u;
+    snapshot->vpp_uv = (uint32_t)(
+        (hmi_task2_candidate_scalar_sum.vpp_uv + rounding) / count);
+    snapshot->vrms_uv = (uint32_t)(
+        (hmi_task2_candidate_scalar_sum.vrms_uv + rounding) / count);
+    snapshot->fundamental_mhz = (uint32_t)(
+        (hmi_task2_candidate_scalar_sum.fundamental_mhz + rounding)
+        / count);
+    snapshot->dc_offset_uv = (int32_t)(
+        (hmi_task2_candidate_scalar_sum.dc_offset_uv >= 0)
+            ? ((hmi_task2_candidate_scalar_sum.dc_offset_uv
+                + (int64_t)rounding) / count)
+            : ((hmi_task2_candidate_scalar_sum.dc_offset_uv
+                - (int64_t)rounding) / count));
+
+    for (index = 0u; index < snapshot->component_count; index++)
+    {
+        snapshot->component[index].frequency_mhz = (uint32_t)(
+            (hmi_task2_candidate_scalar_sum
+                 .component_frequency_mhz[index] + rounding)
+            / count);
+        snapshot->component[index].amplitude_peak_uv = (uint32_t)(
+            (hmi_task2_candidate_scalar_sum
+                 .component_amplitude_uv[index] + rounding)
+            / count);
+    }
+}
+
+/**
  * @brief 判断当前工作快照是否已完整显示。
  * @param 无。
  * @return 参数、两个时域波形、独立频谱和前景恢复均完成返回 1，否则返回 0。
@@ -876,9 +975,9 @@ static void hmi_task2_refresh_work_snapshot(void)
     hmi_task2_last_examined_sequence = latest->frame_sequence;
 
     /*
-     * 第一份有效数据不等待三帧稳定门限。否则 FPGA 只发布一次或新数据到达较慢时，
+     * 第一份有效数据不等待五帧稳定门限。否则 FPGA 只发布一次或新数据到达较慢时，
      * 文字可能来自旧状态，而频谱和波形始终没有工作快照可画。后续输入变化仍使用
-     * 三帧稳定锁存，避免频繁清空曲线导致闪烁。
+     * 五帧稳定平均锁存，避免频繁清空曲线导致闪烁。
      */
     if (hmi_task2_work_valid == 0u)
     {
@@ -887,6 +986,7 @@ static void hmi_task2_refresh_work_snapshot(void)
         hmi_task2_work_valid = 1u;
         hmi_task2_candidate_valid = 0u;
         hmi_task2_candidate_count = 0u;
+        hmi_task2_reset_scalar_average();
         hmi_task2_diagnostics.stable_candidate_count = 0u;
         hmi_task2_diagnostics.stable_accept_count++;
         hmi_task2_text_valid = 0u;
@@ -897,21 +997,6 @@ static void hmi_task2_refresh_work_snapshot(void)
         return;
     }
 
-    /*
-     * 已锁存结果附近的小幅测量抖动不再触发屏幕清空和重画。只有先偏离当前结果，
-     * 再连续三帧彼此稳定的新输入，才会成为新的屏幕快照。
-     */
-    if ((hmi_task2_work_valid != 0u)
-        && (hmi_task2_snapshots_are_stable(
-                latest, &hmi_task2_work_snapshot) != 0u))
-    {
-        hmi_task2_candidate_valid = 0u;
-        hmi_task2_candidate_count = 0u;
-        hmi_task2_diagnostics.stable_candidate_count = 0u;
-        hmi_task2_diagnostics.stable_reject_count++;
-        return;
-    }
-
     if ((hmi_task2_candidate_valid != 0u)
         && (hmi_task2_snapshots_are_stable(
                 latest, &hmi_task2_candidate_snapshot) != 0u))
@@ -919,16 +1004,23 @@ static void hmi_task2_refresh_work_snapshot(void)
         if (hmi_task2_candidate_count < HMI_TASK2_STABLE_FRAME_COUNT)
         {
             hmi_task2_candidate_count++;
+            hmi_task2_add_scalar_average(latest);
+            memcpy(&hmi_task2_candidate_snapshot, latest,
+                   sizeof(hmi_task2_candidate_snapshot));
         }
-        memcpy(&hmi_task2_candidate_snapshot, latest,
-               sizeof(hmi_task2_candidate_snapshot));
     }
     else
     {
+        if (hmi_task2_candidate_valid != 0u)
+        {
+            hmi_task2_diagnostics.stable_reject_count++;
+        }
         memcpy(&hmi_task2_candidate_snapshot, latest,
                sizeof(hmi_task2_candidate_snapshot));
         hmi_task2_candidate_valid = 1u;
         hmi_task2_candidate_count = 1u;
+        hmi_task2_reset_scalar_average();
+        hmi_task2_add_scalar_average(latest);
     }
     hmi_task2_diagnostics.stable_candidate_count =
         hmi_task2_candidate_count;
@@ -945,9 +1037,12 @@ static void hmi_task2_refresh_work_snapshot(void)
 
     memcpy(&hmi_task2_work_snapshot, &hmi_task2_candidate_snapshot,
            sizeof(hmi_task2_work_snapshot));
+    hmi_task2_apply_scalar_average(
+        &hmi_task2_work_snapshot, hmi_task2_candidate_count);
     hmi_task2_work_valid = 1u;
     hmi_task2_candidate_valid = 0u;
     hmi_task2_candidate_count = 0u;
+    hmi_task2_reset_scalar_average();
     hmi_task2_diagnostics.stable_candidate_count = 0u;
     hmi_task2_diagnostics.stable_accept_count++;
     /* 新的稳定输入同时刷新数字、一周期、三周期和频谱。 */
@@ -1446,6 +1541,7 @@ void hmi_task2_init(void)
     hmi_task2_calibration_pending = 0u;
     hmi_task2_candidate_valid = 0u;
     hmi_task2_candidate_count = 0u;
+    hmi_task2_reset_scalar_average();
     hmi_task2_last_examined_sequence = UINT32_MAX;
     hmi_task2_self_test_enabled = 0u;
     hmi_task2_chart_active_mode = 0u;
@@ -1482,6 +1578,7 @@ void hmi_task2_set_chart_self_test(uint8_t enable)
     hmi_task2_visibility_pending = 1u;
     hmi_task2_candidate_valid = 0u;
     hmi_task2_candidate_count = 0u;
+    hmi_task2_reset_scalar_average();
     hmi_task2_last_examined_sequence = UINT32_MAX;
     hmi_task2_chart_active_mode = 0u;
     hmi_task2_chart_passes_remaining = 0u;

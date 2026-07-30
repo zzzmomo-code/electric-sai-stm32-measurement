@@ -21,7 +21,7 @@ class MeasurementCalibrationContractTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_default_is_calibrated_and_voltage_scales_use_6400_raw_per_mv(self):
+    def test_default_is_calibrated_and_voltage_scales_halve_old_values(self):
         self.assertIn(
             "#define MEASUREMENT_CALIBRATION_DEFAULT_ENABLED 1u",
             self.header,
@@ -33,7 +33,7 @@ class MeasurementCalibrationContractTest(unittest.TestCase):
         ):
             self.assertRegex(
                 self.source,
-                rf"#define\s+{scale_name}\s+6400\.0",
+                rf"#define\s+{scale_name}\s+12800\.0",
             )
 
         identity_curves = re.findall(
@@ -53,14 +53,13 @@ class MeasurementCalibrationContractTest(unittest.TestCase):
             self.source,
         )
 
-        # 6400 raw/mV：6400、640000、21120000 分别对应
-        # 1 mV、100 mV、3.3 V，返回接口单位统一为 uV。
+        # 12800 raw/mV 等价于把原拟合结果统一除以 2。
         for raw_value, expected_uv in (
-            (6400, 1000),
-            (640000, 100000),
-            (21120000, 3300000),
+            (6400, 500),
+            (640000, 50000),
+            (21120000, 1650000),
         ):
-            actual_uv = round(raw_value * 1000.0 / 6400.0)
+            actual_uv = round(raw_value * 1000.0 / 12800.0)
             self.assertEqual(actual_uv, expected_uv)
 
     def test_curve_formula_uses_horner_evaluation(self):

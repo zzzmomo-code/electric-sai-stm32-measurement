@@ -54,6 +54,9 @@ typedef struct
     int16_t last_time_max; /**< 最近时域帧的最大原始码。 */
     uint16_t last_spectrum_max; /**< 最近 1312 点频谱的最大值。 */
     uint16_t last_one_cycle_samples; /**< 最近一次截取的一周期原始点数。 */
+    uint16_t last_time_rail_sample_count; /**< 最近一帧接近正负满量程的样点数。 */
+    uint8_t last_time_offset_binary; /**< 1=按偏移二进制解码，0=按二补码解码。 */
+    uint32_t offset_binary_frame_count; /**< 自动修正偏移二进制的累计帧数。 */
 } measurement_conversion_diagnostics_t;
 
 /** 转换层公开诊断量，可加入 CubeIDE Expressions。 */

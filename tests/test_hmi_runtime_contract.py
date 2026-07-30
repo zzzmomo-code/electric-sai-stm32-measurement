@@ -235,11 +235,10 @@ class HmiRuntimeContractTest(unittest.TestCase):
             visibility_body,
         )
         self.assertIn(
-            "#define HMI_CHART_HIDE_BACKGROUND_FALLBACK 0u",
+            "#define HMI_CHART_HIDE_BACKGROUND_FALLBACK 1u",
             (ROOT / "Core/User/hmi_chart.h").read_text(encoding="utf-8"),
         )
         self.assertIn("background_object,", visibility_body)
-        self.assertIn("foreground_object, 0u", visibility_body)
         self.assertIn("foreground_object, 1u", visibility_body)
         self.assertIn("HMI_CHART_SPECTRUM_OBJECT, 1u", visibility_body)
 
@@ -299,8 +298,12 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn("hmi_task2_loaded_valid[4]", self.source)
         self.assertIn("hmi_task2_preload_complete()", self.source)
         self.assertIn("hmi_task2_work_snapshot", self.source)
-        self.assertIn("#define HMI_TASK2_STABLE_FRAME_COUNT  3u", self.source)
+        self.assertIn("#define HMI_TASK2_STABLE_FRAME_COUNT  5u", self.source)
         self.assertIn("hmi_task2_snapshots_are_stable", self.source)
+        self.assertIn("hmi_task2_add_scalar_average", self.source)
+        self.assertIn("hmi_task2_apply_scalar_average", self.source)
+        self.assertIn("component_frequency_mhz", self.source)
+        self.assertIn("component_amplitude_uv", self.source)
         self.assertIn("hmi_task2_text_valid = 0u;", self.source)
         stable_refresh = self.source.index(
             "新的稳定输入同时刷新数字、一周期、三周期和频谱"

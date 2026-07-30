@@ -17,20 +17,24 @@
 /**
  * 打表后优先修改下面这组“每 mV 对应的 FPGA 原始码值”。
  *
- * 2026-07-30 打表稳健拟合结果：
+ * 2026-07-30 原始打表稳健拟合结果：
  *     K_UPP  = 6405.50 raw/mV
  *     K_URMS = 6404.76 raw/mV
  *     K_SPEC = 6399.19 raw/mV
  *
- * 三者非常接近，比赛固件统一采用 6400 raw/mV，避免样本较少时过拟合。
+ * 实板复核发现打表时阻抗匹配错误，测得电压是端口真实值的两倍。
+ * 因此在原 6400 raw/mV 基础上统一乘 2，等价于所有显示电压除以 2：
+ *     K_CORRECTED = 12800 raw/mV
+ *
+ * 三类电压统一使用同一个比例，避免样本较少时过拟合。
  * 校准接口对外仍返回 uV，因此内部换算为：
  *     calibrated_uV = raw_value * 1000 / raw_per_mV
  *
  * 如果后续重新打表，只需要修改下面三个常量，不需要改 HMI 或调用接口。
  */
-#define MEASUREMENT_CALIBRATION_VPP_RAW_PER_MV       6400.0
-#define MEASUREMENT_CALIBRATION_VRMS_RAW_PER_MV      6400.0
-#define MEASUREMENT_CALIBRATION_COMPONENT_RAW_PER_MV 6400.0
+#define MEASUREMENT_CALIBRATION_VPP_RAW_PER_MV       12800.0
+#define MEASUREMENT_CALIBRATION_VRMS_RAW_PER_MV      12800.0
+#define MEASUREMENT_CALIBRATION_COMPONENT_RAW_PER_MV 12800.0
 
 /**
  * 频率和直流偏置继续保留通用多项式接口。

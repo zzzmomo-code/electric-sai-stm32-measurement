@@ -47,6 +47,7 @@ static uint8_t measurement_conversion_map_time(
     int32_t minimum,
     int32_t maximum)
 {
+    uint32_t padding;
     uint32_t span;
     uint32_t scaled;
 
@@ -57,6 +58,14 @@ static uint8_t measurement_conversion_map_time(
             / 2u);
     }
 
+    /*
+     * 每帧极值若直接映射到控件上下限，会形成视觉上的“削顶/削底”。
+     * 在真实极值两侧各留 10% 余量，既保留幅度变化，也便于观察原始数据是否饱和。
+     */
+    span = (uint32_t)(maximum - minimum);
+    padding = (span + 9u) / 10u;
+    minimum -= (int32_t)padding;
+    maximum += (int32_t)padding;
     span = (uint32_t)(maximum - minimum);
     scaled = ((uint32_t)(value - minimum)
               * (MEASUREMENT_DISPLAY_Y_MAX
@@ -81,16 +90,93 @@ static uint8_t measurement_conversion_map_time(
     (1ul << MEASUREMENT_TIME_POSITION_FRACTION_BITS)
 
 /**
+ * @brief 按本帧识别出的编码方式取得一个有符号时域样点。
+ * @param source FPGA 时域数组。
+ * @param index 样点下标。
+ * @param offset_binary 非零表示载荷实际为偏移二进制。
+ * @return 以零为中心的有符号样点。
+ *
+ * @note 冻结协议规定载荷应为二补码，但实板曲线表明当前 FPGA 可能直接发送
+ *       ADC 偏移二进制码。异或 0x8000 可完成偏移二进制到二补码的转换。
+ */
+static int16_t measurement_conversion_decode_time_sample(
+    const int16_t *source,
+    uint16_t index,
+    uint8_t offset_binary)
+{
+    uint16_t raw = (uint16_t)source[index];
+
+    if (offset_binary != 0u)
+    {
+        raw ^= 0x8000u;
+    }
+    return (int16_t)raw;
+}
+
+/**
+ * @brief 比较两种解码结果的相邻点总跳变量，自动识别时域样点编码。
+ * @param source FPGA 时域数组。
+ * @param source_count 样点数量。
+ * @return 1=偏移二进制，0=协议规定的二补码。
+ *
+ * @note 连续波形若编码解释错误，会在过零附近产生约满量程的跳变。只有偏移
+ *       二进制方案的总跳变量至少小一半时才切换，模糊情况仍遵守冻结协议。
+ */
+static uint8_t measurement_conversion_detect_time_encoding(
+    const int16_t *source,
+    uint16_t source_count)
+{
+    uint64_t twos_complement_variation = 0u;
+    uint64_t offset_binary_variation = 0u;
+    int32_t previous_twos_complement;
+    int32_t previous_offset_binary;
+    uint16_t index;
+
+    if ((source == NULL) || (source_count < 2u))
+    {
+        return 0u;
+    }
+
+    previous_twos_complement = source[0];
+    previous_offset_binary = (int16_t)(
+        ((uint16_t)source[0]) ^ 0x8000u);
+    for (index = 1u; index < source_count; index++)
+    {
+        int32_t current_twos_complement = source[index];
+        int32_t current_offset_binary = (int16_t)(
+            ((uint16_t)source[index]) ^ 0x8000u);
+        int32_t twos_complement_delta =
+            current_twos_complement - previous_twos_complement;
+        int32_t offset_binary_delta =
+            current_offset_binary - previous_offset_binary;
+
+        twos_complement_variation += (uint32_t)(
+            (twos_complement_delta >= 0)
+                ? twos_complement_delta : -twos_complement_delta);
+        offset_binary_variation += (uint32_t)(
+            (offset_binary_delta >= 0)
+                ? offset_binary_delta : -offset_binary_delta);
+        previous_twos_complement = current_twos_complement;
+        previous_offset_binary = current_offset_binary;
+    }
+
+    return ((offset_binary_variation * 2u)
+            < twos_complement_variation) ? 1u : 0u;
+}
+
+/**
  * @brief 按 Q16.16 样点位置对时域数组做线性插值。
  * @param source 原始时域样点。
  * @param source_count 原始样点数。
  * @param position_q16 Q16.16 样点位置。
+ * @param offset_binary 非零表示载荷实际为偏移二进制。
  * @return 插值后的有符号样点。
  */
 static int32_t measurement_conversion_interpolate_time(
     const int16_t *source,
     uint16_t source_count,
-    uint32_t position_q16)
+    uint32_t position_q16,
+    uint8_t offset_binary)
 {
     uint32_t left_index =
         position_q16 >> MEASUREMENT_TIME_POSITION_FRACTION_BITS;
@@ -103,13 +189,15 @@ static int32_t measurement_conversion_interpolate_time(
     {
         left_index = source_count - 1u;
     }
-    left = source[left_index];
+    left = measurement_conversion_decode_time_sample(
+        source, (uint16_t)left_index, offset_binary);
     if ((left_index + 1u) >= source_count)
     {
         return left;
     }
 
-    right = source[left_index + 1u];
+    right = measurement_conversion_decode_time_sample(
+        source, (uint16_t)(left_index + 1u), offset_binary);
     return left
         + (int32_t)(((int64_t)(right - left) * fraction)
                     / MEASUREMENT_TIME_POSITION_ONE);
@@ -121,6 +209,7 @@ static int32_t measurement_conversion_interpolate_time(
  * @param source_count 原始点数。
  * @param start_q16 起始 Q16.16 样点位置。
  * @param span_q16 覆盖的 Q16.16 样点跨度。
+ * @param offset_binary 非零表示载荷实际为偏移二进制。
  * @param minimum 三周期窗口最小值。
  * @param maximum 三周期窗口最大值。
  * @param output 350点显示缓存。
@@ -132,6 +221,7 @@ static void measurement_conversion_resample_periodic(
     uint32_t start_q16,
     uint32_t period_q16,
     uint8_t cycle_count,
+    uint8_t offset_binary,
     int16_t minimum,
     int16_t maximum,
     uint8_t *output)
@@ -160,7 +250,8 @@ static void measurement_conversion_resample_periodic(
         position_q16 = start_q16 + phase_q16;
         int32_t interpolated =
             measurement_conversion_interpolate_time(
-                source, source_count, position_q16);
+                source, source_count, position_q16,
+                offset_binary);
 
         output[output_index] = measurement_conversion_map_time(
             interpolated, minimum, maximum);
@@ -172,6 +263,7 @@ static void measurement_conversion_resample_periodic(
  * @param source 已校验的 FPGA 测量快照。
  * @param start_q16 输出相位对齐后的 Q16.16 起点。
  * @param period_q16 输出单周期 Q16.16 长度。
+ * @param offset_binary 非零表示载荷实际为偏移二进制。
  * @param minimum 输出单周期窗口最小值。
  * @param maximum 输出单周期窗口最大值。
  * @return 找到合法单周期模板返回1，否则返回0。
@@ -184,6 +276,7 @@ static uint8_t measurement_conversion_find_cycle_window(
     const fpga_measurement_snapshot_t *source,
     uint32_t *start_q16,
     uint32_t *period_q16,
+    uint8_t offset_binary,
     int16_t *minimum,
     int16_t *maximum)
 {
@@ -226,7 +319,8 @@ static uint8_t measurement_conversion_find_cycle_window(
 
     for (index = 0u; index < source->header.time_count; index++)
     {
-        sum += source->time_samples[index];
+        sum += measurement_conversion_decode_time_sample(
+            source->time_samples, index, offset_binary);
     }
     center = (int32_t)(sum / source->header.time_count);
     preferred_position_q16 =
@@ -235,8 +329,11 @@ static uint8_t measurement_conversion_find_cycle_window(
 
     for (index = 1u; index < source->header.time_count; index++)
     {
-        int32_t left = source->time_samples[index - 1u];
-        int32_t right = source->time_samples[index];
+        int32_t left = measurement_conversion_decode_time_sample(
+            source->time_samples, (uint16_t)(index - 1u),
+            offset_binary);
+        int32_t right = measurement_conversion_decode_time_sample(
+            source->time_samples, index, offset_binary);
 
         if ((left <= center) && (right > center))
         {
@@ -287,19 +384,23 @@ static uint8_t measurement_conversion_find_cycle_window(
         end_index = (uint16_t)(source->header.time_count - 1u);
     }
 
-    *minimum = source->time_samples[begin_index];
-    *maximum = source->time_samples[begin_index];
+    *minimum = measurement_conversion_decode_time_sample(
+        source->time_samples, begin_index, offset_binary);
+    *maximum = *minimum;
     for (index = (uint16_t)(begin_index + 1u);
          index <= end_index;
          index++)
     {
-        if (source->time_samples[index] < *minimum)
+        int16_t sample = measurement_conversion_decode_time_sample(
+            source->time_samples, index, offset_binary);
+
+        if (sample < *minimum)
         {
-            *minimum = source->time_samples[index];
+            *minimum = sample;
         }
-        if (source->time_samples[index] > *maximum)
+        if (sample > *maximum)
         {
-            *maximum = source->time_samples[index];
+            *maximum = sample;
         }
     }
     return 1u;
@@ -387,6 +488,44 @@ static uint16_t measurement_conversion_compress_spectrum(
 }
 
 /**
+ * @brief 将有效频率分量按谐波次数、再按频率从小到大排序。
+ * @param snapshot 待整理的显示快照。
+ * @return 无。
+ *
+ * @note FPGA 槽位允许无序；稳定排序后，连续多帧可按相同下标安全累加平均。
+ */
+static void measurement_conversion_sort_components(
+    measurement_display_snapshot_t *snapshot)
+{
+    uint8_t index;
+
+    for (index = 1u; index < snapshot->component_count; index++)
+    {
+        fpga_protocol_component_t value = snapshot->component[index];
+        uint8_t position = index;
+
+        while (position > 0u)
+        {
+            fpga_protocol_component_t *previous =
+                &snapshot->component[position - 1u];
+            uint8_t value_before_previous = (uint8_t)(
+                (value.harmonic_order < previous->harmonic_order)
+                || ((value.harmonic_order == previous->harmonic_order)
+                    && (value.frequency_mhz
+                        < previous->frequency_mhz)));
+
+            if (value_before_previous == 0u)
+            {
+                break;
+            }
+            snapshot->component[position] = *previous;
+            position--;
+        }
+        snapshot->component[position] = value;
+    }
+}
+
+/**
  * @brief 清零双显示快照和诊断量。
  * @param 无。
  * @return 无。
@@ -415,6 +554,8 @@ uint8_t measurement_conversion_update(
     uint32_t period_q16;
     int16_t time_minimum;
     int16_t time_maximum;
+    uint16_t time_rail_sample_count = 0u;
+    uint8_t time_offset_binary;
     uint8_t output_component_index = 0u;
 
     if ((source == NULL) || (source->valid == 0u)
@@ -433,8 +574,11 @@ uint8_t measurement_conversion_update(
     target = &measurement_display_snapshots[target_index];
     memset((void *)target, 0, sizeof(*target));
 
+    time_offset_binary = measurement_conversion_detect_time_encoding(
+        source->time_samples, source->header.time_count);
     if (measurement_conversion_find_cycle_window(
             source, &cycle_start_q16, &period_q16,
+            time_offset_binary,
             &time_minimum, &time_maximum) == 0u)
     {
         measurement_conversion_diagnostics.invalid_source_count++;
@@ -447,6 +591,7 @@ uint8_t measurement_conversion_update(
         cycle_start_q16,
         period_q16,
         3u,
+        time_offset_binary,
         time_minimum,
         time_maximum,
         target->waveform_3cycle);
@@ -457,6 +602,7 @@ uint8_t measurement_conversion_update(
         cycle_start_q16,
         period_q16,
         1u,
+        time_offset_binary,
         time_minimum,
         time_maximum,
         target->waveform_1cycle);
@@ -495,6 +641,7 @@ uint8_t measurement_conversion_update(
         }
     }
     target->component_count = output_component_index;
+    measurement_conversion_sort_components(target);
 
     target->valid = 1u;
     /* 保证数组和参数先写完，再让读取者看到新的活动索引。 */
@@ -506,6 +653,24 @@ uint8_t measurement_conversion_update(
         target->frame_sequence;
     measurement_conversion_diagnostics.last_time_min = time_minimum;
     measurement_conversion_diagnostics.last_time_max = time_maximum;
+    for (index = 0u; index < source->header.time_count; index++)
+    {
+        int16_t sample = measurement_conversion_decode_time_sample(
+            source->time_samples, index, time_offset_binary);
+
+        if ((sample <= -32700) || (sample >= 32700))
+        {
+            time_rail_sample_count++;
+        }
+    }
+    measurement_conversion_diagnostics.last_time_rail_sample_count =
+        time_rail_sample_count;
+    measurement_conversion_diagnostics.last_time_offset_binary =
+        time_offset_binary;
+    if (time_offset_binary != 0u)
+    {
+        measurement_conversion_diagnostics.offset_binary_frame_count++;
+    }
     measurement_conversion_diagnostics.last_one_cycle_samples =
         (uint16_t)((period_q16
                     + (MEASUREMENT_TIME_POSITION_ONE / 2u))

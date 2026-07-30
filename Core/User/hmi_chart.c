@@ -1,6 +1,6 @@
 /**
  * @file hmi_chart.c
- * @brief 淘晶驰两个重叠时域控件常显和一个独立频谱控件的构帧实现。
+ * @brief 淘晶驰两个重叠时域控件同步缓存和一个独立频谱控件的构帧实现。
  *
  * 模块用途：生成 cle/add/vis ASCII 指令，每条命令自动追加 FF FF FF。
  * GPIO 引脚映射：无直接 GPIO。
@@ -297,16 +297,15 @@ hmi_chart_status_t hmi_chart_build_waveform_chunk(
 }
 
 /**
- * @brief 构建双时域常显与指定时域控件前景切换命令。
- * @param mode 需要置于前景的一周期或三周期模式。
+ * @brief 构建双时域重叠控件的显示切换命令。
+ * @param mode 需要显示的一周期或三周期模式。
  * @param frame 输出命令字节流。
  * @param frame_capacity 输出缓冲区容量。
  * @param frame_size 输出实际字节数。
  * @return 构帧状态。
  *
- * @note 默认先保持非选中控件可见，再把选中控件快速隐藏/显示一次，尝试利用
- *       淘晶驰重绘顺序把它置于前景；两份曲线数据都不会被清空。该层级行为仍需
- *       实屏验证。若启用后备开关，则直接隐藏非选中控件。
+ * @note 发布版本直接隐藏非选中控件，避免依赖未经实屏证明的动态层级。
+ *       若关闭后备开关，则两个控件保持可见并通过重绘尝试切换前景。
  */
 hmi_chart_status_t hmi_chart_build_visibility(
     hmi_chart_mode_t mode,

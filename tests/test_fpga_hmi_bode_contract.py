@@ -399,6 +399,17 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("time_sample_rate_hz", self.conversion)
         self.assertIn("fundamental_mhz", self.conversion)
         self.assertIn("period_q16", self.conversion)
+        self.assertIn(
+            "measurement_conversion_detect_time_encoding",
+            self.conversion,
+        )
+        self.assertIn(
+            "measurement_conversion_decode_time_sample",
+            self.conversion,
+        )
+        self.assertIn("raw ^= 0x8000u;", self.conversion)
+        self.assertIn("last_time_offset_binary", self.conversion_h)
+        self.assertIn("last_time_rail_sample_count", self.conversion_h)
         self.assertIn("measurement_conversion_interpolate_time", self.conversion)
         self.assertIn(
             "measurement_conversion_resample_periodic", self.conversion
