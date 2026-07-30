@@ -19,7 +19,7 @@ TIM 测频和 USART2 FPGA 链路不参与当前正式运行。
 - IDE：STM32CubeIDE 1.19.0；
 - HAL：STM32Cube FW_H7 V1.12.1；
 - 系统时钟：480 MHz；
-- FPGA SPI：20 MHz、Mode 0、8 bit、MSB first；
+- FPGA SPI：625 kHz、Mode 0、8 bit、MSB first；
 - 串口屏：512000 baud、8N1。
 
 ## 硬件连接
@@ -57,7 +57,7 @@ FPGA、STM32 和串口屏必须共地，FPGA 接口必须是 3.3 V 逻辑。复�
 - Hardware NSS Disable，PA15 软件控制 CS；
 - Motorola、8 bit、MSB first；
 - CPOL Low、CPHA 1 Edge，即 SPI Mode 0；
-- PLL2P 80 MHz，Prescaler 4，SCK 20 MHz；
+- PLL2P 80 MHz，Prescaler 128，SCK 625 kHz；
 - PC10/PC11/PC12：AF Push-Pull、No Pull、Very High Speed；
 - SPI3 RX DMA：Normal、Byte、Memory Increment Enable、Very High；
 - SPI3 TX DMA：Normal、Byte、Memory Increment Disable、High；
@@ -549,7 +549,7 @@ hmi_task2_diagnostics
 ## 资源占用与实时性
 
 - 不使用 `malloc()`，所有大数组静态分配，运行时间和内存占用可预测；
-- 最大 FPGA 帧约 10.3 KB，SPI 20 MHz 纯线缆时间约 4.1 ms；
+- 最大 FPGA 帧约 10.3 KB，SPI 625 kHz 纯线缆时间约 131.3 ms；
 - 每条 350 点普通曲线命令最坏不超过 7.8 KB，512000 baud 纯线缆时间约 151 ms；
 - 第一次波形按键前每个显示快照发送参数和频谱，理论最高刷新率约 6 Hz；
 - 第一次波形按键后每个显示快照发送参数、当前波形和频谱，理论最高刷新率约 3 Hz；
@@ -564,7 +564,7 @@ hmi_task2_diagnostics
 3. 执行 `Project > Build Project`，确认生成 `.elf`；
 4. 使用 ST-LINK 烧录；
 5. 先只连接串口屏，确认页面对象名称和 512000 baud；
-6. 再连接 FPGA，逻辑分析仪检查 Mode 0、20 MHz 和同一 CS 立即响应；
+6. 再连接 FPGA，逻辑分析仪检查 Mode 0、625 kHz 和同一 CS 立即响应；
 7. 在 Expressions 观察 `fpga_link_diagnostics` 和 `hmi_task2_diagnostics`。
 
 关键诊断量：
