@@ -1,9 +1,9 @@
 /**
  * @file hmi_task2.c
- * @brief G 题淘晶驰串口屏后台预装与按键切换实现。
+ * @brief G 题淘晶驰串口屏实时刷新与按键切换实现。
  *
- * 模块用途：把 measurement_conversion 生成的三组 350 点缓存依次写入 s_t1、s_t3、
- *          s_spec，随后更新参数文本；屏幕按键互斥切换时域控件，独立频谱保持可见。
+ * 模块用途：持续更新参数文本和独立频谱；第一次按键后，把 measurement_conversion
+ *          生成的最新一周期或三周期 350 点缓存写入可见时域控件并持续刷新。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init() 并绑定 huart1。
@@ -22,14 +22,15 @@
 #define HMI_TASK2_COMMAND_TAIL        0x5au
 
 /*
- * 后台预装状态机的核心规则：
+ * 实时显示状态机的核心规则：
  *
  * 1. 上电先隐藏三个曲线控件；
  * 2. 取得一份稳定的 measurement_display_snapshot_t 工作快照；
- * 3. 依次发送当前按键目标曲线、另外两条曲线和参数文本；
+ * 3. 首帧只显示独立频谱控件；一周期和三周期控件保持隐藏；
  * 4. 每项只有在 TX DMA 完成回调到达后才记为“已装载”；
- * 5. 用户按键只触发 vis 命令，不重新采样、不重新换算整条曲线；
- * 6. 一份工作快照未装完前不换新快照，避免 FPGA 持续产帧导致旧帧永远装不完。
+ * 5. 用户按键先切换一周期/三周期可见性，再用 STM32 最新缓存重画目标曲线；
+ * 6. 每个新快照只更新参数、当前可见波形和频谱，不依赖隐藏控件保留 add 数据；
+ * 7. 一份工作快照未显示完整前不换新快照，避免 FPGA 持续产帧导致当前帧永远发不完。
  *
  * 中断回调只写事件标志，所有解析、构帧和状态迁移均在主循环执行。
  */
@@ -62,7 +63,7 @@ static uint8_t hmi_task2_rx_buffer[HMI_TASK2_RX_BYTES]
 static uint8_t hmi_task2_tx_buffer[HMI_TASK2_TX_STORAGE_BYTES]
     __attribute__((aligned(32)));
 
-/** 当前正在预装的一份稳定显示快照。 */
+/** 当前正在发送的一份稳定显示快照。 */
 static measurement_display_snapshot_t hmi_task2_work_snapshot;
 
 /** 每个控件已经装载的快照序号，索引 1~3 对应显示模式。 */
@@ -92,7 +93,7 @@ static uint8_t hmi_task2_tx_active;
 static uint8_t hmi_task2_initialize_done;
 static uint8_t hmi_task2_work_valid;
 static uint8_t hmi_task2_visibility_pending;
-/** 收到至少一次有效按键命令后置位；上电预装阶段保持三图隐藏。 */
+/** 收到首个一周期/三周期按键后置位；在此之前两个时域控件始终隐藏。 */
 static uint8_t hmi_task2_display_requested;
 static uint8_t hmi_task2_self_test_enabled;
 
@@ -494,27 +495,50 @@ static void hmi_task2_generate_self_test(
 }
 
 /**
- * @brief 判断当前工作快照是否已全部预装。
+ * @brief 判断当前工作快照是否已完整显示。
  * @param 无。
- * @return 三条曲线和文本均完成返回 1，否则返回 0。
+ * @return 参数、当前波形和独立频谱均完成返回 1，否则返回 0。
  */
 static uint8_t hmi_task2_preload_complete(void)
 {
     uint32_t sequence = hmi_task2_work_snapshot.frame_sequence;
+    uint8_t requested_mode = hmi_task2_diagnostics.requested_mode;
 
-    return (uint8_t)((hmi_task2_work_valid != 0u)
-        && (hmi_task2_loaded_valid[HMI_CHART_MODE_ONE_CYCLE] != 0u)
-        && (hmi_task2_loaded_valid[HMI_CHART_MODE_THREE_CYCLE] != 0u)
-        && (hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] != 0u)
-        && (hmi_task2_text_valid != 0u)
-        && (hmi_task2_loaded_sequence[HMI_CHART_MODE_ONE_CYCLE] == sequence)
-        && (hmi_task2_loaded_sequence[HMI_CHART_MODE_THREE_CYCLE] == sequence)
-        && (hmi_task2_loaded_sequence[HMI_CHART_MODE_SPECTRUM] == sequence)
-        && (hmi_task2_text_sequence == sequence));
+    if ((requested_mode < (uint8_t)HMI_CHART_MODE_ONE_CYCLE)
+        || (requested_mode > (uint8_t)HMI_CHART_MODE_SPECTRUM))
+    {
+        return 0u;
+    }
+
+    if ((hmi_task2_work_valid == 0u)
+        || (hmi_task2_text_valid == 0u)
+        || (hmi_task2_text_sequence != sequence)
+        || (hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] == 0u)
+        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_SPECTRUM]
+            != sequence))
+    {
+        return 0u;
+    }
+
+    if (hmi_task2_display_requested == 0u)
+    {
+        return (uint8_t)(
+            hmi_task2_diagnostics.visible_mode
+            == (uint8_t)HMI_CHART_MODE_SPECTRUM);
+    }
+
+    if ((hmi_task2_diagnostics.visible_mode != requested_mode)
+        || (hmi_task2_loaded_valid[requested_mode] == 0u)
+        || (hmi_task2_loaded_sequence[requested_mode] != sequence))
+    {
+        return 0u;
+    }
+
+    return 1u;
 }
 
 /**
- * @brief 在上一份预装结束后获取最新显示快照，避免连续新帧造成预装饥饿。
+ * @brief 在上一份显示刷新结束后获取最新快照，避免连续新帧造成发送饥饿。
  * @param 无。
  * @return 无。
  */
@@ -549,6 +573,16 @@ static void hmi_task2_refresh_work_snapshot(void)
 
     memcpy(&hmi_task2_work_snapshot, latest, sizeof(hmi_task2_work_snapshot));
     hmi_task2_work_valid = 1u;
+    if ((hmi_task2_display_requested == 0u)
+        && (hmi_task2_diagnostics.visible_mode
+            != (uint8_t)HMI_CHART_MODE_SPECTRUM))
+    {
+        /*
+         * 首帧到达后只显示独立频谱；一周期和三周期继续隐藏，
+         * 直到用户第一次按下对应按键。
+         */
+        hmi_task2_visibility_pending = 1u;
+    }
     hmi_task2_diagnostics.last_source_sequence =
         hmi_task2_work_snapshot.frame_sequence;
     hmi_task2_diagnostics.state = HMI_TASK2_STATE_PRELOADING;
@@ -602,6 +636,12 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
                 hmi_task2_diagnostics.command_count++;
                 hmi_task2_display_requested = 1u;
                 hmi_task2_visibility_pending = 1u;
+                /*
+                 * 即使该控件以前显示过同一快照，也在切换后重画一次。
+                 * 这样不依赖隐藏控件在 vis=0 期间保留内部曲线 RAM。
+                 */
+                hmi_task2_loaded_valid[
+                    hmi_task2_command_candidate] = 0u;
             }
             else
             {
@@ -650,7 +690,9 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
 
         case HMI_TX_ACTION_VISIBILITY:
             return (uint8_t)(hmi_chart_build_visibility(
-                (hmi_chart_mode_t)hmi_task2_diagnostics.requested_mode,
+                (hmi_task2_display_requested != 0u)
+                    ? (hmi_chart_mode_t)hmi_task2_diagnostics.requested_mode
+                    : HMI_CHART_MODE_SPECTRUM,
                 hmi_task2_tx_buffer,
                 HMI_CHART_FRAME_MAX_BYTES,
                 frame_size) == HMI_CHART_STATUS_OK);
@@ -666,7 +708,7 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
 }
 
 /**
- * @brief 选择当前最重要的动作；按键目标优先于后台其余控件。
+ * @brief 选择当前最重要的动作；先保证控件可见，再向可见控件写数据。
  * @param 无。
  * @return 待执行动作，无任务返回 HMI_TX_ACTION_NONE。
  */
@@ -685,33 +727,14 @@ static hmi_tx_action_t hmi_task2_select_action(void)
     }
 
     sequence = hmi_task2_work_snapshot.frame_sequence;
-    if ((hmi_task2_display_requested != 0u)
-        && (hmi_task2_visibility_pending != 0u)
-        && (hmi_task2_loaded_valid[requested_mode] != 0u)
-        && (hmi_task2_loaded_sequence[requested_mode] == sequence))
+    if ((hmi_task2_visibility_pending != 0u)
+        || ((hmi_task2_display_requested != 0u)
+            && (hmi_task2_diagnostics.visible_mode != requested_mode))
+        || ((hmi_task2_display_requested == 0u)
+            && (hmi_task2_diagnostics.visible_mode
+                != (uint8_t)HMI_CHART_MODE_SPECTRUM)))
     {
         return HMI_TX_ACTION_VISIBILITY;
-    }
-    if ((hmi_task2_loaded_valid[requested_mode] == 0u)
-        || (hmi_task2_loaded_sequence[requested_mode] != sequence))
-    {
-        return (hmi_tx_action_t)(HMI_TX_ACTION_ONE_CYCLE
-                                + requested_mode - 1u);
-    }
-    if ((hmi_task2_loaded_valid[HMI_CHART_MODE_ONE_CYCLE] == 0u)
-        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_ONE_CYCLE] != sequence))
-    {
-        return HMI_TX_ACTION_ONE_CYCLE;
-    }
-    if ((hmi_task2_loaded_valid[HMI_CHART_MODE_THREE_CYCLE] == 0u)
-        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_THREE_CYCLE] != sequence))
-    {
-        return HMI_TX_ACTION_THREE_CYCLE;
-    }
-    if ((hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] == 0u)
-        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_SPECTRUM] != sequence))
-    {
-        return HMI_TX_ACTION_SPECTRUM;
     }
     if ((hmi_task2_text_valid == 0u)
         || (hmi_task2_text_sequence != sequence))
@@ -719,10 +742,16 @@ static hmi_tx_action_t hmi_task2_select_action(void)
         return HMI_TX_ACTION_TEXT;
     }
     if ((hmi_task2_display_requested != 0u)
-        && ((hmi_task2_diagnostics.visible_mode != requested_mode)
-            || (hmi_task2_diagnostics.last_visible_sequence != sequence)))
+        && ((hmi_task2_loaded_valid[requested_mode] == 0u)
+            || (hmi_task2_loaded_sequence[requested_mode] != sequence)))
     {
-        return HMI_TX_ACTION_VISIBILITY;
+        return (hmi_tx_action_t)(HMI_TX_ACTION_ONE_CYCLE
+                                + requested_mode - 1u);
+    }
+    if ((hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] == 0u)
+        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_SPECTRUM] != sequence))
+    {
+        return HMI_TX_ACTION_SPECTRUM;
     }
     return HMI_TX_ACTION_NONE;
 }
@@ -759,7 +788,9 @@ static void hmi_task2_complete_action(void)
 
         case HMI_TX_ACTION_VISIBILITY:
             hmi_task2_diagnostics.visible_mode =
-                hmi_task2_diagnostics.requested_mode;
+                (hmi_task2_display_requested != 0u)
+                    ? hmi_task2_diagnostics.requested_mode
+                    : (uint8_t)HMI_CHART_MODE_SPECTRUM;
             hmi_task2_diagnostics.last_visible_sequence =
                 hmi_task2_tx_source_sequence;
             hmi_task2_visibility_pending = 0u;
@@ -900,7 +931,7 @@ void hmi_task2_bind_uart(UART_HandleTypeDef *huart)
 #endif
 
 /**
- * @brief 在主循环中推进串口屏接收、发送、预装和显示切换状态机。
+ * @brief 在主循环中推进串口屏接收、实时刷新和显示切换状态机。
  * @param 无。
  * @return 无。
  *
@@ -985,7 +1016,7 @@ void hmi_task2_process(void)
     }
 
     /*
-     * 先固定本轮需要预装的显示快照，再选择一个 DMA 动作。
+     * 先固定本轮需要刷新的显示快照，再选择一个 DMA 动作。
      * 每轮最多启动一项发送，主循环不会被约 7.8 KB 的曲线命令阻塞。
      */
     hmi_task2_refresh_work_snapshot();

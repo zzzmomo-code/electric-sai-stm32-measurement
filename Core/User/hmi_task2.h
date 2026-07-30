@@ -1,9 +1,9 @@
 /**
  * @file hmi_task2.h
- * @brief G 题淘晶驰串口屏后台预装与按键切换接口。
+ * @brief G 题淘晶驰串口屏实时刷新与按键切换接口。
  *
- * 模块用途：经 USART1 DMA 把一周期、三周期和频谱三组 350 点数据预装到屏幕控件，
- *          并解析屏幕按键，在不重新测量和计算的情况下切换时域控件并保持频谱可见。
+ * 模块用途：经 USART1 DMA 持续更新参数和频谱；第一次收到屏幕按键后，从 STM32
+ *          最新缓存显示并持续重画一周期/三周期波形，频谱控件始终独立可见。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init()，再绑定 huart1。
@@ -21,7 +21,7 @@
 #include "stm32h7xx_hal_uart.h"
 #endif
 
-/** 串口屏后台预装状态。 */
+/** 串口屏实时刷新状态。 */
 typedef enum
 {
     HMI_TASK2_STATE_WAIT_DATA = 0,
@@ -40,14 +40,14 @@ typedef struct
     uint32_t tx_start_count;       /**< 成功启动 TX DMA 的次数。 */
     uint32_t tx_complete_count;    /**< TX DMA 完成次数。 */
     uint32_t tx_error_count;       /**< TX 启动、超时或 UART 错误次数。 */
-    uint32_t preload_complete_count; /**< 三条曲线和参数全部预装完成次数。 */
-    uint32_t last_source_sequence; /**< 当前后台工作快照序号。 */
+    uint32_t preload_complete_count; /**< 当前波形、频谱和参数完整刷新次数。 */
+    uint32_t last_source_sequence; /**< 当前刷新工作快照序号。 */
     uint32_t last_visible_sequence;/**< 当前可见曲线对应的快照序号。 */
     uint16_t last_tx_bytes;        /**< 最近一次 DMA 发送字节数。 */
     uint8_t last_command;          /**< 最近一次有效模式命令，范围 1~3。 */
     uint8_t requested_mode;        /**< 用户要求显示的模式。 */
     uint8_t visible_mode;          /**< 屏幕当前已切换的模式。 */
-    hmi_task2_state_t state;       /**< 当前预装状态。 */
+    hmi_task2_state_t state;       /**< 当前刷新状态。 */
 } hmi_task2_diagnostics_t;
 
 /** USART1 RX DMA 事件与主循环共享的接收长度，零表示无待处理事件。 */
@@ -87,7 +87,7 @@ void hmi_task2_bind_uart(UART_HandleTypeDef *huart);
 #endif
 
 /**
- * @brief 处理按键、最新快照、后台预装和可见性切换状态机。
+ * @brief 处理按键、最新快照、实时刷新和可见性切换状态机。
  * @param 无。
  * @return 无。
  * @note 函数不等待 DMA 完成；任一时刻只发送一项，过期快照不会排队。

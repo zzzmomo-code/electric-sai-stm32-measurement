@@ -62,11 +62,20 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertNotIn("frequency_measure_request_now", self.source)
         self.assertNotIn("dac_output_set_level", self.source)
 
-    def test_power_on_preloads_but_stays_hidden_until_a_button(self):
+    def test_first_snapshot_reveals_spectrum_but_keeps_waveforms_hidden(self):
         self.assertIn("hmi_task2_visibility_pending = 0u;", self.source)
         self.assertIn("hmi_task2_display_requested = 0u;", self.source)
         self.assertIn(
-            "if ((hmi_task2_display_requested != 0u)",
+            "&& (hmi_task2_diagnostics.visible_mode\n"
+            "            != (uint8_t)HMI_CHART_MODE_SPECTRUM)",
+            self.source,
+        )
+        self.assertIn("hmi_task2_visibility_pending = 1u;", self.source)
+        self.assertIn(
+            "(hmi_task2_display_requested != 0u)\n"
+            "                    ? (hmi_chart_mode_t)"
+            "hmi_task2_diagnostics.requested_mode\n"
+            "                    : HMI_CHART_MODE_SPECTRUM",
             self.source,
         )
 
@@ -84,13 +93,39 @@ class HmiRuntimeContractTest(unittest.TestCase):
             self.assertEqual(assignments, [variable_name])
             self.assertNotIn("HAL_UART_", body)
 
-    def test_preload_tracks_each_curve_sequence_and_finishes_before_refresh(self):
+    def test_refresh_tracks_visible_curve_and_finishes_before_new_snapshot(self):
         self.assertIn("hmi_task2_loaded_sequence[4]", self.source)
         self.assertIn("hmi_task2_loaded_valid[4]", self.source)
         self.assertIn("hmi_task2_preload_complete()", self.source)
         self.assertIn("hmi_task2_work_snapshot", self.source)
         self.assertIn(
+            "hmi_task2_loaded_sequence[requested_mode] != sequence",
+            self.source,
+        )
+        self.assertIn(
+            "mode != HMI_CHART_MODE_SPECTRUM",
+            self.chart,
+        )
+        self.assertIn(
             "&& (hmi_task2_preload_complete() == 0u)",
+            self.source,
+        )
+
+    def test_button_switches_visibility_before_redrawing_selected_curve(self):
+        select_start = self.source.index(
+            "static hmi_tx_action_t hmi_task2_select_action"
+        )
+        select_end = self.source.index(
+            "static void hmi_task2_complete_action", select_start
+        )
+        select_body = self.source[select_start:select_end]
+        self.assertLess(
+            select_body.index("return HMI_TX_ACTION_VISIBILITY;"),
+            select_body.index("HMI_TX_ACTION_ONE_CYCLE"),
+        )
+        self.assertIn(
+            "hmi_task2_loaded_valid[\n"
+            "                    hmi_task2_command_candidate] = 0u;",
             self.source,
         )
 

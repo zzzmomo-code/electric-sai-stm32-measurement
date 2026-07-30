@@ -2,7 +2,7 @@
  * @file system.c
  * @brief G 题 STM32 正式数据链路的统一初始化和主循环入口。
  *
- * 模块用途：连接“FPGA SPI3 完整测量帧 -> 350 点显示快照 -> USART1 串口屏预装”。
+ * 模块用途：连接“FPGA SPI3 连续测量帧 -> 350 点显示快照 -> USART1 串口屏实时刷新”。
  * GPIO 引脚映射：PC10/SPI3_SCK、PC11/SPI3_MISO、PC12/SPI3_MOSI、
  *          PA15/FPGA_CS_N、PD1/FPGA_DATA_READY、PA9/USART1_TX、PA10/USART1_RX。
  * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0 20 MHz 双向 DMA，PD1 EXTI1；
@@ -53,12 +53,12 @@ void system_init(void)
 }
 
 /**
- * @brief 推进“FPGA 接收 -> 显示换算 -> 串口屏预装”的非阻塞数据链路。
+ * @brief 推进“FPGA 接收 -> 显示换算 -> 串口屏实时刷新”的非阻塞数据链路。
  * @param 无。
  * @return 无。
  *
  * @note FPGA 快照只有序号变化时才换算一次；串口屏模块自行保存稳定工作快照，
- *       因此 FPGA 继续更新不会破坏正在进行的 DMA 预装。
+ *       因此 FPGA 继续更新不会破坏正在进行的 UART DMA 发送。
  */
 void system_process(void)
 {
@@ -83,6 +83,9 @@ void system_process(void)
         }
     }
 
-    /* 第三步：后台预装三图和文本，收到按键后只切换控件可见性。 */
+    /*
+     * 第三步：持续刷新数字和频谱；第一次波形按键后，再持续刷新所选的一周期或三周期波形。
+     * 按键只选择 STM32 已换算的最新缓存，不会触发 FPGA 重新采样或重新计算。
+     */
     hmi_task2_process();
 }

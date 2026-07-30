@@ -1,6 +1,6 @@
 /**
  * @file hmi_chart.c
- * @brief 淘晶驰三个重叠 Waveform 控件构帧实现。
+ * @brief 淘晶驰两个重叠时域控件和一个独立频谱控件的构帧实现。
  *
  * 模块用途：生成 cle/add/vis ASCII 指令，每条命令自动追加 FF FF FF。
  * GPIO 引脚映射：无直接 GPIO。
@@ -252,7 +252,7 @@ hmi_chart_status_t hmi_chart_build_visibility(
  * @param frame_size 输出实际字节数。
  * @return 构帧状态。
  *
- * @note 隐藏不等于清空。后台仍可把新曲线预装进隐藏控件。
+ * @note 本命令只用于上电尚无有效数据的阶段。正式刷新不会依赖隐藏控件接收或保留 add 数据。
  */
 hmi_chart_status_t hmi_chart_build_hide_all(
     uint8_t *frame,
