@@ -22,6 +22,7 @@
 #define HMI_CHART_T3_OBJECT       "s_t3"
 #define HMI_CHART_SPECTRUM_OBJECT "s_spec"
 #define HMI_CHART_FRAME_MAX_BYTES 9216u
+#define HMI_CHART_POINTS_PER_CHUNK 32u
 
 /** 当前显示模式，与屏幕按键命令 1~3 对齐。 */
 typedef enum
@@ -56,6 +57,28 @@ hmi_chart_status_t hmi_chart_build_waveform(
     uint8_t *frame,
     uint16_t frame_capacity,
     uint16_t *frame_size);
+
+/**
+ * @brief 分批构建曲线指令，避免一次突发 350 条 add 压垮屏幕命令解析器。
+ * @param mode 目标曲线模式。
+ * @param points 完整的 350 点纵轴数组。
+ * @param first_point 本批第一点下标；为零时先生成 cle。
+ * @param requested_points 本批最多发送的点数。
+ * @param frame 输出 UART 字节流。
+ * @param frame_capacity 输出容量。
+ * @param frame_size 输出实际长度。
+ * @param emitted_points 本批实际发送的点数。
+ * @return 构帧状态。
+ */
+hmi_chart_status_t hmi_chart_build_waveform_chunk(
+    hmi_chart_mode_t mode,
+    const uint8_t *points,
+    uint16_t first_point,
+    uint16_t requested_points,
+    uint8_t *frame,
+    uint16_t frame_capacity,
+    uint16_t *frame_size,
+    uint16_t *emitted_points);
 
 /**
  * @brief 构建三个重叠 Waveform 的可见性切换指令。

@@ -2,7 +2,8 @@
  * @file hmi_task2.c
  * @brief G 题淘晶驰串口屏稳定锁存显示与按键切换实现。
  *
- * 模块用途：连续接收测量快照，连续三帧稳定后锁存；参数和独立频谱只重画一次。
+ * 模块用途：连续接收测量快照，首帧立即显示、后续连续三帧稳定后锁存；
+ *          参数和独立频谱只重画一次。
  *          波形上电隐藏，按开始键后显示，之后仅在一周期/三周期按键到达时重画。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
@@ -26,14 +27,16 @@
 #define HMI_TASK2_STABLE_FRAME_COUNT  3u
 #define HMI_TASK2_FREQUENCY_FLOOR_MHZ 100000u
 #define HMI_TASK2_VOLTAGE_FLOOR_UV    1000u
+#define HMI_TASK2_CHART_PASS_COUNT    2u
+#define HMI_TASK2_CHART_GAP_MS        3u
 
 /*
  * 稳定锁存显示状态机的核心规则：
  *
- * 1. 上电先隐藏三个曲线控件；
- * 2. 取得一份稳定的 measurement_display_snapshot_t 工作快照；
+ * 1. 上电立即显示独立频谱背景，两个时域控件保持隐藏；
+ * 2. 首份有效数据立即成为工作快照，后续变化需连续三帧稳定；
  * 3. 首帧只显示独立频谱控件；一周期和三周期控件保持隐藏；
- * 4. 每项只有在 TX DMA 完成回调到达后才记为“已装载”；
+ * 4. 曲线按 32 点小批量发送，整条曲线完成后才记为“已装载”；
  * 5. 开始键首次显示波形；周期键只选择并重画一周期或三周期；
  * 6. 新输入连续三帧稳定后只自动更新参数和频谱一次，已显示波形保持冻结；
  * 7. 一份工作快照未显示完整前不换新快照，避免 FPGA 持续产帧导致当前帧永远发不完。
@@ -116,6 +119,14 @@ static uint8_t hmi_task2_candidate_count;
 /** 最近已经参加稳定性判断的源帧序号。 */
 static uint32_t hmi_task2_last_examined_sequence;
 static uint8_t hmi_task2_self_test_enabled;
+/** 当前正在分批发送的曲线及进度；零模式表示没有曲线发送任务。 */
+static uint8_t hmi_task2_chart_active_mode;
+static uint8_t hmi_task2_chart_passes_remaining;
+static uint16_t hmi_task2_chart_next_point;
+/** 本次 DMA 小批次内的实际曲线点数，完成回调后才能提交。 */
+static uint16_t hmi_task2_tx_chart_emitted_points;
+/** 两批 add 之间的最小间隔，让串口屏有时间执行已收到的普通指令。 */
+static uint32_t hmi_task2_next_chart_tx_ms;
 
 /**
  * @brief 对 DMA 接收缓冲区执行接收前缓存维护。
@@ -330,7 +341,7 @@ static void hmi_task2_format_frequency(uint32_t value_mhz,
 }
 
 /**
- * @brief 生成上电隐藏三条曲线并显示等待状态的命令。
+ * @brief 生成上电显示频谱背景、隐藏时域波形并显示等待状态的命令。
  * @param frame_size 输出实际字节数。
  * @return 成功返回 1，失败返回 0。
  */
@@ -338,9 +349,11 @@ static uint8_t hmi_task2_build_initialize(uint16_t *frame_size)
 {
     uint16_t size = 0u;
 
-    if (hmi_chart_build_hide_all(hmi_task2_tx_buffer,
-                                 HMI_CHART_FRAME_MAX_BYTES,
-                                 &size) != HMI_CHART_STATUS_OK)
+    if (hmi_chart_build_visibility(
+            HMI_CHART_MODE_SPECTRUM,
+            hmi_task2_tx_buffer,
+            HMI_CHART_FRAME_MAX_BYTES,
+            &size) != HMI_CHART_STATUS_OK)
     {
         return 0u;
     }
@@ -739,6 +752,29 @@ static void hmi_task2_refresh_work_snapshot(void)
     hmi_task2_last_examined_sequence = latest->frame_sequence;
 
     /*
+     * 第一份有效数据不等待三帧稳定门限。否则 FPGA 只发布一次或新数据到达较慢时，
+     * 文字可能来自旧状态，而频谱和波形始终没有工作快照可画。后续输入变化仍使用
+     * 三帧稳定锁存，避免频繁清空曲线导致闪烁。
+     */
+    if (hmi_task2_work_valid == 0u)
+    {
+        memcpy(&hmi_task2_work_snapshot, latest,
+               sizeof(hmi_task2_work_snapshot));
+        hmi_task2_work_valid = 1u;
+        hmi_task2_candidate_valid = 0u;
+        hmi_task2_candidate_count = 0u;
+        hmi_task2_diagnostics.stable_candidate_count = 0u;
+        hmi_task2_diagnostics.stable_accept_count++;
+        hmi_task2_text_valid = 0u;
+        hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] = 0u;
+        hmi_task2_visibility_pending = 1u;
+        hmi_task2_diagnostics.last_source_sequence =
+            hmi_task2_work_snapshot.frame_sequence;
+        hmi_task2_diagnostics.state = HMI_TASK2_STATE_PRELOADING;
+        return;
+    }
+
+    /*
      * 已锁存结果附近的小幅测量抖动不再触发屏幕清空和重画。只有先偏离当前结果，
      * 再连续三帧彼此稳定的新输入，才会成为新的屏幕快照。
      */
@@ -897,11 +933,13 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
                 {
                     hmi_task2_diagnostics.requested_mode =
                         hmi_task2_command_candidate;
-                    if (hmi_task2_display_requested != 0u)
-                    {
-                        hmi_task2_visibility_pending = 1u;
-                        hmi_task2_waveform_redraw_pending = 1u;
-                    }
+                    /*
+                     * 一周期/三周期键本身也是明确的显示请求。这样即使用户没有先按
+                     * “启动”，周期键也能直接显示相应波形；上电且未按任何键时仍隐藏。
+                     */
+                    hmi_task2_display_requested = 1u;
+                    hmi_task2_visibility_pending = 1u;
+                    hmi_task2_waveform_redraw_pending = 1u;
                 }
             }
             else
@@ -915,7 +953,22 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
 }
 
 /**
- * @brief 根据动作构建下一帧 UART 数据。
+ * @brief 启动一条曲线的分批可靠发送。
+ * @param mode 目标曲线模式。
+ * @return 无。
+ */
+static void hmi_task2_begin_chart(hmi_chart_mode_t mode)
+{
+    hmi_task2_chart_active_mode = (uint8_t)mode;
+    hmi_task2_chart_passes_remaining = HMI_TASK2_CHART_PASS_COUNT;
+    hmi_task2_chart_next_point = 0u;
+    hmi_task2_tx_chart_emitted_points = 0u;
+    hmi_task2_next_chart_tx_ms = HAL_GetTick();
+    hmi_task2_diagnostics.last_chart_point = 0u;
+}
+
+/**
+ * @brief 根据动作构建下一小批 UART 数据。
  * @param action 目标动作。
  * @param frame_size 输出实际字节数。
  * @return 成功返回 1，失败返回 0。
@@ -924,8 +977,9 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
                                       uint16_t *frame_size)
 {
     const uint8_t *points = NULL;
-    const char *object_name = NULL;
+    hmi_chart_mode_t chart_mode = HMI_CHART_MODE_ONE_CYCLE;
 
+    hmi_task2_tx_chart_emitted_points = 0u;
     switch (action)
     {
         case HMI_TX_ACTION_INITIALIZE:
@@ -933,17 +987,17 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
 
         case HMI_TX_ACTION_ONE_CYCLE:
             points = hmi_task2_work_snapshot.waveform_1cycle;
-            object_name = HMI_CHART_T1_OBJECT;
+            chart_mode = HMI_CHART_MODE_ONE_CYCLE;
             break;
 
         case HMI_TX_ACTION_THREE_CYCLE:
             points = hmi_task2_work_snapshot.waveform_3cycle;
-            object_name = HMI_CHART_T3_OBJECT;
+            chart_mode = HMI_CHART_MODE_THREE_CYCLE;
             break;
 
         case HMI_TX_ACTION_SPECTRUM:
             points = hmi_task2_work_snapshot.spectrum_display;
-            object_name = HMI_CHART_SPECTRUM_OBJECT;
+            chart_mode = HMI_CHART_MODE_SPECTRUM;
             break;
 
         case HMI_TX_ACTION_TEXT:
@@ -976,10 +1030,17 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
             return 0u;
     }
 
-    return (uint8_t)(hmi_chart_build_waveform(
-        object_name, points, MEASUREMENT_DISPLAY_POINT_COUNT,
+    if (hmi_task2_chart_active_mode != (uint8_t)chart_mode)
+    {
+        hmi_task2_begin_chart(chart_mode);
+    }
+
+    return (uint8_t)(hmi_chart_build_waveform_chunk(
+        chart_mode, points, hmi_task2_chart_next_point,
+        HMI_CHART_POINTS_PER_CHUNK,
         hmi_task2_tx_buffer, HMI_CHART_FRAME_MAX_BYTES,
-        frame_size) == HMI_CHART_STATUS_OK);
+        frame_size,
+        &hmi_task2_tx_chart_emitted_points) == HMI_CHART_STATUS_OK);
 }
 
 /**
@@ -1020,15 +1081,28 @@ static hmi_tx_action_t hmi_task2_select_action(void)
     {
         return HMI_TX_ACTION_TEXT;
     }
+
+    if (hmi_task2_chart_active_mode != 0u)
+    {
+        if ((int32_t)(HAL_GetTick() - hmi_task2_next_chart_tx_ms) < 0)
+        {
+            return HMI_TX_ACTION_NONE;
+        }
+        return (hmi_tx_action_t)(HMI_TX_ACTION_ONE_CYCLE
+            + hmi_task2_chart_active_mode - 1u);
+    }
+
     if ((hmi_task2_display_requested != 0u)
         && (hmi_task2_waveform_redraw_pending != 0u))
     {
+        hmi_task2_begin_chart((hmi_chart_mode_t)requested_mode);
         return (hmi_tx_action_t)(HMI_TX_ACTION_ONE_CYCLE
-                                + requested_mode - 1u);
+            + requested_mode - 1u);
     }
     if ((hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] == 0u)
         || (hmi_task2_loaded_sequence[HMI_CHART_MODE_SPECTRUM] != sequence))
     {
+        hmi_task2_begin_chart(HMI_CHART_MODE_SPECTRUM);
         return HMI_TX_ACTION_SPECTRUM;
     }
     return HMI_TX_ACTION_NONE;
@@ -1047,6 +1121,8 @@ static void hmi_task2_complete_action(void)
     {
         case HMI_TX_ACTION_INITIALIZE:
             hmi_task2_initialize_done = 1u;
+            hmi_task2_diagnostics.visible_mode =
+                (uint8_t)HMI_CHART_MODE_SPECTRUM;
             break;
 
         case HMI_TX_ACTION_ONE_CYCLE:
@@ -1054,13 +1130,44 @@ static void hmi_task2_complete_action(void)
         case HMI_TX_ACTION_SPECTRUM:
             mode = (uint8_t)(hmi_task2_tx_action
                              - HMI_TX_ACTION_ONE_CYCLE + 1u);
-            hmi_task2_loaded_sequence[mode] =
-                hmi_task2_tx_source_sequence;
-            hmi_task2_loaded_valid[mode] = 1u;
-            if ((mode == hmi_task2_diagnostics.requested_mode)
-                && (mode != (uint8_t)HMI_CHART_MODE_SPECTRUM))
+            hmi_task2_chart_next_point = (uint16_t)(
+                hmi_task2_chart_next_point
+                + hmi_task2_tx_chart_emitted_points);
+            hmi_task2_diagnostics.chart_chunk_count++;
+            hmi_task2_diagnostics.last_chart_point =
+                hmi_task2_chart_next_point;
+            hmi_task2_next_chart_tx_ms =
+                HAL_GetTick() + HMI_TASK2_CHART_GAP_MS;
+
+            if (hmi_task2_chart_next_point
+                >= MEASUREMENT_DISPLAY_POINT_COUNT)
             {
-                hmi_task2_waveform_redraw_pending = 0u;
+                hmi_task2_diagnostics.chart_pass_count++;
+                if (hmi_task2_chart_passes_remaining > 1u)
+                {
+                    /*
+                     * 淘晶驰普通 add 指令没有逐批 ACK。完整重发一遍能够覆盖偶发的
+                     * 上电忙或解析丢指令，同时仍远小于题目要求的 2 秒响应时间。
+                     */
+                    hmi_task2_chart_passes_remaining--;
+                    hmi_task2_chart_next_point = 0u;
+                    hmi_task2_diagnostics.last_chart_point = 0u;
+                }
+                else
+                {
+                    hmi_task2_loaded_sequence[mode] =
+                        hmi_task2_tx_source_sequence;
+                    hmi_task2_loaded_valid[mode] = 1u;
+                    hmi_task2_chart_active_mode = 0u;
+                    hmi_task2_chart_passes_remaining = 0u;
+                    hmi_task2_chart_next_point = 0u;
+                    if ((mode == hmi_task2_diagnostics.requested_mode)
+                        && (mode
+                            != (uint8_t)HMI_CHART_MODE_SPECTRUM))
+                    {
+                        hmi_task2_waveform_redraw_pending = 0u;
+                    }
+                }
             }
             break;
 
@@ -1198,6 +1305,11 @@ void hmi_task2_init(void)
     hmi_task2_candidate_count = 0u;
     hmi_task2_last_examined_sequence = UINT32_MAX;
     hmi_task2_self_test_enabled = 0u;
+    hmi_task2_chart_active_mode = 0u;
+    hmi_task2_chart_passes_remaining = 0u;
+    hmi_task2_chart_next_point = 0u;
+    hmi_task2_tx_chart_emitted_points = 0u;
+    hmi_task2_next_chart_tx_ms = 0u;
     hmi_task2_diagnostics.requested_mode =
         (uint8_t)HMI_CHART_MODE_ONE_CYCLE;
     hmi_task2_diagnostics.calibration_enabled =
@@ -1229,6 +1341,11 @@ void hmi_task2_set_chart_self_test(uint8_t enable)
     hmi_task2_candidate_valid = 0u;
     hmi_task2_candidate_count = 0u;
     hmi_task2_last_examined_sequence = UINT32_MAX;
+    hmi_task2_chart_active_mode = 0u;
+    hmi_task2_chart_passes_remaining = 0u;
+    hmi_task2_chart_next_point = 0u;
+    hmi_task2_tx_chart_emitted_points = 0u;
+    hmi_task2_next_chart_tx_ms = 0u;
 }
 
 #if defined(HAL_UART_MODULE_ENABLED)

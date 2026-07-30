@@ -141,6 +141,66 @@ static uint8_t hmi_chart_append_visibility(
 }
 
 /**
+ * @brief 根据曲线模式返回对应的淘晶驰控件名。
+ * @param mode 曲线模式。
+ * @return 合法模式返回控件名，非法模式返回 NULL。
+ */
+static const char *hmi_chart_get_object_name(hmi_chart_mode_t mode)
+{
+    switch (mode)
+    {
+        case HMI_CHART_MODE_ONE_CYCLE:
+            return HMI_CHART_T1_OBJECT;
+
+        case HMI_CHART_MODE_THREE_CYCLE:
+            return HMI_CHART_T3_OBJECT;
+
+        case HMI_CHART_MODE_SPECTRUM:
+            return HMI_CHART_SPECTRUM_OBJECT;
+
+        default:
+            return NULL;
+    }
+}
+
+/**
+ * @brief 在曲线分批发送的首尾再次确认目标控件可见。
+ * @param mode 目标曲线模式。
+ * @param frame 输出缓冲区。
+ * @param capacity 总容量。
+ * @param used 当前长度。
+ * @return 成功返回 1，否则返回 0。
+ *
+ * @note 频谱位于独立区域，始终保持可见；两个时域控件只显示一个。
+ */
+static uint8_t hmi_chart_append_mode_visibility(
+    hmi_chart_mode_t mode,
+    uint8_t *frame,
+    uint16_t capacity,
+    uint16_t *used)
+{
+    if (mode == HMI_CHART_MODE_SPECTRUM)
+    {
+        return hmi_chart_append_visibility(
+            frame, capacity, used,
+            HMI_CHART_SPECTRUM_OBJECT, 1u);
+    }
+
+    return (uint8_t)(
+        (hmi_chart_append_visibility(
+            frame, capacity, used,
+            HMI_CHART_T1_OBJECT,
+            (mode == HMI_CHART_MODE_ONE_CYCLE) ? 1u : 0u) != 0u)
+        && (hmi_chart_append_visibility(
+            frame, capacity, used,
+            HMI_CHART_T3_OBJECT,
+            (mode == HMI_CHART_MODE_THREE_CYCLE) ? 1u : 0u) != 0u)
+        && (hmi_chart_append_visibility(
+            frame, capacity, used,
+            HMI_CHART_SPECTRUM_OBJECT, 1u) != 0u));
+}
+
+/**
  * @brief 构建一整条 350 点曲线的清空和追加命令。
  * @param object_name 淘晶驰 Waveform 控件名。
  * @param points 已映射到 8~201 的 350 个纵坐标。
@@ -187,6 +247,89 @@ hmi_chart_status_t hmi_chart_build_waveform(
         if (hmi_chart_append_curve_command(
                 frame, frame_capacity, frame_size,
                 object_name, (int16_t)points[index]) == 0u)
+        {
+            return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
+        }
+    }
+
+    return HMI_CHART_STATUS_OK;
+}
+
+/**
+ * @brief 把一条 350 点曲线拆成小批量 cle/add 指令。
+ * @param mode 目标曲线模式。
+ * @param points 完整的纵轴数组。
+ * @param first_point 本批第一点下标。
+ * @param requested_points 本批最多发送点数。
+ * @param frame 输出命令字节流。
+ * @param frame_capacity 输出缓冲区容量。
+ * @param frame_size 输出实际字节数。
+ * @param emitted_points 本批实际发送点数。
+ * @return 构帧状态；本函数不直接启动 UART。
+ *
+ * @note 首批先显式显示目标控件再清空；末批再次确认可见性。这样即使 HMI
+ *       上电事件或前一条 vis 指令到达较晚，也不会把已经写好的曲线永久隐藏。
+ */
+hmi_chart_status_t hmi_chart_build_waveform_chunk(
+    hmi_chart_mode_t mode,
+    const uint8_t *points,
+    uint16_t first_point,
+    uint16_t requested_points,
+    uint8_t *frame,
+    uint16_t frame_capacity,
+    uint16_t *frame_size,
+    uint16_t *emitted_points)
+{
+    const char *object_name = hmi_chart_get_object_name(mode);
+    uint16_t remaining_points;
+    uint16_t batch_points;
+    uint16_t index;
+
+    if ((object_name == NULL) || (points == NULL)
+        || (frame == NULL) || (frame_size == NULL)
+        || (emitted_points == NULL)
+        || (first_point >= MEASUREMENT_DISPLAY_POINT_COUNT)
+        || (requested_points == 0u))
+    {
+        return HMI_CHART_STATUS_INVALID_ARGUMENT;
+    }
+
+    *frame_size = 0u;
+    *emitted_points = 0u;
+    remaining_points = (uint16_t)(
+        MEASUREMENT_DISPLAY_POINT_COUNT - first_point);
+    batch_points = (requested_points < remaining_points)
+        ? requested_points : remaining_points;
+
+    if (first_point == 0u)
+    {
+        if ((hmi_chart_append_mode_visibility(
+                mode, frame, frame_capacity, frame_size) == 0u)
+            || (hmi_chart_append_curve_command(
+                frame, frame_capacity, frame_size,
+                object_name, -1) == 0u))
+        {
+            return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
+        }
+    }
+
+    for (index = 0u; index < batch_points; index++)
+    {
+        if (hmi_chart_append_curve_command(
+                frame, frame_capacity, frame_size,
+                object_name,
+                (int16_t)points[first_point + index]) == 0u)
+        {
+            return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
+        }
+    }
+    *emitted_points = batch_points;
+
+    if (((uint32_t)first_point + batch_points)
+        >= MEASUREMENT_DISPLAY_POINT_COUNT)
+    {
+        if (hmi_chart_append_mode_visibility(
+                mode, frame, frame_capacity, frame_size) == 0u)
         {
             return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
         }

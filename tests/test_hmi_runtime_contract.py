@@ -162,6 +162,17 @@ class HmiRuntimeContractTest(unittest.TestCase):
     def test_first_snapshot_reveals_spectrum_but_keeps_waveforms_hidden(self):
         self.assertIn("hmi_task2_visibility_pending = 0u;", self.source)
         self.assertIn("hmi_task2_display_requested = 0u;", self.source)
+        first_snapshot = self.source.index(
+            "if (hmi_task2_work_valid == 0u)"
+        )
+        stability_gate = self.source.index(
+            "hmi_task2_snapshots_are_stable(", first_snapshot
+        )
+        self.assertLess(first_snapshot, stability_gate)
+        self.assertIn(
+            "hmi_task2_work_snapshot, latest",
+            self.source[first_snapshot:stability_gate],
+        )
         self.assertIn(
             "&& (hmi_task2_diagnostics.visible_mode\n"
             "            != (uint8_t)HMI_CHART_MODE_SPECTRUM)",
@@ -175,6 +186,42 @@ class HmiRuntimeContractTest(unittest.TestCase):
             "                    : HMI_CHART_MODE_SPECTRUM",
             self.source,
         )
+
+    def test_chart_is_chunked_and_committed_only_after_final_point(self):
+        chart_h = (ROOT / "Core/User/hmi_chart.h").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("#define HMI_CHART_POINTS_PER_CHUNK 32u", chart_h)
+        self.assertIn("hmi_chart_build_waveform_chunk(", self.chart)
+        self.assertIn("hmi_task2_chart_next_point", self.source)
+        self.assertIn("HMI_TASK2_CHART_GAP_MS", self.source)
+
+        complete_start = self.source.index(
+            "static void hmi_task2_complete_action"
+        )
+        complete_end = self.source.index(
+            "static uint8_t hmi_task2_start_tx", complete_start
+        )
+        complete_body = self.source[complete_start:complete_end]
+        final_point_check = complete_body.index(
+            ">= MEASUREMENT_DISPLAY_POINT_COUNT"
+        )
+        loaded_commit = complete_body.index(
+            "hmi_task2_loaded_valid[mode] = 1u;"
+        )
+        self.assertLess(final_point_check, loaded_commit)
+
+    def test_initialization_immediately_reveals_spectrum_background(self):
+        initialize_start = self.source.index(
+            "static uint8_t hmi_task2_build_initialize"
+        )
+        initialize_end = self.source.index(
+            "static uint8_t hmi_task2_build_text", initialize_start
+        )
+        initialize_body = self.source[initialize_start:initialize_end]
+        self.assertIn("hmi_chart_build_visibility(", initialize_body)
+        self.assertIn("HMI_CHART_MODE_SPECTRUM", initialize_body)
+        self.assertNotIn("hmi_chart_build_hide_all(", initialize_body)
 
     def test_uart_callbacks_only_set_one_shared_value(self):
         expected = (
