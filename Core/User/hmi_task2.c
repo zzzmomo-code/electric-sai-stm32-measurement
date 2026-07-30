@@ -1,9 +1,9 @@
 /**
  * @file hmi_task2.c
- * @brief G 题淘晶驰串口屏实时刷新与按键切换实现。
+ * @brief G 题淘晶驰串口屏稳定锁存显示与按键切换实现。
  *
- * 模块用途：持续更新参数文本和独立频谱；第一次按键后，把 measurement_conversion
- *          生成的最新一周期或三周期 350 点缓存写入可见时域控件并持续刷新。
+ * 模块用途：连续接收测量快照，连续三帧稳定后锁存；参数和独立频谱只重画一次。
+ *          波形上电隐藏，按开始键后显示，之后仅在一周期/三周期按键到达时重画。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init() 并绑定 huart1。
@@ -20,16 +20,21 @@
 #define HMI_TASK2_TX_TIMEOUT_MS       1000u
 #define HMI_TASK2_COMMAND_HEAD        0xa5u
 #define HMI_TASK2_COMMAND_TAIL        0x5au
+#define HMI_TASK2_COMMAND_START       0x04u
+#define HMI_TASK2_COMMAND_MODE_UNUSED 0x10u
+#define HMI_TASK2_STABLE_FRAME_COUNT  3u
+#define HMI_TASK2_FREQUENCY_FLOOR_MHZ 100000u
+#define HMI_TASK2_VOLTAGE_FLOOR_UV    1000u
 
 /*
- * 实时显示状态机的核心规则：
+ * 稳定锁存显示状态机的核心规则：
  *
  * 1. 上电先隐藏三个曲线控件；
  * 2. 取得一份稳定的 measurement_display_snapshot_t 工作快照；
  * 3. 首帧只显示独立频谱控件；一周期和三周期控件保持隐藏；
  * 4. 每项只有在 TX DMA 完成回调到达后才记为“已装载”；
- * 5. 用户按键先切换一周期/三周期可见性，再用 STM32 最新缓存重画目标曲线；
- * 6. 每个新快照只更新参数、当前可见波形和频谱，不依赖隐藏控件保留 add 数据；
+ * 5. 开始键首次显示波形；周期键只选择并重画一周期或三周期；
+ * 6. 新输入连续三帧稳定后只自动更新参数和频谱一次，已显示波形保持冻结；
  * 7. 一份工作快照未显示完整前不换新快照，避免 FPGA 持续产帧导致当前帧永远发不完。
  *
  * 中断回调只写事件标志，所有解析、构帧和状态迁移均在主循环执行。
@@ -65,6 +70,8 @@ static uint8_t hmi_task2_tx_buffer[HMI_TASK2_TX_STORAGE_BYTES]
 
 /** 当前正在发送的一份稳定显示快照。 */
 static measurement_display_snapshot_t hmi_task2_work_snapshot;
+/** 正在进行连续稳定性确认的候选快照。 */
+static measurement_display_snapshot_t hmi_task2_candidate_snapshot;
 
 /** 每个控件已经装载的快照序号，索引 1~3 对应显示模式。 */
 static uint32_t hmi_task2_loaded_sequence[4];
@@ -95,6 +102,13 @@ static uint8_t hmi_task2_work_valid;
 static uint8_t hmi_task2_visibility_pending;
 /** 收到首个一周期/三周期按键后置位；在此之前两个时域控件始终隐藏。 */
 static uint8_t hmi_task2_display_requested;
+/** 仅由开始键或周期切换键置位；新 FPGA 帧本身不会让可见波形重画。 */
+static uint8_t hmi_task2_waveform_redraw_pending;
+/** 候选快照是否有效及其连续稳定帧数。 */
+static uint8_t hmi_task2_candidate_valid;
+static uint8_t hmi_task2_candidate_count;
+/** 最近已经参加稳定性判断的源帧序号。 */
+static uint32_t hmi_task2_last_examined_sequence;
 static uint8_t hmi_task2_self_test_enabled;
 
 /**
@@ -495,6 +509,105 @@ static void hmi_task2_generate_self_test(
 }
 
 /**
+ * @brief 判断两个无符号测量值是否落在相对误差和绝对误差共同限定的窗口内。
+ * @param left 第一个值。
+ * @param right 第二个值。
+ * @param divisor 相对容差除数，例如500代表0.2%。
+ * @param floor_tolerance 最小绝对容差。
+ * @return 在容差内返回1，否则返回0。
+ */
+static uint8_t hmi_task2_value_is_close(uint32_t left,
+                                        uint32_t right,
+                                        uint32_t divisor,
+                                        uint32_t floor_tolerance)
+{
+    uint32_t reference = (left > right) ? left : right;
+    uint32_t tolerance = reference / divisor;
+    uint32_t difference = (left > right)
+        ? (left - right) : (right - left);
+
+    if (tolerance < floor_tolerance)
+    {
+        tolerance = floor_tolerance;
+    }
+    return (difference <= tolerance) ? 1u : 0u;
+}
+
+/**
+ * @brief 判断两帧的主要测量结果是否稳定一致。
+ * @param left 第一帧显示快照。
+ * @param right 第二帧显示快照。
+ * @return 频率、电压和有效分量均在稳定窗口内返回1，否则返回0。
+ *
+ * @note 频率容差为0.2%且不小于100 Hz；Vpp/Vrms容差为2%且不小于1 mV；
+ *       分量幅度容差为约3%。这只用于抑制屏幕抖动，不改变FPGA测量结果。
+ */
+static uint8_t hmi_task2_snapshots_are_stable(
+    const measurement_display_snapshot_t *left,
+    const measurement_display_snapshot_t *right)
+{
+    uint8_t left_index;
+    uint8_t right_index;
+    uint8_t matched_right_mask = 0u;
+
+    if ((left->valid == 0u) || (right->valid == 0u)
+        || (left->component_count != right->component_count)
+        || (hmi_task2_value_is_close(
+                left->fundamental_mhz, right->fundamental_mhz,
+                500u, HMI_TASK2_FREQUENCY_FLOOR_MHZ) == 0u)
+        || (hmi_task2_value_is_close(
+                left->vpp_uv, right->vpp_uv,
+                50u, HMI_TASK2_VOLTAGE_FLOOR_UV) == 0u)
+        || (hmi_task2_value_is_close(
+                left->vrms_uv, right->vrms_uv,
+                50u, HMI_TASK2_VOLTAGE_FLOOR_UV) == 0u))
+    {
+        return 0u;
+    }
+
+    /*
+     * FPGA 协议允许有效分量位于任意候选槽，且不同帧的槽位顺序不保证一致。
+     * 因此不能按数组下标逐项比较；这里按谐波次数、频率和幅度进行无序匹配。
+     */
+    for (left_index = 0u;
+         left_index < left->component_count;
+         left_index++)
+    {
+        uint8_t found_match = 0u;
+
+        for (right_index = 0u;
+             right_index < right->component_count;
+             right_index++)
+        {
+            uint8_t right_bit = (uint8_t)(1u << right_index);
+
+            if (((matched_right_mask & right_bit) == 0u)
+                && (left->component[left_index].harmonic_order
+                    == right->component[right_index].harmonic_order)
+                && (hmi_task2_value_is_close(
+                        left->component[left_index].frequency_mhz,
+                        right->component[right_index].frequency_mhz,
+                        500u, HMI_TASK2_FREQUENCY_FLOOR_MHZ) != 0u)
+                && (hmi_task2_value_is_close(
+                        left->component[left_index].amplitude_peak_uv,
+                        right->component[right_index].amplitude_peak_uv,
+                        33u, HMI_TASK2_VOLTAGE_FLOOR_UV) != 0u))
+            {
+                matched_right_mask |= right_bit;
+                found_match = 1u;
+                break;
+            }
+        }
+
+        if (found_match == 0u)
+        {
+            return 0u;
+        }
+    }
+    return 1u;
+}
+
+/**
  * @brief 判断当前工作快照是否已完整显示。
  * @param 无。
  * @return 参数、当前波形和独立频谱均完成返回 1，否则返回 0。
@@ -529,7 +642,7 @@ static uint8_t hmi_task2_preload_complete(void)
 
     if ((hmi_task2_diagnostics.visible_mode != requested_mode)
         || (hmi_task2_loaded_valid[requested_mode] == 0u)
-        || (hmi_task2_loaded_sequence[requested_mode] != sequence))
+        || (hmi_task2_waveform_redraw_pending != 0u))
     {
         return 0u;
     }
@@ -556,23 +669,75 @@ static void hmi_task2_refresh_work_snapshot(void)
         return;
     }
 
+    if (measurement_conversion_get_snapshot(&latest) == 0u)
+    {
+        return;
+    }
+    if (latest->frame_sequence == hmi_task2_last_examined_sequence)
+    {
+        return;
+    }
+    hmi_task2_last_examined_sequence = latest->frame_sequence;
+
+    /*
+     * 已锁存结果附近的小幅测量抖动不再触发屏幕清空和重画。只有先偏离当前结果，
+     * 再连续三帧彼此稳定的新输入，才会成为新的屏幕快照。
+     */
+    if ((hmi_task2_work_valid != 0u)
+        && (hmi_task2_snapshots_are_stable(
+                latest, &hmi_task2_work_snapshot) != 0u))
+    {
+        hmi_task2_candidate_valid = 0u;
+        hmi_task2_candidate_count = 0u;
+        hmi_task2_diagnostics.stable_candidate_count = 0u;
+        hmi_task2_diagnostics.stable_reject_count++;
+        return;
+    }
+
+    if ((hmi_task2_candidate_valid != 0u)
+        && (hmi_task2_snapshots_are_stable(
+                latest, &hmi_task2_candidate_snapshot) != 0u))
+    {
+        if (hmi_task2_candidate_count < HMI_TASK2_STABLE_FRAME_COUNT)
+        {
+            hmi_task2_candidate_count++;
+        }
+        memcpy(&hmi_task2_candidate_snapshot, latest,
+               sizeof(hmi_task2_candidate_snapshot));
+    }
+    else
+    {
+        memcpy(&hmi_task2_candidate_snapshot, latest,
+               sizeof(hmi_task2_candidate_snapshot));
+        hmi_task2_candidate_valid = 1u;
+        hmi_task2_candidate_count = 1u;
+    }
+    hmi_task2_diagnostics.stable_candidate_count =
+        hmi_task2_candidate_count;
+
+    if (hmi_task2_candidate_count < HMI_TASK2_STABLE_FRAME_COUNT)
+    {
+        return;
+    }
     if ((hmi_task2_work_valid != 0u)
         && (hmi_task2_preload_complete() == 0u))
     {
         return;
     }
-    if (measurement_conversion_get_snapshot(&latest) == 0u)
-    {
-        return;
-    }
-    if ((hmi_task2_work_valid != 0u)
-        && (latest->frame_sequence == hmi_task2_work_snapshot.frame_sequence))
-    {
-        return;
-    }
 
-    memcpy(&hmi_task2_work_snapshot, latest, sizeof(hmi_task2_work_snapshot));
+    memcpy(&hmi_task2_work_snapshot, &hmi_task2_candidate_snapshot,
+           sizeof(hmi_task2_work_snapshot));
     hmi_task2_work_valid = 1u;
+    hmi_task2_candidate_valid = 0u;
+    hmi_task2_candidate_count = 0u;
+    hmi_task2_diagnostics.stable_candidate_count = 0u;
+    hmi_task2_diagnostics.stable_accept_count++;
+    /*
+     * 新的稳定输入只自动刷新数字和频谱一次。时域波形保持冻结，直到用户按开始、
+     * 一周期或三周期；这样不会因FPGA持续产帧而闪烁。
+     */
+    hmi_task2_text_valid = 0u;
+    hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] = 0u;
     if ((hmi_task2_display_requested == 0u)
         && (hmi_task2_diagnostics.visible_mode
             != (uint8_t)HMI_CHART_MODE_SPECTRUM))
@@ -612,8 +777,9 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
         }
         else if (hmi_task2_command_state == 1u)
         {
-            if ((byte >= (uint8_t)HMI_CHART_MODE_ONE_CYCLE)
-                && (byte <= (uint8_t)HMI_CHART_MODE_SPECTRUM))
+            if (((byte >= (uint8_t)HMI_CHART_MODE_ONE_CYCLE)
+                 && (byte <= HMI_TASK2_COMMAND_START))
+                || (byte == HMI_TASK2_COMMAND_MODE_UNUSED))
             {
                 hmi_task2_command_candidate = byte;
                 hmi_task2_command_state = 2u;
@@ -631,17 +797,39 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
             {
                 hmi_task2_diagnostics.last_command =
                     hmi_task2_command_candidate;
-                hmi_task2_diagnostics.requested_mode =
-                    hmi_task2_command_candidate;
                 hmi_task2_diagnostics.command_count++;
-                hmi_task2_display_requested = 1u;
-                hmi_task2_visibility_pending = 1u;
-                /*
-                 * 即使该控件以前显示过同一快照，也在切换后重画一次。
-                 * 这样不依赖隐藏控件在 vis=0 期间保留内部曲线 RAM。
-                 */
-                hmi_task2_loaded_valid[
-                    hmi_task2_command_candidate] = 0u;
+                if (hmi_task2_command_candidate
+                    == HMI_TASK2_COMMAND_MODE_UNUSED)
+                {
+                    /*
+                     * 新版 HMI 保留“切换模式”按钮，但当前 FPGA 显示链路暂不使用。
+                     * 正确接收后静默忽略，避免误计为协议错误。
+                     */
+                }
+                else if (hmi_task2_command_candidate
+                    == HMI_TASK2_COMMAND_START)
+                {
+                    hmi_task2_display_requested = 1u;
+                    hmi_task2_visibility_pending = 1u;
+                    hmi_task2_waveform_redraw_pending = 1u;
+                }
+                else if (hmi_task2_command_candidate
+                         == (uint8_t)HMI_CHART_MODE_SPECTRUM)
+                {
+                    /* 频谱键只要求把当前稳定频谱重画一次，不改变时域可见性。 */
+                    hmi_task2_loaded_valid[
+                        HMI_CHART_MODE_SPECTRUM] = 0u;
+                }
+                else
+                {
+                    hmi_task2_diagnostics.requested_mode =
+                        hmi_task2_command_candidate;
+                    if (hmi_task2_display_requested != 0u)
+                    {
+                        hmi_task2_visibility_pending = 1u;
+                        hmi_task2_waveform_redraw_pending = 1u;
+                    }
+                }
             }
             else
             {
@@ -742,8 +930,7 @@ static hmi_tx_action_t hmi_task2_select_action(void)
         return HMI_TX_ACTION_TEXT;
     }
     if ((hmi_task2_display_requested != 0u)
-        && ((hmi_task2_loaded_valid[requested_mode] == 0u)
-            || (hmi_task2_loaded_sequence[requested_mode] != sequence)))
+        && (hmi_task2_waveform_redraw_pending != 0u))
     {
         return (hmi_tx_action_t)(HMI_TX_ACTION_ONE_CYCLE
                                 + requested_mode - 1u);
@@ -779,6 +966,11 @@ static void hmi_task2_complete_action(void)
             hmi_task2_loaded_sequence[mode] =
                 hmi_task2_tx_source_sequence;
             hmi_task2_loaded_valid[mode] = 1u;
+            if ((mode == hmi_task2_diagnostics.requested_mode)
+                && (mode != (uint8_t)HMI_CHART_MODE_SPECTRUM))
+            {
+                hmi_task2_waveform_redraw_pending = 0u;
+            }
             break;
 
         case HMI_TX_ACTION_TEXT:
@@ -861,6 +1053,8 @@ void hmi_task2_init(void)
     memset(hmi_task2_tx_buffer, 0, sizeof(hmi_task2_tx_buffer));
     memset(&hmi_task2_work_snapshot, 0,
            sizeof(hmi_task2_work_snapshot));
+    memset(&hmi_task2_candidate_snapshot, 0,
+           sizeof(hmi_task2_candidate_snapshot));
     memset(hmi_task2_loaded_sequence, 0,
            sizeof(hmi_task2_loaded_sequence));
     memset(hmi_task2_loaded_valid, 0,
@@ -883,6 +1077,10 @@ void hmi_task2_init(void)
     hmi_task2_work_valid = 0u;
     hmi_task2_visibility_pending = 0u;
     hmi_task2_display_requested = 0u;
+    hmi_task2_waveform_redraw_pending = 0u;
+    hmi_task2_candidate_valid = 0u;
+    hmi_task2_candidate_count = 0u;
+    hmi_task2_last_examined_sequence = UINT32_MAX;
     hmi_task2_self_test_enabled = 0u;
     hmi_task2_diagnostics.requested_mode =
         (uint8_t)HMI_CHART_MODE_ONE_CYCLE;
@@ -909,6 +1107,10 @@ void hmi_task2_set_chart_self_test(uint8_t enable)
     hmi_task2_display_requested =
         (hmi_task2_self_test_enabled != 0u) ? 1u : 0u;
     hmi_task2_visibility_pending = hmi_task2_display_requested;
+    hmi_task2_waveform_redraw_pending = hmi_task2_display_requested;
+    hmi_task2_candidate_valid = 0u;
+    hmi_task2_candidate_count = 0u;
+    hmi_task2_last_examined_sequence = UINT32_MAX;
 }
 
 #if defined(HAL_UART_MODULE_ENABLED)

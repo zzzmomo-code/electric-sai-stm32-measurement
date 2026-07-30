@@ -1,9 +1,9 @@
 /**
  * @file hmi_task2.h
- * @brief G 题淘晶驰串口屏实时刷新与按键切换接口。
+ * @brief G 题淘晶驰串口屏稳定锁存显示与按键切换接口。
  *
- * 模块用途：经 USART1 DMA 持续更新参数和频谱；第一次收到屏幕按键后，从 STM32
- *          最新缓存显示并持续重画一周期/三周期波形，频谱控件始终独立可见。
+ * 模块用途：经 USART1 DMA 把连续三帧稳定的参数和频谱锁存显示一次；波形上电隐藏，
+ *          开始键显示缓存，周期键选择并重画严格的一周期或三周期波形。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init()，再绑定 huart1。
@@ -21,7 +21,7 @@
 #include "stm32h7xx_hal_uart.h"
 #endif
 
-/** 串口屏实时刷新状态。 */
+/** 串口屏稳定锁存显示状态。 */
 typedef enum
 {
     HMI_TASK2_STATE_WAIT_DATA = 0,
@@ -41,12 +41,15 @@ typedef struct
     uint32_t tx_complete_count;    /**< TX DMA 完成次数。 */
     uint32_t tx_error_count;       /**< TX 启动、超时或 UART 错误次数。 */
     uint32_t preload_complete_count; /**< 当前波形、频谱和参数完整刷新次数。 */
+    uint32_t stable_accept_count;  /**< 连续三帧稳定并锁存为屏幕结果的次数。 */
+    uint32_t stable_reject_count;  /**< 与当前锁存结果相近、无需重画的帧数。 */
     uint32_t last_source_sequence; /**< 当前刷新工作快照序号。 */
     uint32_t last_visible_sequence;/**< 当前可见曲线对应的快照序号。 */
     uint16_t last_tx_bytes;        /**< 最近一次 DMA 发送字节数。 */
-    uint8_t last_command;          /**< 最近一次有效模式命令，范围 1~3。 */
+    uint8_t last_command;          /**< 最近一次有效命令：1/2/3/4为一周期/三周期/频谱/开始，0x10保留。 */
     uint8_t requested_mode;        /**< 用户要求显示的模式。 */
     uint8_t visible_mode;          /**< 屏幕当前已切换的模式。 */
+    uint8_t stable_candidate_count;/**< 当前候选结果已连续稳定的帧数，范围0~3。 */
     hmi_task2_state_t state;       /**< 当前刷新状态。 */
 } hmi_task2_diagnostics_t;
 

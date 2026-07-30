@@ -53,14 +53,35 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn('"t_comp%u.txt=', self.source)
         self.assertIn("spectrum_visible = 1u;", self.chart)
 
-    def test_buttons_use_a5_command_5a_and_only_change_display_mode(self):
+    def test_buttons_use_a5_command_5a_and_include_start_command(self):
         self.assertIn("#define HMI_TASK2_COMMAND_HEAD        0xa5u", self.source)
         self.assertIn("#define HMI_TASK2_COMMAND_TAIL        0x5au", self.source)
+        self.assertIn("#define HMI_TASK2_COMMAND_START       0x04u", self.source)
+        self.assertIn(
+            "#define HMI_TASK2_COMMAND_MODE_UNUSED 0x10u", self.source
+        )
         self.assertIn("hmi_task2_display_requested = 1u;", self.source)
         self.assertIn("hmi_task2_visibility_pending = 1u;", self.source)
+        self.assertIn("hmi_task2_waveform_redraw_pending = 1u;", self.source)
         self.assertIn("hmi_chart_build_visibility", self.source)
         self.assertNotIn("frequency_measure_request_now", self.source)
         self.assertNotIn("dac_output_set_level", self.source)
+
+    def test_unused_mode_button_is_recognized_but_has_no_action(self):
+        parse_start = self.source.index(
+            "static void hmi_task2_parse_commands"
+        )
+        parse_end = self.source.index(
+            "static uint8_t hmi_task2_build_action", parse_start
+        )
+        parse_body = self.source[parse_start:parse_end]
+        self.assertIn(
+            "byte == HMI_TASK2_COMMAND_MODE_UNUSED", parse_body
+        )
+        self.assertIn(
+            "== HMI_TASK2_COMMAND_MODE_UNUSED", parse_body
+        )
+        self.assertIn("静默忽略", parse_body)
 
     def test_first_snapshot_reveals_spectrum_but_keeps_waveforms_hidden(self):
         self.assertIn("hmi_task2_visibility_pending = 0u;", self.source)
@@ -93,14 +114,27 @@ class HmiRuntimeContractTest(unittest.TestCase):
             self.assertEqual(assignments, [variable_name])
             self.assertNotIn("HAL_UART_", body)
 
-    def test_refresh_tracks_visible_curve_and_finishes_before_new_snapshot(self):
+    def test_stable_latch_updates_text_and_spectrum_but_freezes_waveform(self):
         self.assertIn("hmi_task2_loaded_sequence[4]", self.source)
         self.assertIn("hmi_task2_loaded_valid[4]", self.source)
         self.assertIn("hmi_task2_preload_complete()", self.source)
         self.assertIn("hmi_task2_work_snapshot", self.source)
+        self.assertIn("#define HMI_TASK2_STABLE_FRAME_COUNT  3u", self.source)
+        self.assertIn("hmi_task2_snapshots_are_stable", self.source)
+        self.assertIn("hmi_task2_text_valid = 0u;", self.source)
         self.assertIn(
-            "hmi_task2_loaded_sequence[requested_mode] != sequence",
+            "hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] = 0u;",
             self.source,
+        )
+        stable_refresh = self.source.index(
+            "新的稳定输入只自动刷新数字和频谱一次"
+        )
+        next_function = self.source.index(
+            "static void hmi_task2_parse_commands", stable_refresh
+        )
+        self.assertNotIn(
+            "hmi_task2_waveform_redraw_pending = 1u;",
+            self.source[stable_refresh:next_function],
         )
         self.assertIn(
             "mode != HMI_CHART_MODE_SPECTRUM",
@@ -110,8 +144,11 @@ class HmiRuntimeContractTest(unittest.TestCase):
             "&& (hmi_task2_preload_complete() == 0u)",
             self.source,
         )
+        self.assertIn("matched_right_mask", self.source)
+        self.assertIn("found_match", self.source)
+        self.assertIn("无序匹配", self.source)
 
-    def test_button_switches_visibility_before_redrawing_selected_curve(self):
+    def test_start_and_period_buttons_are_only_waveform_redraw_triggers(self):
         select_start = self.source.index(
             "static hmi_tx_action_t hmi_task2_select_action"
         )
@@ -123,10 +160,20 @@ class HmiRuntimeContractTest(unittest.TestCase):
             select_body.index("return HMI_TX_ACTION_VISIBILITY;"),
             select_body.index("HMI_TX_ACTION_ONE_CYCLE"),
         )
+        parse_start = self.source.index(
+            "static void hmi_task2_parse_commands"
+        )
+        parse_end = self.source.index(
+            "static uint8_t hmi_task2_build_action", parse_start
+        )
+        parse_body = self.source[parse_start:parse_end]
+        self.assertEqual(
+            parse_body.count("hmi_task2_waveform_redraw_pending = 1u;"),
+            2,
+        )
         self.assertIn(
-            "hmi_task2_loaded_valid[\n"
-            "                    hmi_task2_command_candidate] = 0u;",
-            self.source,
+            "== HMI_TASK2_COMMAND_START",
+            parse_body,
         )
 
     def test_system_pipeline_is_fpga_then_conversion_then_hmi(self):

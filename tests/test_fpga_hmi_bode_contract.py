@@ -269,10 +269,10 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("HAL_SPI_TransmitReceive_DMA", self.link)
         self.assertIn("fpga_link_dummy_tx_cache_line", self.link)
 
-    def test_spi3_is_generated_for_625khz_mode0_soft_nss(self):
+    def test_spi3_is_generated_for_20mhz_mode0_soft_nss(self):
         for setting in (
-            "SPI3.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_128",
-            "SPI3.CalculateBaudRate=625.0 KBits/s",
+            "SPI3.BaudRatePrescaler=SPI_BAUDRATEPRESCALER_4",
+            "SPI3.CalculateBaudRate=20.0 MBits/s",
             "SPI3.DataSize=SPI_DATASIZE_8BIT",
             "SPI3.Direction=SPI_DIRECTION_2LINES",
             "SPI3.Mode=SPI_MODE_MASTER",
@@ -284,7 +284,7 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             "hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;",
             "hspi3.Init.NSS = SPI_NSS_SOFT;",
             "hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;",
-            "hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_128;",
+            "hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;",
         ):
             self.assertIn(setting, self.spi_generated)
         self.assertIn(
@@ -396,7 +396,28 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
                 self.conversion_h,
             )
         self.assertIn("bucket_maximum", self.conversion)
-        self.assertIn("sum += source[input_index]", self.conversion)
+        self.assertIn("time_sample_rate_hz", self.conversion)
+        self.assertIn("fundamental_mhz", self.conversion)
+        self.assertIn("period_q16", self.conversion)
+        self.assertIn("measurement_conversion_interpolate_time", self.conversion)
+        self.assertIn(
+            "measurement_conversion_resample_periodic", self.conversion
+        )
+        self.assertIn("phase_q16 %= period_q16;", self.conversion)
+        self.assertIn(
+            "measurement_conversion_resample_periodic(\n"
+            "        source->time_samples,\n"
+            "        source->header.time_count,\n"
+            "        cycle_start_q16,\n"
+            "        period_q16,\n"
+            "        3u,",
+            self.conversion,
+        )
+        self.assertIn("span_q16", self.conversion)
+        self.assertNotIn(
+            "time_count / FPGA_PROTOCOL_CAPTURED_CYCLES",
+            self.conversion,
+        )
         self.assertNotIn("sqrt", self.conversion)
 
     def test_chart_buffer_covers_worst_case_350_ascii_add_commands(self):
