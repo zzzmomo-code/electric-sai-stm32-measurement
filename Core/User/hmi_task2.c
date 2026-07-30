@@ -22,6 +22,7 @@
 #define HMI_TASK2_COMMAND_TAIL        0x5au
 #define HMI_TASK2_COMMAND_START       0x04u
 #define HMI_TASK2_COMMAND_MODE_UNUSED 0x10u
+#define HMI_TASK2_COMMAND_CALIBRATION 0x20u
 #define HMI_TASK2_STABLE_FRAME_COUNT  3u
 #define HMI_TASK2_FREQUENCY_FLOOR_MHZ 100000u
 #define HMI_TASK2_VOLTAGE_FLOOR_UV    1000u
@@ -49,7 +50,8 @@ typedef enum
     HMI_TX_ACTION_THREE_CYCLE,
     HMI_TX_ACTION_SPECTRUM,
     HMI_TX_ACTION_TEXT,
-    HMI_TX_ACTION_VISIBILITY
+    HMI_TX_ACTION_VISIBILITY,
+    HMI_TX_ACTION_CALIBRATION
 } hmi_tx_action_t;
 
 volatile uint16_t hmi_uart_rx_event_size;
@@ -89,6 +91,8 @@ static uint8_t hmi_task2_text_valid;
 static hmi_tx_action_t hmi_task2_tx_action;
 static uint32_t hmi_task2_tx_source_sequence;
 static uint32_t hmi_task2_tx_started_ms;
+/** 启动本次 TX 时的校准状态，用于防止发送过程中切换模式造成旧文字被误提交。 */
+static uint8_t hmi_task2_tx_calibration_enabled;
 
 /** 接收 A5 CMD 5A 的三状态解析器状态。 */
 static uint8_t hmi_task2_command_state;
@@ -100,6 +104,8 @@ static uint8_t hmi_task2_tx_active;
 static uint8_t hmi_task2_initialize_done;
 static uint8_t hmi_task2_work_valid;
 static uint8_t hmi_task2_visibility_pending;
+/** 非零表示需要把当前已校准/未校准状态写入 t_nihe。 */
+static uint8_t hmi_task2_calibration_pending;
 /** 收到首个一周期/三周期按键后置位；在此之前两个时域控件始终隐藏。 */
 static uint8_t hmi_task2_display_requested;
 /** 仅由开始键或周期切换键置位；新 FPGA 帧本身不会让可见波形重画。 */
@@ -247,6 +253,28 @@ static uint8_t hmi_task2_append_command(uint8_t *buffer,
 }
 
 /**
+ * @brief 向发送缓冲区追加 t_nihe 的当前校准状态。
+ * @param buffer 输出缓冲区。
+ * @param capacity 缓冲区容量。
+ * @param offset 当前写入偏移。
+ * @return 成功返回 1，空间不足返回 0。
+ *
+ * @note 当前 HMI 工程字符编码为 GB2312，因此中文使用固定 GB2312 字节：
+ *       已校准=D2 D1 D0 A3 D7 BC，未校准=CE B4 D0 A3 D7 BC。
+ */
+static uint8_t hmi_task2_append_calibration_state(
+    uint8_t *buffer,
+    uint16_t capacity,
+    uint16_t *offset)
+{
+    const char *command = (measurement_calibration_is_enabled() != 0u)
+        ? "t_nihe.txt=\"\xd2\xd1\xd0\xa3\xd7\xbc\""
+        : "t_nihe.txt=\"\xce\xb4\xd0\xa3\xd7\xbc\"";
+
+    return hmi_task2_append_command(buffer, capacity, offset, command);
+}
+
+/**
  * @brief 把微伏整数格式化为便于比赛现场读取的电压文本。
  * @param value_uv 电压值，单位微伏。
  * @param text 输出文本。
@@ -323,6 +351,13 @@ static uint8_t hmi_task2_build_initialize(uint16_t *frame_size)
     {
         return 0u;
     }
+    if (hmi_task2_append_calibration_state(
+            hmi_task2_tx_buffer,
+            HMI_CHART_FRAME_MAX_BYTES,
+            &size) == 0u)
+    {
+        return 0u;
+    }
     *frame_size = size;
     return 1u;
 }
@@ -340,8 +375,18 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
     char amplitude[28];
     uint16_t size = 0u;
     uint8_t index;
+    uint32_t display_vpp_uv;
+    uint32_t display_vrms_uv;
+    uint32_t display_fundamental_mhz;
 
-    hmi_task2_format_voltage(hmi_task2_work_snapshot.vpp_uv,
+    display_vpp_uv = measurement_calibration_apply_vpp_uv(
+        hmi_task2_work_snapshot.vpp_uv);
+    display_vrms_uv = measurement_calibration_apply_vrms_uv(
+        hmi_task2_work_snapshot.vrms_uv);
+    display_fundamental_mhz = measurement_calibration_apply_frequency_mhz(
+        hmi_task2_work_snapshot.fundamental_mhz);
+
+    hmi_task2_format_voltage(display_vpp_uv,
                              voltage, sizeof(voltage));
     (void)snprintf(command, sizeof(command), "t_vpp.txt=\"%s\"", voltage);
     if (hmi_task2_append_command(hmi_task2_tx_buffer,
@@ -351,7 +396,7 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
         return 0u;
     }
 
-    hmi_task2_format_voltage(hmi_task2_work_snapshot.vrms_uv,
+    hmi_task2_format_voltage(display_vrms_uv,
                              voltage, sizeof(voltage));
     (void)snprintf(command, sizeof(command), "t_vrms.txt=\"%s\"", voltage);
     if (hmi_task2_append_command(hmi_task2_tx_buffer,
@@ -361,7 +406,7 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
         return 0u;
     }
 
-    hmi_task2_format_frequency(hmi_task2_work_snapshot.fundamental_mhz,
+    hmi_task2_format_frequency(display_fundamental_mhz,
                                frequency, sizeof(frequency));
     (void)snprintf(command, sizeof(command), "t_freq.txt=\"%s\"", frequency);
     if (hmi_task2_append_command(hmi_task2_tx_buffer,
@@ -380,9 +425,16 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
             && ((component->flags
                  & FPGA_PROTOCOL_COMPONENT_VALID) != 0u))
         {
-            hmi_task2_format_frequency(component->frequency_mhz,
+            uint32_t display_component_frequency_mhz =
+                measurement_calibration_apply_frequency_mhz(
+                    component->frequency_mhz);
+            uint32_t display_component_amplitude_uv =
+                measurement_calibration_apply_component_amplitude_uv(
+                    component->amplitude_peak_uv);
+
+            hmi_task2_format_frequency(display_component_frequency_mhz,
                                        frequency, sizeof(frequency));
-            hmi_task2_format_voltage(component->amplitude_peak_uv,
+            hmi_task2_format_voltage(display_component_amplitude_uv,
                                      amplitude, sizeof(amplitude));
             (void)snprintf(command, sizeof(command),
                            "t_comp%u.txt=\"H%u %s %s\"",
@@ -420,6 +472,13 @@ static uint8_t hmi_task2_build_text(uint16_t *frame_size)
     if (hmi_task2_append_command(hmi_task2_tx_buffer,
                                  HMI_CHART_FRAME_MAX_BYTES,
                                  &size, command) == 0u)
+    {
+        return 0u;
+    }
+    if (hmi_task2_append_calibration_state(
+            hmi_task2_tx_buffer,
+            HMI_CHART_FRAME_MAX_BYTES,
+            &size) == 0u)
     {
         return 0u;
     }
@@ -779,7 +838,8 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
         {
             if (((byte >= (uint8_t)HMI_CHART_MODE_ONE_CYCLE)
                  && (byte <= HMI_TASK2_COMMAND_START))
-                || (byte == HMI_TASK2_COMMAND_MODE_UNUSED))
+                || (byte == HMI_TASK2_COMMAND_MODE_UNUSED)
+                || (byte == HMI_TASK2_COMMAND_CALIBRATION))
             {
                 hmi_task2_command_candidate = byte;
                 hmi_task2_command_state = 2u;
@@ -805,6 +865,19 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
                      * 新版 HMI 保留“切换模式”按钮，但当前 FPGA 显示链路暂不使用。
                      * 正确接收后静默忽略，避免误计为协议错误。
                      */
+                }
+                else if (hmi_task2_command_candidate
+                         == HMI_TASK2_COMMAND_CALIBRATION)
+                {
+                    hmi_task2_diagnostics.calibration_enabled =
+                        measurement_calibration_toggle();
+                    hmi_task2_diagnostics.calibration_toggle_count++;
+                    hmi_task2_calibration_pending = 1u;
+                    /*
+                     * 只让数字文本按当前稳定快照重新拟合；不清空、不重画波形或频谱，
+                     * 因此切换不会造成曲线闪烁，也不会触发 FPGA 重新测量。
+                     */
+                    hmi_task2_text_valid = 0u;
                 }
                 else if (hmi_task2_command_candidate
                     == HMI_TASK2_COMMAND_START)
@@ -885,6 +958,20 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
                 HMI_CHART_FRAME_MAX_BYTES,
                 frame_size) == HMI_CHART_STATUS_OK);
 
+        case HMI_TX_ACTION_CALIBRATION:
+        {
+            uint16_t size = 0u;
+            if (hmi_task2_append_calibration_state(
+                    hmi_task2_tx_buffer,
+                    HMI_CHART_FRAME_MAX_BYTES,
+                    &size) == 0u)
+            {
+                return 0u;
+            }
+            *frame_size = size;
+            return 1u;
+        }
+
         default:
             return 0u;
     }
@@ -908,6 +995,10 @@ static hmi_tx_action_t hmi_task2_select_action(void)
     if (hmi_task2_initialize_done == 0u)
     {
         return HMI_TX_ACTION_INITIALIZE;
+    }
+    if (hmi_task2_calibration_pending != 0u)
+    {
+        return HMI_TX_ACTION_CALIBRATION;
     }
     if (hmi_task2_work_valid == 0u)
     {
@@ -974,8 +1065,16 @@ static void hmi_task2_complete_action(void)
             break;
 
         case HMI_TX_ACTION_TEXT:
-            hmi_task2_text_sequence = hmi_task2_tx_source_sequence;
-            hmi_task2_text_valid = 1u;
+            if (hmi_task2_tx_calibration_enabled
+                == measurement_calibration_is_enabled())
+            {
+                hmi_task2_text_sequence = hmi_task2_tx_source_sequence;
+                hmi_task2_text_valid = 1u;
+            }
+            else
+            {
+                hmi_task2_text_valid = 0u;
+            }
             break;
 
         case HMI_TX_ACTION_VISIBILITY:
@@ -986,6 +1085,14 @@ static void hmi_task2_complete_action(void)
             hmi_task2_diagnostics.last_visible_sequence =
                 hmi_task2_tx_source_sequence;
             hmi_task2_visibility_pending = 0u;
+            break;
+
+        case HMI_TX_ACTION_CALIBRATION:
+            if (hmi_task2_tx_calibration_enabled
+                == measurement_calibration_is_enabled())
+            {
+                hmi_task2_calibration_pending = 0u;
+            }
             break;
 
         default:
@@ -1017,6 +1124,12 @@ static uint8_t hmi_task2_start_tx(hmi_tx_action_t action)
 {
     uint16_t frame_size = 0u;
 
+    /*
+     * 先锁存本次发送采用的校准状态，再按同一状态构建命令。
+     * 若发送期间用户再次切换，完成阶段会发现状态不一致并安排重发。
+     */
+    hmi_task2_tx_calibration_enabled =
+        measurement_calibration_is_enabled();
     if (hmi_task2_build_action(action, &frame_size) == 0u)
     {
         hmi_task2_diagnostics.tx_error_count++;
@@ -1069,6 +1182,8 @@ void hmi_task2_init(void)
     hmi_task2_tx_action = HMI_TX_ACTION_NONE;
     hmi_task2_tx_source_sequence = 0u;
     hmi_task2_tx_started_ms = 0u;
+    hmi_task2_tx_calibration_enabled =
+        measurement_calibration_is_enabled();
     hmi_task2_command_state = 0u;
     hmi_task2_command_candidate = 0u;
     hmi_task2_rx_active = 0u;
@@ -1076,6 +1191,7 @@ void hmi_task2_init(void)
     hmi_task2_initialize_done = 0u;
     hmi_task2_work_valid = 0u;
     hmi_task2_visibility_pending = 0u;
+    hmi_task2_calibration_pending = 0u;
     hmi_task2_display_requested = 0u;
     hmi_task2_waveform_redraw_pending = 0u;
     hmi_task2_candidate_valid = 0u;
@@ -1084,6 +1200,8 @@ void hmi_task2_init(void)
     hmi_task2_self_test_enabled = 0u;
     hmi_task2_diagnostics.requested_mode =
         (uint8_t)HMI_CHART_MODE_ONE_CYCLE;
+    hmi_task2_diagnostics.calibration_enabled =
+        measurement_calibration_is_enabled();
     hmi_task2_diagnostics.state = HMI_TASK2_STATE_WAIT_DATA;
 }
 

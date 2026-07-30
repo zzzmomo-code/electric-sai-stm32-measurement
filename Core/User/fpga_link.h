@@ -6,7 +6,7 @@
  *          ACK_FRAME，校验完整帧并发布双缓冲测量快照。
  * GPIO 引脚映射：PC10/SPI3_SCK、PC11/SPI3_MISO、PC12/SPI3_MOSI、
  *          PA15/FPGA_CS_N、PD1/FPGA_DATA_READY。
- * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0、20 MHz、8 bit；
+ * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0、625 kHz、8 bit；
  *          SPI3 RX/TX DMA Normal；PD1 EXTI1 上升沿。
  * 初始化方法：system_init() 调用 fpga_link_init() 并绑定 hspi3。
  * 调用方法：system_process() 持续调用 fpga_link_process()。
@@ -53,7 +53,7 @@ typedef struct
     uint32_t frame_dma_start_count; /**< 成功启动帧 DMA 的次数。 */
     uint32_t frame_dma_complete_count; /**< 帧 DMA 正常完成次数。 */
     uint32_t frame_dma_error_count; /**< SPI/DMA 启动或运行错误数。 */
-    uint32_t frame_dma_timeout_count; /**< 超过 20 ms 仍未完成的次数。 */
+    uint32_t frame_dma_timeout_count; /**< 超过 200 ms 仍未完成的次数。 */
     uint32_t frame_valid_count; /**< 完整格式和 CRC 均正确的帧数。 */
     uint32_t frame_format_error_count; /**< 非 CRC 类的完整帧格式错误数。 */
     uint32_t frame_crc_error_count; /**< 完整测量帧 CRC 错误数。 */
