@@ -8,7 +8,8 @@
 2. 校验状态、长度、序号和 CRC16；
 3. 将时域和频谱数据转换为三组 350 点显示缓存；
 4. 通过 USART1 驱动淘晶驰串口屏；
-5. 连续三帧稳定后锁存参数和频谱；波形由启动键首次显示，周期键只重画一次。
+5. 连续三帧稳定后锁存参数和频谱；波形由启动键首次显示，周期键只重画一次；
+6. 在独立校准层中切换原始值/拟合值，方便后续打表后直接替换拟合系数。
 
 FPGA 负责 ADC 采集、滤波、FFT 和参数测量。旧工程中的片内 ADC、DAC、DDS、
 TIM 测频和 USART2 FPGA 链路不参与当前正式运行。
@@ -19,7 +20,7 @@ TIM 测频和 USART2 FPGA 链路不参与当前正式运行。
 - IDE：STM32CubeIDE 1.19.0；
 - HAL：STM32Cube FW_H7 V1.12.1；
 - 系统时钟：480 MHz；
-- FPGA SPI：20 MHz、Mode 0、8 bit、MSB first；
+- FPGA SPI：当前联调为 625 kHz、Mode 0、8 bit、MSB first（冻结协议目标为 20 MHz）；
 - 串口屏：512000 baud、8N1。
 
 ## 硬件连接
@@ -57,7 +58,7 @@ FPGA、STM32 和串口屏必须共地，FPGA 接口必须是 3.3 V 逻辑。复�
 - Hardware NSS Disable，PA15 软件控制 CS；
 - Motorola、8 bit、MSB first；
 - CPOL Low、CPHA 1 Edge，即 SPI Mode 0；
-- PLL2P 80 MHz，Prescaler 4，SCK 20 MHz；
+- PLL2P 80 MHz，Prescaler 128，当前 SCK 625 kHz；
 - PC10/PC11/PC12：AF Push-Pull、No Pull、Very High Speed；
 - SPI3 RX DMA：Normal、Byte、Memory Increment Enable、Very High；
 - SPI3 TX DMA：Normal、Byte、Memory Increment Disable、High；
@@ -160,21 +161,31 @@ FPGA 缓冲区，但不会覆盖上一份有效显示快照。
 | `t_freq` | Text | 基频 |
 | `t_comp1`～`t_comp3` | Text | 三个分量 |
 | `t_status` | Text | 帧序号和丢帧状态 |
+| `t_nihe` | Text | 当前显示“已校准”或“未校准” |
 
 `s_t1` 与 `s_t3` 放在左侧相同位置并相互重叠；`s_spec` 独立放在右侧，不与时域
 波形重叠。三个 Waveform 控件宽度统一为 350，横纵轴、单位和刻度使用页面静态控件绘制。
 
-最新页面保留一周期、三周期、启动和后续扩展模式四个按钮。当前使用的三个按下事件为：
+最新页面保留一周期、三周期、启动、校准切换和后续扩展模式按钮。当前使用的按下事件为：
 
 ```text
 printh A5 01 5A  // 一周期
 printh A5 02 5A  // 三周期
 printh A5 04 5A  // 启动显示波形
+printh A5 20 5A  // 已校准/未校准切换
 ```
 
 固件仍兼容历史命令 `A5 03 5A`，但当前页面不需要频谱按钮，因为右侧 `s_spec`
 在显示一周期或三周期时都会保持可见。`b_t4`“切换模式”当前发送 `A5 10 5A`，
 本版固件有意忽略，留作以后扩展。
+
+校准模式上电默认是“已校准”。当前各拟合曲线暂时都是 `y=x`，所以两种模式显示值
+相同；完成打表并修改系数后：
+
+- `已校准`：`t_vpp`、`t_vrms`、`t_freq` 以及三个有效分量的频率/幅度显示拟合值；
+- `未校准`：上述文本直接显示 FPGA 原始测量值；
+- 时域波形和频谱曲线不参与标量拟合，切换时不清空、不重画，避免曲线闪烁；
+- 切换不会向 FPGA 发命令，也不会重新采样或重新计算。
 
 上电后 STM32 先隐藏三个曲线控件。新输入连续三帧稳定后，参数和右侧频谱各重画一次；
 一周期、三周期两个时域控件仍保持隐藏。按 `b_t5` 启动后才显示当前预选的波形；
@@ -186,15 +197,16 @@ printh A5 04 5A  // 启动显示波形
 时域曲线，仍远小于题目要求的 2 秒。
 
 最新人工页面为 `C:\Users\48747\Downloads\fpga1_codex_ui_v1 (1).HMI`：
-`s_t1` 与 `s_t3` 在左侧同位置重叠，`s_spec` 独立位于右侧，且新增 `b_t5` 启动按钮。
-该外部文件不由本仓库自动覆盖；下载到屏幕前必须确认 `b_t5` 按下事件为
-`printh A5 04 5A`。
+`s_t1` 与 `s_t3` 在左侧同位置重叠，`s_spec` 独立位于右侧，并包含 `b_t5`
+启动按钮和 `t_nihe` 校准状态控件。该外部文件不由本仓库自动覆盖；下载到屏幕前
+必须确认启动事件为 `printh A5 04 5A`，校准切换事件为 `printh A5 20 5A`。
 
 ## 软件结构
 
 - `Core/User/fpga_protocol.c/.h`：小端字段读取、CRC、状态帧和测量帧校验；
 - `Core/User/fpga_link.c/.h`：SPI3 事务、DMA、重试、ACK 和双测量快照；
 - `Core/User/measurement_conversion.c/.h`：按基频提取相位对齐的单周期模板，周期重采样出一/三周期并生成三组350点缓存；
+- `Core/User/measurement_calibration.c/.h`：集中保存打表拟合系数，提供已校准/未校准切换和标量换算接口；
 - `Core/User/hmi_chart.c/.h`：Waveform 清空、写点和可见性命令构建；
 - `Core/User/hmi_task2.c/.h`：USART1 DMA、三帧稳定锁存、启动/周期按键和冻结显示；
 - `Core/User/system.c/.h`：唯一用户初始化和主循环入口。
@@ -256,9 +268,12 @@ hmi_task2_process()
    - 看同一 CS 的 GET_STATUS/READ_FRAME/ACK，以及 DMA 重试和双缓冲发布。
 6. `Core/User/measurement_conversion.c`
    - 看最多 3750 点时域和 1312 点频谱怎样变成三组 350 点。
-7. `Core/User/hmi_chart.c`
+7. `Core/User/measurement_calibration.c`
+   - 文件开头是打表后唯一需要集中修改的拟合系数；
+   - 当前统一使用 `y=c0+c1*x+c2*x²+c3*x³`，初始值全部为 `y=x`。
+8. `Core/User/hmi_chart.c`
    - 看 `cle`、`add`、`vis` 如何变成以三个 `0xFF` 结尾的命令。
-8. `Core/User/hmi_task2.c`
+9. `Core/User/hmi_task2.c`
    - 最后看实时刷新调度、按键解析和 UART DMA 状态机。
 
 ### 三种数据形态
@@ -490,6 +505,8 @@ CPU 读到 DMA 写入的新数据；DMA 发送前 Clean，确保 DMA 读到 CPU 
 | SPI 超时、重试次数、DMA事务 | `fpga_link.c` |
 | 曲线点数、纵轴上下限 | `measurement_conversion.h` |
 | 一周期截取、重采样、频谱压缩 | `measurement_conversion.c` |
+| 打表后的拟合系数 | `measurement_calibration.c` 文件顶部的五组 `calibration_*_curve` |
+| 上电默认已校准/未校准 | `measurement_calibration.h` 的 `MEASUREMENT_CALIBRATION_DEFAULT_ENABLED` |
 | 屏幕对象名称 | `hmi_chart.h` |
 | 淘晶驰 `cle/add/vis` 语法 | `hmi_chart.c` |
 | 按键 `A5 CMD 5A` 和实时刷新顺序 | `hmi_task2.c` |
@@ -558,6 +575,8 @@ hmi_task2_diagnostics
 | `last_source_sequence` | 跟随换算序号 | 不变：屏幕层没有取得新快照 |
 | `command_count` | 每按一次有效按钮增加 | 不增加：检查 PA10、按钮事件和波特率 |
 | `invalid_command_count` | 应保持 0 | 增加：按钮返回格式或串口数据不正确 |
+| `calibration_toggle_count` | 每按一次拟合切换按钮增加 | 不增加：检查 `A5 20 5A` 和 RX 接线 |
+| `calibration_enabled` | 1=已校准，0=未校准 | 与 `t_nihe` 文本不一致：检查屏幕控件名 |
 | `requested_mode` | 上电为 1，周期键后为 1/2 | 当前预选的一周期/三周期 |
 | `visible_mode` | 首帧为 3，按键后为 1/2 | 3 表示仅频谱可见；1/2 表示对应时域与频谱同时可见 |
 | `last_visible_sequence` | 当前可见曲线的数据序号 | 可判断显示的是不是最新已装帧 |
@@ -565,7 +584,7 @@ hmi_task2_diagnostics
 ## 资源占用与实时性
 
 - 不使用 `malloc()`，所有大数组静态分配，运行时间和内存占用可预测；
-- 最大 FPGA 帧约 10.3 KB，SPI 20 MHz 纯线缆时间约 4.1 ms；
+- 最大 FPGA 帧约 10.3 KB，SPI 625 kHz 纯线缆时间约 131.3 ms；
 - 每条 350 点普通曲线命令最坏不超过 7.8 KB，512000 baud 纯线缆时间约 151 ms；
 - 新输入稳定后只发送一次参数和频谱，完成后不再占用屏幕串口；
 - 启动或周期键只重画一条350点波形，约151 ms；
@@ -580,7 +599,7 @@ hmi_task2_diagnostics
 3. 执行 `Project > Build Project`，确认生成 `.elf`；
 4. 使用 ST-LINK 烧录；
 5. 先只连接串口屏，确认页面对象名称和 512000 baud；
-6. 再连接 FPGA，逻辑分析仪检查 Mode 0、20 MHz 和同一 CS 立即响应；
+6. 再连接 FPGA，逻辑分析仪检查 Mode 0、625 kHz 和同一 CS 立即响应；
 7. 在 Expressions 观察 `fpga_link_diagnostics` 和 `hmi_task2_diagnostics`。
 
 关键诊断量：
@@ -599,18 +618,23 @@ hmi_task2_diagnostics
 
 - 2026-07-30 使用 CubeIDE 随附 GNU Tools for STM32 13.3 完成 Debug 实际编译和 ELF
   链接：`text=63664`、`data=472`、`bss=48776`，构建成功；
-- SPI V1.0/R2 专项合同测试 16 项、HMI稳定显示专项测试10项全部通过；其中主机测试直接编译并运行
+- SPI V1.0/R2 专项合同测试 16 项、HMI与校准专项测试18项全部通过；其中主机测试直接编译并运行
   `fpga_protocol.c`，验证 `000`～`111` 全部 8 种 component VALID 排列均按
   `component_count=popcount(VALID)` 正确接收；
-- `python -m unittest discover -s tests -p "test_*.py" -v` 共执行 58 项，53 项通过；
+- `python -m unittest discover -s tests -p "test_*.py" -v` 共执行 66 项，61 项通过；
   5 项未通过仍检查当前 FPGA+HMI 运行路径之外的历史 ADC/DAC/DDS/TIM 链路，
   本次未修改这些非活动模块；
+- 新增的 `measurement_calibration.c`、`hmi_task2.c` 和 `system.c` 已使用 CubeIDE
+  随附 GNU Tools for STM32 13.3 按 H743 编译参数完成独立语法编译检查；正式烧录前
+  仍需在当前 CubeIDE 已打开的正确 Debug 配置中重新执行一次完整 Build；
 - FPGA SPI 已在杜邦线连接下完成实板通信，原牛角线连接异常属于接线问题；
 - 串口屏 USART1 收发、旧版按键命令和曲线显示已有实板证据；本次“连续三帧锁存、
   频谱冻结、启动后显示波形、周期模板重采样”新逻辑仍待重新烧录验证；
 - 曲线纵坐标已限制在 210 像素控件的安全范围内，当前映射范围为 8～201，避免
   淘晶驰单字节点超过控件高度后产生削顶；
-- FPGA SPI 正式帧已经能够驱动参数显示；20 MHz恢复后的长期稳定性、测量精度和
+- 已加入独立标量校准层和 `A5 20 5A` 切换接口；当前系数为 `y=x`，正式系数仍需
+  根据标准仪器打表数据拟合并实板验收；
+- FPGA SPI 正式帧已经能够驱动参数显示；当前 625 kHz 联调速率下的长期稳定性、测量精度和
   整机 2 秒指标仍待新固件实板验证；
 - 当前 `HMI_CHART_SELF_TEST_ENABLE=0`，已切回 FPGA 正式数据主链路；
 - 当前 `.ioc`、SPI3/USART1/DMA/GPIO 生成配置已作为本功能基线保留；

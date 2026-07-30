@@ -48,7 +48,13 @@ class HmiRuntimeContractTest(unittest.TestCase):
         chart_h = (ROOT / "Core/User/hmi_chart.h").read_text(encoding="utf-8")
         for object_name in ("s_t1", "s_t3", "s_spec"):
             self.assertIn(f'"{object_name}"', chart_h)
-        for text_name in ("t_vpp", "t_vrms", "t_freq", "t_status"):
+        for text_name in (
+            "t_vpp",
+            "t_vrms",
+            "t_freq",
+            "t_status",
+            "t_nihe",
+        ):
             self.assertIn(text_name, self.source)
         self.assertIn('"t_comp%u.txt=', self.source)
         self.assertIn("spectrum_visible = 1u;", self.chart)
@@ -60,12 +66,82 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn(
             "#define HMI_TASK2_COMMAND_MODE_UNUSED 0x10u", self.source
         )
+        self.assertIn(
+            "#define HMI_TASK2_COMMAND_CALIBRATION 0x20u", self.source
+        )
         self.assertIn("hmi_task2_display_requested = 1u;", self.source)
         self.assertIn("hmi_task2_visibility_pending = 1u;", self.source)
         self.assertIn("hmi_task2_waveform_redraw_pending = 1u;", self.source)
         self.assertIn("hmi_chart_build_visibility", self.source)
         self.assertNotIn("frequency_measure_request_now", self.source)
         self.assertNotIn("dac_output_set_level", self.source)
+
+    def test_calibration_button_only_refreshes_scalar_text_and_status(self):
+        parse_start = self.source.index(
+            "else if (hmi_task2_command_candidate\n"
+            "                         == HMI_TASK2_COMMAND_CALIBRATION)"
+        )
+        parse_end = self.source.index(
+            "else if (hmi_task2_command_candidate\n"
+            "                    == HMI_TASK2_COMMAND_START)",
+            parse_start,
+        )
+        calibration_branch = self.source[parse_start:parse_end]
+        self.assertIn("measurement_calibration_toggle()", calibration_branch)
+        self.assertIn("hmi_task2_calibration_pending = 1u;", calibration_branch)
+        self.assertIn("hmi_task2_text_valid = 0u;", calibration_branch)
+        self.assertNotIn(
+            "hmi_task2_waveform_redraw_pending", calibration_branch
+        )
+        self.assertNotIn("hmi_task2_loaded_valid", calibration_branch)
+        self.assertNotIn("fpga_link", calibration_branch)
+
+    def test_calibration_state_uses_t_nihe_gb2312_commands(self):
+        self.assertIn(
+            r'"t_nihe.txt=\"\xd2\xd1\xd0\xa3\xd7\xbc\""',
+            self.source,
+        )
+        self.assertIn(
+            r'"t_nihe.txt=\"\xce\xb4\xd0\xa3\xd7\xbc\""',
+            self.source,
+        )
+        self.assertIn("hmi_task2_append_calibration_state(", self.source)
+        select_start = self.source.index(
+            "static hmi_tx_action_t hmi_task2_select_action"
+        )
+        select_end = self.source.index(
+            "static void hmi_task2_complete_action", select_start
+        )
+        select_body = self.source[select_start:select_end]
+        self.assertLess(
+            select_body.index("HMI_TX_ACTION_CALIBRATION"),
+            select_body.index("hmi_task2_work_valid == 0u"),
+        )
+
+    def test_numeric_text_uses_calibration_but_charts_do_not(self):
+        text_start = self.source.index(
+            "static uint8_t hmi_task2_build_text"
+        )
+        text_end = self.source.index(
+            "static uint8_t hmi_task2_generate_triangle_point", text_start
+        )
+        text_body = self.source[text_start:text_end]
+        for apply_function in (
+            "measurement_calibration_apply_vpp_uv",
+            "measurement_calibration_apply_vrms_uv",
+            "measurement_calibration_apply_frequency_mhz",
+            "measurement_calibration_apply_component_amplitude_uv",
+        ):
+            self.assertIn(apply_function, text_body)
+
+        chart_start = self.source.index(
+            "static uint8_t hmi_task2_build_action"
+        )
+        chart_end = self.source.index(
+            "static hmi_tx_action_t hmi_task2_select_action", chart_start
+        )
+        chart_body = self.source[chart_start:chart_end]
+        self.assertNotIn("measurement_calibration_apply_", chart_body)
 
     def test_unused_mode_button_is_recognized_but_has_no_action(self):
         parse_start = self.source.index(

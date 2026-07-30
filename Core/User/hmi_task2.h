@@ -43,13 +43,15 @@ typedef struct
     uint32_t preload_complete_count; /**< 当前波形、频谱和参数完整刷新次数。 */
     uint32_t stable_accept_count;  /**< 连续三帧稳定并锁存为屏幕结果的次数。 */
     uint32_t stable_reject_count;  /**< 与当前锁存结果相近、无需重画的帧数。 */
+    uint32_t calibration_toggle_count; /**< 已校准/未校准按键切换次数。 */
     uint32_t last_source_sequence; /**< 当前刷新工作快照序号。 */
     uint32_t last_visible_sequence;/**< 当前可见曲线对应的快照序号。 */
     uint16_t last_tx_bytes;        /**< 最近一次 DMA 发送字节数。 */
-    uint8_t last_command;          /**< 最近一次有效命令：1/2/3/4为一周期/三周期/频谱/开始，0x10保留。 */
+    uint8_t last_command;          /**< 最近一次有效命令：1/2/3/4为图形/开始，0x10保留，0x20切换校准。 */
     uint8_t requested_mode;        /**< 用户要求显示的模式。 */
     uint8_t visible_mode;          /**< 屏幕当前已切换的模式。 */
     uint8_t stable_candidate_count;/**< 当前候选结果已连续稳定的帧数，范围0~3。 */
+    uint8_t calibration_enabled;   /**< 当前数字显示模式：1=已校准，0=未校准。 */
     hmi_task2_state_t state;       /**< 当前刷新状态。 */
 } hmi_task2_diagnostics_t;
 
