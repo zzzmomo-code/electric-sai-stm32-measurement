@@ -14,7 +14,7 @@
 #include "system.h"
 
 /** 串口屏三图链路自检开关；正常模式必须保持为零。 */
-#define HMI_CHART_SELF_TEST_ENABLE 1u
+#define HMI_CHART_SELF_TEST_ENABLE 0u
 
 /** 已经转换为显示快照的最近 FPGA 帧序号。 */
 static uint32_t system_last_converted_sequence;
