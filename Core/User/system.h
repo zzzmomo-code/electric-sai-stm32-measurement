@@ -30,7 +30,6 @@
 #include "fpga_protocol.h"
 #include "fpga_link.h"
 #include "measurement_conversion.h"
-#include "measurement_calibration.h"
 #include "hmi_chart.h"
 #include "hmi_task2.h"
 

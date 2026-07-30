@@ -5,7 +5,7 @@
  * 模块用途：连接“FPGA SPI3 连续测量帧 -> 350 点显示快照 -> USART1 串口屏稳定锁存显示”。
  * GPIO 引脚映射：PC10/SPI3_SCK、PC11/SPI3_MISO、PC12/SPI3_MOSI、
  *          PA15/FPGA_CS_N、PD1/FPGA_DATA_READY、PA9/USART1_TX、PA10/USART1_RX。
- * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0 625 kHz 双向 DMA，PD1 EXTI1；
+ * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0 20 MHz 双向 DMA，PD1 EXTI1；
  *          USART1 512000 baud 8N1，TX/RX DMA 与全局中断。
  * 初始化方法：main.c 的 USER CODE BEGIN 2 区域只调用 system_init()。
  * 调用方法：main.c 的 while(1) 用户区只调用 system_process()。
@@ -37,7 +37,6 @@ void system_init(void)
 
     fpga_link_init();
     measurement_conversion_init();
-    measurement_calibration_init();
     hmi_task2_init();
 
 #if (HMI_CHART_SELF_TEST_ENABLE != 0u)
