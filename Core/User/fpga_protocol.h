@@ -20,19 +20,24 @@
 #define FPGA_PROTOCOL_COMMAND_READ_FRAME    0x02u
 #define FPGA_PROTOCOL_COMMAND_ACK_FRAME     0x03u
 
-#define FPGA_PROTOCOL_VERSION               1u
-#define FPGA_PROTOCOL_FRAME_TYPE_FULL       1u
+#define FPGA_PROTOCOL_VERSION_MAJOR         1u
+#define FPGA_PROTOCOL_VERSION_MINOR         0u
 #define FPGA_PROTOCOL_STATUS_BYTES          16u
 #define FPGA_PROTOCOL_HEADER_BYTES          128u
+#define FPGA_PROTOCOL_COMPONENT_BYTES       16u
+#define FPGA_PROTOCOL_MIN_TIME_SAMPLES      75u
 #define FPGA_PROTOCOL_MAX_TIME_SAMPLES      3750u
 #define FPGA_PROTOCOL_SPECTRUM_COUNT         1312u
 #define FPGA_PROTOCOL_COMPONENT_MAX         3u
 #define FPGA_PROTOCOL_MAX_FRAME_BYTES       10254u
 
 #define FPGA_PROTOCOL_TIME_SAMPLE_RATE_HZ   12500000u
+#define FPGA_PROTOCOL_CAPTURED_CYCLES       3u
+#define FPGA_PROTOCOL_TIME_UV_PER_LSB       10u
 #define FPGA_PROTOCOL_FFT_SAMPLE_RATE_HZ    1562500u
 #define FPGA_PROTOCOL_FFT_LENGTH            4096u
 #define FPGA_PROTOCOL_BIN_SPACING_MHZ       381470u
+#define FPGA_PROTOCOL_SPECTRUM_UV_PER_LSB   10u
 
 #define FPGA_PROTOCOL_STATUS_FRAME_READY    (1u << 0)
 #define FPGA_PROTOCOL_STATUS_FPGA_BUSY      (1u << 1)
@@ -40,8 +45,18 @@
 #define FPGA_PROTOCOL_STATUS_FRAME_DROPPED  (1u << 3)
 #define FPGA_PROTOCOL_STATUS_RESULT_INVALID (1u << 4)
 
+#define FPGA_PROTOCOL_HEADER_MEASUREMENT_VALID (1ul << 0)
+#define FPGA_PROTOCOL_HEADER_ADC_OTR           (1ul << 1)
+#define FPGA_PROTOCOL_HEADER_ADC_SATURATION    (1ul << 2)
+#define FPGA_PROTOCOL_HEADER_FFT_ERROR         (1ul << 3)
+#define FPGA_PROTOCOL_HEADER_IQ_UNSTABLE       (1ul << 4)
+#define FPGA_PROTOCOL_HEADER_FRAME_DROPPED     (1ul << 5)
+#define FPGA_PROTOCOL_HEADER_FLAG_MASK         0x0000003ful
+
 #define FPGA_PROTOCOL_COMPONENT_VALID       (1u << 0)
 #define FPGA_PROTOCOL_COMPONENT_IQ_READY    (1u << 1)
+#define FPGA_PROTOCOL_COMPONENT_AMPLITUDE_VALID (1u << 2)
+#define FPGA_PROTOCOL_COMPONENT_FLAG_MASK   0x07u
 
 /** 协议解析结果。 */
 typedef enum
@@ -54,7 +69,7 @@ typedef enum
     FPGA_PROTOCOL_ERROR_STATE,
     FPGA_PROTOCOL_ERROR_CRC,
     FPGA_PROTOCOL_ERROR_LENGTH,
-    FPGA_PROTOCOL_ERROR_FRAME_TYPE,
+    FPGA_PROTOCOL_ERROR_RESERVED,
     FPGA_PROTOCOL_ERROR_SEQUENCE,
     FPGA_PROTOCOL_ERROR_FIELD
 } fpga_protocol_result_t;
@@ -75,42 +90,41 @@ typedef struct
     uint32_t frequency_mhz;     /**< 频率，单位 0.001 Hz。 */
     uint32_t amplitude_peak_uv; /**< 正弦峰值，单位 uV。 */
     uint16_t fft_bin;           /**< 对应 FFT 谱线。 */
+    int16_t fft_delta_q15;      /**< 三点插值 bin 偏移，Q1.15。 */
     uint8_t harmonic_order;     /**< 1=基波，2=二次谐波。 */
-    uint8_t flags;              /**< bit0=有效，bit1=IQ 精测完成。 */
+    uint8_t flags;              /**< bit0=有效，bit1=IQ 精修，bit2=幅度有效。 */
+    uint16_t reserved;          /**< V1.0 固定为 0。 */
 } fpga_protocol_component_t;
 
 /** 128 字节帧头的主机侧解析结果，不直接映射 DMA 缓冲区。 */
 typedef struct
 {
-    uint8_t protocol_version;
-    uint8_t frame_type;
-    uint16_t header_bytes;
-    uint32_t total_bytes;
+    uint8_t version_major;
+    uint8_t version_minor;
+    uint16_t header_length;
+    uint32_t frame_length;
     uint32_t frame_seq;
-    uint64_t timestamp_50m;
+    uint64_t timestamp_50mhz;
     uint32_t flags;
     uint32_t time_sample_rate_hz;
     uint16_t time_count;
-    uint8_t captured_cycles;
-    uint8_t time_format;
+    uint16_t time_uv_per_lsb;
     uint32_t fft_sample_rate_hz;
     uint16_t fft_length;
     uint16_t spectrum_count;
     uint32_t bin_spacing_mhz;
-    uint8_t spectrum_format;
-    uint8_t window_type;
+    uint16_t spectrum_uv_per_lsb;
     uint8_t component_count;
     uint8_t reserved0;
     uint32_t vpp_uv;
     uint32_t vrms_uv;
+    int32_t dc_uv;
     uint32_t fundamental_mhz;
-    int32_t dc_offset_uv;
     fpga_protocol_component_t component[FPGA_PROTOCOL_COMPONENT_MAX];
-    uint16_t calibration_revision;
+    uint16_t calibration_version;
     uint16_t reserved1;
-    uint32_t dropped_frames;
-    int16_t adc_min_code;
-    int16_t adc_max_code;
+    uint32_t dropped_frame_count;
+    uint32_t reserved2;
 } fpga_protocol_frame_header_t;
 
 uint16_t fpga_protocol_read_u16_le(const uint8_t *data);

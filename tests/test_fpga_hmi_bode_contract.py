@@ -1,4 +1,5 @@
 import re
+import struct
 import unittest
 from pathlib import Path
 
@@ -72,9 +73,13 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             "FPGA_PROTOCOL_COMMAND_ACK_FRAME": "0x03u",
             "FPGA_PROTOCOL_STATUS_BYTES": "16u",
             "FPGA_PROTOCOL_HEADER_BYTES": "128u",
+            "FPGA_PROTOCOL_COMPONENT_BYTES": "16u",
+            "FPGA_PROTOCOL_MIN_TIME_SAMPLES": "75u",
             "FPGA_PROTOCOL_MAX_TIME_SAMPLES": "3750u",
             "FPGA_PROTOCOL_SPECTRUM_COUNT": "1312u",
             "FPGA_PROTOCOL_MAX_FRAME_BYTES": "10254u",
+            "FPGA_PROTOCOL_TIME_UV_PER_LSB": "10u",
+            "FPGA_PROTOCOL_SPECTRUM_UV_PER_LSB": "10u",
         }
         for name, value in expected.items():
             self.assertRegex(
@@ -84,15 +89,20 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
 
     def test_header_offsets_and_little_endian_reads_are_explicit(self):
         for offset, field in (
-            (8, "total_bytes"),
+            (8, "frame_length"),
             (12, "frame_seq"),
             (28, "time_sample_rate_hz"),
             (32, "time_count"),
+            (34, "time_uv_per_lsb"),
             (42, "spectrum_count"),
+            (48, "spectrum_uv_per_lsb"),
             (52, "vpp_uv"),
             (56, "vrms_uv"),
-            (60, "fundamental_mhz"),
-            (108, "dropped_frames"),
+            (60, "dc_uv"),
+            (64, "fundamental_mhz"),
+            (116, "calibration_version"),
+            (120, "dropped_frame_count"),
+            (124, "reserved2"),
         ):
             self.assertRegex(
                 self.protocol,
@@ -100,6 +110,28 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
                 rf"\(&frame\[{offset}\]\)",
             )
         self.assertNotIn("(fpga_protocol_frame_header_t *)", self.protocol)
+        self.assertIn("component->fft_delta_q15", self.protocol)
+        self.assertIn("* FPGA_PROTOCOL_COMPONENT_BYTES", self.protocol)
+
+    def test_latest_frozen_protocol_reference_vectors(self):
+        sequence = 0x01020304
+        frame_length = 128 + 75 * 2 + 1312 * 2 + 2
+        status = bytearray.fromhex(
+            "5A A5 01 11 04 03 02 01 58 0B 00 00 00 00"
+        )
+        status += struct.pack("<H", crc16_ccitt_false(status))
+        self.assertEqual(
+            status.hex(" ").upper(),
+            "5A A5 01 11 04 03 02 01 58 0B 00 00 00 00 13 29",
+        )
+
+        ack = bytearray.fromhex("A5 03") + struct.pack("<I", sequence)
+        ack += struct.pack("<H", crc16_ccitt_false(ack))
+        self.assertEqual(
+            ack.hex(" ").upper(),
+            "A5 03 04 03 02 01 09 A7",
+        )
+        self.assertEqual(frame_length, 2904)
 
     def test_same_cs_immediate_response_is_used_for_status_and_frame(self):
         status_start = self.link.index("static fpga_protocol_result_t")
@@ -139,6 +171,7 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         error_block = self.link[error_start:ack_start]
         self.assertNotIn("fpga_link_send_ack", error_block)
         self.assertIn("FPGA_PROTOCOL_STATUS_RESULT_INVALID", self.link)
+        self.assertIn("FPGA_PROTOCOL_HEADER_MEASUREMENT_VALID", self.link)
         self.assertIn("result_invalid_count++", self.link)
 
     def test_spi_callbacks_only_set_their_one_event_flag(self):

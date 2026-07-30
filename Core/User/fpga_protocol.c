@@ -10,7 +10,9 @@
  * 调用方法：仅由主循环中的 fpga_link 调用。
  */
 
-#include "system.h"
+#include "fpga_protocol.h"
+
+#include <stddef.h>
 
 #define FPGA_PROTOCOL_STATUS_CRC_OFFSET 14u
 #define FPGA_PROTOCOL_FRAME_CRC_BYTES   2u
@@ -157,7 +159,7 @@ fpga_protocol_result_t fpga_protocol_parse_status(
     {
         return FPGA_PROTOCOL_ERROR_MAGIC;
     }
-    if (data[2] != FPGA_PROTOCOL_VERSION)
+    if (data[2] != FPGA_PROTOCOL_VERSION_MAJOR)
     {
         return FPGA_PROTOCOL_ERROR_VERSION;
     }
@@ -181,11 +183,14 @@ fpga_protocol_result_t fpga_protocol_parse_status(
     parsed.frame_length = fpga_protocol_read_u32_le(&data[8]);
     parsed.reserved = fpga_protocol_read_u16_le(&data[12]);
 
-    if ((parsed.frame_length
+    if ((parsed.reserved != 0u)
+        || (parsed.frame_length
          < (FPGA_PROTOCOL_HEADER_BYTES + FPGA_PROTOCOL_FRAME_CRC_BYTES))
         || (parsed.frame_length > FPGA_PROTOCOL_MAX_FRAME_BYTES))
     {
-        return FPGA_PROTOCOL_ERROR_LENGTH;
+        return (parsed.reserved != 0u)
+                   ? FPGA_PROTOCOL_ERROR_RESERVED
+                   : FPGA_PROTOCOL_ERROR_LENGTH;
     }
 
     *status = parsed;
@@ -193,7 +198,7 @@ fpga_protocol_result_t fpga_protocol_parse_status(
 }
 
 /**
- * @brief 解析一个 12 字节频率分量描述。
+ * @brief 解析一个 16 字节频率分量描述。
  * @param data 分量首字节。
  * @param component 输出结构。
  * @return 无。
@@ -206,8 +211,10 @@ static void fpga_protocol_parse_component(
     component->amplitude_peak_uv =
         fpga_protocol_read_u32_le(&data[4]);
     component->fft_bin = fpga_protocol_read_u16_le(&data[8]);
-    component->harmonic_order = data[10];
-    component->flags = data[11];
+    component->fft_delta_q15 = fpga_protocol_read_i16_le(&data[10]);
+    component->harmonic_order = data[12];
+    component->flags = data[13];
+    component->reserved = fpga_protocol_read_u16_le(&data[14]);
 }
 
 /**
@@ -253,55 +260,51 @@ fpga_protocol_result_t fpga_protocol_parse_frame(
      * 局部变量 parsed，再统一检查固定值和范围；任何检查失败都不会污染
      * 调用者正在使用的上一份 header。
      */
-    parsed.protocol_version = frame[4];
-    parsed.frame_type = frame[5];
-    parsed.header_bytes = fpga_protocol_read_u16_le(&frame[6]);
-    parsed.total_bytes = fpga_protocol_read_u32_le(&frame[8]);
+    parsed.version_major = frame[4];
+    parsed.version_minor = frame[5];
+    parsed.header_length = fpga_protocol_read_u16_le(&frame[6]);
+    parsed.frame_length = fpga_protocol_read_u32_le(&frame[8]);
     parsed.frame_seq = fpga_protocol_read_u32_le(&frame[12]);
-    parsed.timestamp_50m = fpga_protocol_read_u64_le(&frame[16]);
+    parsed.timestamp_50mhz = fpga_protocol_read_u64_le(&frame[16]);
     parsed.flags = fpga_protocol_read_u32_le(&frame[24]);
     parsed.time_sample_rate_hz = fpga_protocol_read_u32_le(&frame[28]);
     parsed.time_count = fpga_protocol_read_u16_le(&frame[32]);
-    parsed.captured_cycles = frame[34];
-    parsed.time_format = frame[35];
+    parsed.time_uv_per_lsb = fpga_protocol_read_u16_le(&frame[34]);
     parsed.fft_sample_rate_hz = fpga_protocol_read_u32_le(&frame[36]);
     parsed.fft_length = fpga_protocol_read_u16_le(&frame[40]);
     parsed.spectrum_count = fpga_protocol_read_u16_le(&frame[42]);
     parsed.bin_spacing_mhz = fpga_protocol_read_u32_le(&frame[44]);
-    parsed.spectrum_format = frame[48];
-    parsed.window_type = frame[49];
+    parsed.spectrum_uv_per_lsb = fpga_protocol_read_u16_le(&frame[48]);
     parsed.component_count = frame[50];
     parsed.reserved0 = frame[51];
     parsed.vpp_uv = fpga_protocol_read_u32_le(&frame[52]);
     parsed.vrms_uv = fpga_protocol_read_u32_le(&frame[56]);
-    parsed.fundamental_mhz = fpga_protocol_read_u32_le(&frame[60]);
-    parsed.dc_offset_uv = fpga_protocol_read_i32_le(&frame[64]);
+    parsed.dc_uv = fpga_protocol_read_i32_le(&frame[60]);
+    parsed.fundamental_mhz = fpga_protocol_read_u32_le(&frame[64]);
 
     for (component_index = 0u;
          component_index < FPGA_PROTOCOL_COMPONENT_MAX;
          component_index++)
     {
         fpga_protocol_parse_component(
-            &frame[68u + ((uint32_t)component_index * 12u)],
+            &frame[68u
+                   + ((uint32_t)component_index
+                      * FPGA_PROTOCOL_COMPONENT_BYTES)],
             &parsed.component[component_index]);
     }
 
-    parsed.calibration_revision = fpga_protocol_read_u16_le(&frame[104]);
-    parsed.reserved1 = fpga_protocol_read_u16_le(&frame[106]);
-    parsed.dropped_frames = fpga_protocol_read_u32_le(&frame[108]);
-    parsed.adc_min_code = fpga_protocol_read_i16_le(&frame[112]);
-    parsed.adc_max_code = fpga_protocol_read_i16_le(&frame[114]);
+    parsed.calibration_version = fpga_protocol_read_u16_le(&frame[116]);
+    parsed.reserved1 = fpga_protocol_read_u16_le(&frame[118]);
+    parsed.dropped_frame_count = fpga_protocol_read_u32_le(&frame[120]);
+    parsed.reserved2 = fpga_protocol_read_u32_le(&frame[124]);
 
-    if (parsed.protocol_version != FPGA_PROTOCOL_VERSION)
+    if ((parsed.version_major != FPGA_PROTOCOL_VERSION_MAJOR)
+        || (parsed.version_minor != FPGA_PROTOCOL_VERSION_MINOR))
     {
         return FPGA_PROTOCOL_ERROR_VERSION;
     }
-    if (parsed.frame_type != FPGA_PROTOCOL_FRAME_TYPE_FULL)
-    {
-        return FPGA_PROTOCOL_ERROR_FRAME_TYPE;
-    }
-    if ((parsed.header_bytes != FPGA_PROTOCOL_HEADER_BYTES)
-        || (parsed.total_bytes != length))
+    if ((parsed.header_length != FPGA_PROTOCOL_HEADER_BYTES)
+        || (parsed.frame_length != length))
     {
         return FPGA_PROTOCOL_ERROR_LENGTH;
     }
@@ -311,22 +314,51 @@ fpga_protocol_result_t fpga_protocol_parse_frame(
     }
     if ((parsed.time_sample_rate_hz
          != FPGA_PROTOCOL_TIME_SAMPLE_RATE_HZ)
-        || (parsed.time_count == 0u)
+        || (parsed.time_count < FPGA_PROTOCOL_MIN_TIME_SAMPLES)
         || (parsed.time_count > FPGA_PROTOCOL_MAX_TIME_SAMPLES)
-        || (parsed.captured_cycles != 3u)
-        || (parsed.time_format != 1u)
+        || (parsed.time_uv_per_lsb != FPGA_PROTOCOL_TIME_UV_PER_LSB)
         || (parsed.fft_sample_rate_hz
             != FPGA_PROTOCOL_FFT_SAMPLE_RATE_HZ)
         || (parsed.fft_length != FPGA_PROTOCOL_FFT_LENGTH)
         || (parsed.spectrum_count != FPGA_PROTOCOL_SPECTRUM_COUNT)
         || (parsed.bin_spacing_mhz
             != FPGA_PROTOCOL_BIN_SPACING_MHZ)
-        || (parsed.spectrum_format != 1u)
-        || (parsed.window_type != 1u)
-        || (parsed.component_count == 0u)
+        || (parsed.spectrum_uv_per_lsb
+            != FPGA_PROTOCOL_SPECTRUM_UV_PER_LSB)
         || (parsed.component_count > FPGA_PROTOCOL_COMPONENT_MAX))
     {
         return FPGA_PROTOCOL_ERROR_FIELD;
+    }
+    if (((parsed.flags & ~FPGA_PROTOCOL_HEADER_FLAG_MASK) != 0u)
+        || (parsed.reserved0 != 0u)
+        || (parsed.reserved1 != 0u)
+        || (parsed.reserved2 != 0u))
+    {
+        return FPGA_PROTOCOL_ERROR_RESERVED;
+    }
+    for (component_index = 0u;
+         component_index < FPGA_PROTOCOL_COMPONENT_MAX;
+         component_index++)
+    {
+        const fpga_protocol_component_t *component =
+            &parsed.component[component_index];
+
+        if (((component->flags
+              & ~FPGA_PROTOCOL_COMPONENT_FLAG_MASK) != 0u)
+            || (component->reserved != 0u))
+        {
+            return FPGA_PROTOCOL_ERROR_RESERVED;
+        }
+        if ((component_index < parsed.component_count)
+            && ((component->flags & FPGA_PROTOCOL_COMPONENT_VALID) == 0u))
+        {
+            return FPGA_PROTOCOL_ERROR_FIELD;
+        }
+        if ((component_index >= parsed.component_count)
+            && (component->flags != 0u))
+        {
+            return FPGA_PROTOCOL_ERROR_FIELD;
+        }
     }
 
     expected_length = FPGA_PROTOCOL_HEADER_BYTES

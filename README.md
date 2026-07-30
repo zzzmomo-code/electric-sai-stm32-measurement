@@ -86,7 +86,9 @@ CubeMX 重新生成前必须勾选
 
 ## FPGA SPI V1 协议
 
-最高参考是 `D:\QQ\FPGA_STM32_SPI_PROTOCOL_V1.md`。
+最高参考是
+`docs/FPGA_STM32_SPI_PROTOCOL_V1_0_FROZEN_20260730.md`。该文档已经按 FPGA
+队友最新的 `D:\QQ\FPGA-SPI.md` 对齐，并包含双方联调 CRC 测试向量。
 
 每条读命令在同一次 CS 事务中完成：
 

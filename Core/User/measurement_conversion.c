@@ -279,8 +279,7 @@ uint8_t measurement_conversion_update(
         || (source->header.time_count
             > FPGA_PROTOCOL_MAX_TIME_SAMPLES)
         || (source->header.spectrum_count
-            != FPGA_PROTOCOL_SPECTRUM_COUNT)
-        || (source->header.captured_cycles == 0u))
+            != FPGA_PROTOCOL_SPECTRUM_COUNT))
     {
         measurement_conversion_diagnostics.invalid_source_count++;
         return 0u;
@@ -317,14 +316,14 @@ uint8_t measurement_conversion_update(
      * 可能存在的滤波过渡或边界误差。
      */
     one_cycle_count = (uint16_t)(
-        source->header.time_count / source->header.captured_cycles);
+        source->header.time_count / FPGA_PROTOCOL_CAPTURED_CYCLES);
     if (one_cycle_count == 0u)
     {
         measurement_conversion_diagnostics.invalid_source_count++;
         return 0u;
     }
     one_cycle_start = (uint16_t)(
-        ((uint16_t)source->header.captured_cycles / 2u)
+        ((uint16_t)FPGA_PROTOCOL_CAPTURED_CYCLES / 2u)
         * one_cycle_count);
     if (((uint32_t)one_cycle_start + one_cycle_count)
         > source->header.time_count)
@@ -346,16 +345,16 @@ uint8_t measurement_conversion_update(
             target->spectrum_display);
 
     target->frame_sequence = source->header.frame_seq;
-    target->timestamp_50m = source->header.timestamp_50m;
+    target->timestamp_50m = source->header.timestamp_50mhz;
     target->source_flags = source->header.flags;
     target->vpp_uv = source->header.vpp_uv;
     target->vrms_uv = source->header.vrms_uv;
     target->fundamental_mhz = source->header.fundamental_mhz;
-    target->dc_offset_uv = source->header.dc_offset_uv;
+    target->dc_offset_uv = source->header.dc_uv;
     target->component_count = source->header.component_count;
-    target->dropped_frames = source->header.dropped_frames;
+    target->dropped_frames = source->header.dropped_frame_count;
     target->calibration_revision =
-        source->header.calibration_revision;
+        source->header.calibration_version;
     for (index = 0u;
          index < FPGA_PROTOCOL_COMPONENT_MAX;
          index++)

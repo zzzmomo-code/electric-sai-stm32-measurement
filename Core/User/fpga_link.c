@@ -423,7 +423,7 @@ static void fpga_link_finish_frame(uint32_t now)
 
     fpga_link_diagnostics.frame_valid_count++;
     fpga_link_diagnostics.last_frame_sequence = header.frame_seq;
-    fpga_link_diagnostics.last_frame_length = header.total_bytes;
+    fpga_link_diagnostics.last_frame_length = header.frame_length;
     if ((fpga_link_current_status.state
          & FPGA_PROTOCOL_STATUS_ADC_OTR) != 0u)
     {
@@ -440,8 +440,10 @@ static void fpga_link_finish_frame(uint32_t now)
         && (fpga_link_snapshots[
                 fpga_link_active_snapshot_index].header.frame_seq
             == header.frame_seq);
-    if ((fpga_link_current_status.state
-         & FPGA_PROTOCOL_STATUS_RESULT_INVALID) != 0u)
+    if (((fpga_link_current_status.state
+          & FPGA_PROTOCOL_STATUS_RESULT_INVALID) != 0u)
+        || ((header.flags
+             & FPGA_PROTOCOL_HEADER_MEASUREMENT_VALID) == 0u))
     {
         fpga_link_diagnostics.result_invalid_count++;
     }
