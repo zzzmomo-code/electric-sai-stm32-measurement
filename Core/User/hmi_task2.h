@@ -1,9 +1,9 @@
 /**
  * @file hmi_task2.h
- * @brief G 题淘晶驰串口屏稳定锁存显示与按键切换接口。
+ * @brief G 题淘晶驰串口屏双时域常显、稳定锁存刷新与前景切换接口。
  *
- * 模块用途：经 USART1 DMA 立即显示首帧、锁存后续连续三帧稳定的参数和频谱；
- *          波形上电隐藏，开始键或周期键显示并重画严格的一周期或三周期波形。
+ * 模块用途：经 USART1 DMA 立即显示首帧、锁存后续连续三帧稳定的数字、
+ *          一周期、三周期和频谱；周期键只切换重叠时域控件的前景。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init()，再绑定 huart1。
@@ -54,8 +54,8 @@ typedef struct
     uint16_t last_tx_bytes;        /**< 最近一次 DMA 发送字节数。 */
     uint16_t last_chart_point;     /**< 当前曲线已经确认发送到的点下标。 */
     uint8_t last_command;          /**< 最近一次有效命令：1/2/3/4为图形/开始，0x10保留，0x20切换校准。 */
-    uint8_t requested_mode;        /**< 用户要求显示的模式。 */
-    uint8_t visible_mode;          /**< 屏幕当前已切换的模式。 */
+    uint8_t requested_mode;        /**< 用户要求置于前景的时域模式：1或2。 */
+    uint8_t visible_mode;          /**< 最近已向屏幕确认的前景时域模式。 */
     uint8_t stable_candidate_count;/**< 当前候选结果已连续稳定的帧数，范围0~3。 */
     uint8_t calibration_enabled;   /**< 当前数字显示模式：1=已校准，0=未校准。 */
     uint8_t screen_online;         /**< 1=屏幕在线，0=未连接或回复已超时。 */

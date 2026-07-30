@@ -1,6 +1,6 @@
 /**
  * @file hmi_chart.c
- * @brief 淘晶驰两个重叠时域控件和一个独立频谱控件的构帧实现。
+ * @brief 淘晶驰两个重叠时域控件常显和一个独立频谱控件的构帧实现。
  *
  * 模块用途：生成 cle/add/vis ASCII 指令，每条命令自动追加 FF FF FF。
  * GPIO 引脚映射：无直接 GPIO。
@@ -171,36 +171,6 @@ static const char *hmi_chart_get_object_name(hmi_chart_mode_t mode)
  * @param used 当前长度。
  * @return 成功返回 1，否则返回 0。
  *
- * @note 频谱位于独立区域，始终保持可见；两个时域控件只显示一个。
- */
-static uint8_t hmi_chart_append_mode_visibility(
-    hmi_chart_mode_t mode,
-    uint8_t *frame,
-    uint16_t capacity,
-    uint16_t *used)
-{
-    if (mode == HMI_CHART_MODE_SPECTRUM)
-    {
-        return hmi_chart_append_visibility(
-            frame, capacity, used,
-            HMI_CHART_SPECTRUM_OBJECT, 1u);
-    }
-
-    return (uint8_t)(
-        (hmi_chart_append_visibility(
-            frame, capacity, used,
-            HMI_CHART_T1_OBJECT,
-            (mode == HMI_CHART_MODE_ONE_CYCLE) ? 1u : 0u) != 0u)
-        && (hmi_chart_append_visibility(
-            frame, capacity, used,
-            HMI_CHART_T3_OBJECT,
-            (mode == HMI_CHART_MODE_THREE_CYCLE) ? 1u : 0u) != 0u)
-        && (hmi_chart_append_visibility(
-            frame, capacity, used,
-            HMI_CHART_SPECTRUM_OBJECT, 1u) != 0u));
-}
-
-/**
  * @brief 构建一整条 350 点曲线的清空和追加命令。
  * @param object_name 淘晶驰 Waveform 控件名。
  * @param points 已映射到 8~201 的 350 个纵坐标。
@@ -267,8 +237,8 @@ hmi_chart_status_t hmi_chart_build_waveform(
  * @param emitted_points 本批实际发送点数。
  * @return 构帧状态；本函数不直接启动 UART。
  *
- * @note 首批先显式显示目标控件再清空；末批再次确认可见性。这样即使 HMI
- *       上电事件或前一条 vis 指令到达较晚，也不会把已经写好的曲线永久隐藏。
+ * @note 分批绘图期间不发送 vis，避免两个完全重叠的时域控件在每个小批次之间
+ *       反复争抢前景。三条曲线完成后由 hmi_task2 单独恢复用户选择的前景。
  */
 hmi_chart_status_t hmi_chart_build_waveform_chunk(
     hmi_chart_mode_t mode,
@@ -303,11 +273,9 @@ hmi_chart_status_t hmi_chart_build_waveform_chunk(
 
     if (first_point == 0u)
     {
-        if ((hmi_chart_append_mode_visibility(
-                mode, frame, frame_capacity, frame_size) == 0u)
-            || (hmi_chart_append_curve_command(
+        if (hmi_chart_append_curve_command(
                 frame, frame_capacity, frame_size,
-                object_name, -1) == 0u))
+                object_name, -1) == 0u)
         {
             return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
         }
@@ -325,29 +293,20 @@ hmi_chart_status_t hmi_chart_build_waveform_chunk(
     }
     *emitted_points = batch_points;
 
-    if (((uint32_t)first_point + batch_points)
-        >= MEASUREMENT_DISPLAY_POINT_COUNT)
-    {
-        if (hmi_chart_append_mode_visibility(
-                mode, frame, frame_capacity, frame_size) == 0u)
-        {
-            return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
-        }
-    }
-
     return HMI_CHART_STATUS_OK;
 }
 
 /**
- * @brief 构建双时域重叠控件与独立频谱控件的可见性切换命令。
- * @param mode 需要显示的模式。
+ * @brief 构建双时域常显与指定时域控件前景切换命令。
+ * @param mode 需要置于前景的一周期或三周期模式。
  * @param frame 输出命令字节流。
  * @param frame_capacity 输出缓冲区容量。
  * @param frame_size 输出实际字节数。
  * @return 构帧状态。
  *
- * @note 一周期和三周期互斥显示；频谱位于独立区域并保持显示。该函数只改变
- *       vis 属性，不清空或重发曲线数据，所以按键切换很快。
+ * @note 默认先保持非选中控件可见，再把选中控件快速隐藏/显示一次，尝试利用
+ *       淘晶驰重绘顺序把它置于前景；两份曲线数据都不会被清空。该层级行为仍需
+ *       实屏验证。若启用后备开关，则直接隐藏非选中控件。
  */
 hmi_chart_status_t hmi_chart_build_visibility(
     hmi_chart_mode_t mode,
@@ -355,68 +314,41 @@ hmi_chart_status_t hmi_chart_build_visibility(
     uint16_t frame_capacity,
     uint16_t *frame_size)
 {
-    uint8_t one_visible;
-    uint8_t three_visible;
-    uint8_t spectrum_visible;
+    const char *background_object;
+    const char *foreground_object;
 
     if ((frame == NULL) || (frame_size == NULL)
         || ((mode != HMI_CHART_MODE_ONE_CYCLE)
-            && (mode != HMI_CHART_MODE_THREE_CYCLE)
-            && (mode != HMI_CHART_MODE_SPECTRUM)))
+            && (mode != HMI_CHART_MODE_THREE_CYCLE)))
     {
         return HMI_CHART_STATUS_INVALID_ARGUMENT;
     }
 
-    one_visible = (mode == HMI_CHART_MODE_ONE_CYCLE) ? 1u : 0u;
-    three_visible = (mode == HMI_CHART_MODE_THREE_CYCLE) ? 1u : 0u;
-    spectrum_visible = 1u;
+    background_object = (mode == HMI_CHART_MODE_ONE_CYCLE)
+        ? HMI_CHART_T3_OBJECT : HMI_CHART_T1_OBJECT;
+    foreground_object = (mode == HMI_CHART_MODE_ONE_CYCLE)
+        ? HMI_CHART_T1_OBJECT : HMI_CHART_T3_OBJECT;
     *frame_size = 0u;
 
     if ((hmi_chart_append_visibility(
             frame, frame_capacity, frame_size,
-            HMI_CHART_T1_OBJECT, one_visible) == 0u)
+            HMI_CHART_SPECTRUM_OBJECT, 1u) == 0u)
         || (hmi_chart_append_visibility(
             frame, frame_capacity, frame_size,
-            HMI_CHART_T3_OBJECT, three_visible) == 0u)
+            background_object,
+#if (HMI_CHART_HIDE_BACKGROUND_FALLBACK != 0u)
+            0u) == 0u)
+#else
+            1u) == 0u)
+#endif
+#if (HMI_CHART_HIDE_BACKGROUND_FALLBACK == 0u)
         || (hmi_chart_append_visibility(
             frame, frame_capacity, frame_size,
-            HMI_CHART_SPECTRUM_OBJECT, spectrum_visible) == 0u))
-    {
-        return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
-    }
-
-    return HMI_CHART_STATUS_OK;
-}
-
-/**
- * @brief 构建上电时隐藏三个曲线控件的命令。
- * @param frame 输出命令字节流。
- * @param frame_capacity 输出缓冲区容量。
- * @param frame_size 输出实际字节数。
- * @return 构帧状态。
- *
- * @note 本命令只用于上电尚无有效数据的阶段。正式刷新不会依赖隐藏控件接收或保留 add 数据。
- */
-hmi_chart_status_t hmi_chart_build_hide_all(
-    uint8_t *frame,
-    uint16_t frame_capacity,
-    uint16_t *frame_size)
-{
-    if ((frame == NULL) || (frame_size == NULL))
-    {
-        return HMI_CHART_STATUS_INVALID_ARGUMENT;
-    }
-
-    *frame_size = 0u;
-    if ((hmi_chart_append_visibility(
-            frame, frame_capacity, frame_size,
-            HMI_CHART_T1_OBJECT, 0u) == 0u)
+            foreground_object, 0u) == 0u)
+#endif
         || (hmi_chart_append_visibility(
             frame, frame_capacity, frame_size,
-            HMI_CHART_T3_OBJECT, 0u) == 0u)
-        || (hmi_chart_append_visibility(
-            frame, frame_capacity, frame_size,
-            HMI_CHART_SPECTRUM_OBJECT, 0u) == 0u))
+            foreground_object, 1u) == 0u))
     {
         return HMI_CHART_STATUS_BUFFER_TOO_SMALL;
     }

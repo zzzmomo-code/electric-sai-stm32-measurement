@@ -57,9 +57,9 @@ class HmiRuntimeContractTest(unittest.TestCase):
         ):
             self.assertIn(text_name, self.source)
         self.assertIn('"t_comp%u.txt=', self.source)
-        self.assertIn("spectrum_visible = 1u;", self.chart)
+        self.assertIn("hmi_chart_append_visibility(", self.chart)
 
-    def test_buttons_use_a5_command_5a_and_include_start_command(self):
+    def test_buttons_use_a5_command_5a_without_controlling_fpga(self):
         self.assertIn("#define HMI_TASK2_COMMAND_HEAD        0xa5u", self.source)
         self.assertIn("#define HMI_TASK2_COMMAND_TAIL        0x5au", self.source)
         self.assertIn("#define HMI_TASK2_COMMAND_START       0x04u", self.source)
@@ -69,12 +69,12 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn(
             "#define HMI_TASK2_COMMAND_CALIBRATION 0x20u", self.source
         )
-        self.assertIn("hmi_task2_display_requested = 1u;", self.source)
         self.assertIn("hmi_task2_visibility_pending = 1u;", self.source)
-        self.assertIn("hmi_task2_waveform_redraw_pending = 1u;", self.source)
+        self.assertIn("hmi_task2_invalidate_all_charts();", self.source)
         self.assertIn("hmi_chart_build_visibility", self.source)
         self.assertNotIn("frequency_measure_request_now", self.source)
         self.assertNotIn("dac_output_set_level", self.source)
+        self.assertNotIn("fpga_link_process", self.source)
 
     def test_calibration_button_only_refreshes_scalar_text_and_status(self):
         parse_start = self.source.index(
@@ -159,9 +159,7 @@ class HmiRuntimeContractTest(unittest.TestCase):
         )
         self.assertIn("静默忽略", parse_body)
 
-    def test_first_snapshot_reveals_spectrum_but_keeps_waveforms_hidden(self):
-        self.assertIn("hmi_task2_visibility_pending = 0u;", self.source)
-        self.assertIn("hmi_task2_display_requested = 0u;", self.source)
+    def test_first_snapshot_invalidates_all_three_charts(self):
         first_snapshot = self.source.index(
             "if (hmi_task2_work_valid == 0u)"
         )
@@ -174,17 +172,19 @@ class HmiRuntimeContractTest(unittest.TestCase):
             self.source[first_snapshot:stability_gate],
         )
         self.assertIn(
-            "&& (hmi_task2_diagnostics.visible_mode\n"
-            "            != (uint8_t)HMI_CHART_MODE_SPECTRUM)",
-            self.source,
+            "hmi_task2_invalidate_all_charts();",
+            self.source[first_snapshot:stability_gate],
         )
-        self.assertIn("hmi_task2_visibility_pending = 1u;", self.source)
+        invalidate_start = self.source.index(
+            "static void hmi_task2_invalidate_all_charts"
+        )
+        replay_start = self.source.index(
+            "static void hmi_task2_request_display_replay",
+            invalidate_start,
+        )
         self.assertIn(
-            "(hmi_task2_display_requested != 0u)\n"
-            "                    ? (hmi_chart_mode_t)"
-            "hmi_task2_diagnostics.requested_mode\n"
-            "                    : HMI_CHART_MODE_SPECTRUM",
-            self.source,
+            "hmi_task2_visibility_pending = 1u;",
+            self.source[invalidate_start:replay_start],
         )
 
     def test_chart_is_chunked_and_committed_only_after_final_point(self):
@@ -211,7 +211,7 @@ class HmiRuntimeContractTest(unittest.TestCase):
         )
         self.assertLess(final_point_check, loaded_commit)
 
-    def test_initialization_immediately_reveals_spectrum_background(self):
+    def test_initialization_reveals_both_waveforms_with_one_cycle_in_front(self):
         initialize_start = self.source.index(
             "static uint8_t hmi_task2_build_initialize"
         )
@@ -220,8 +220,28 @@ class HmiRuntimeContractTest(unittest.TestCase):
         )
         initialize_body = self.source[initialize_start:initialize_end]
         self.assertIn("hmi_chart_build_visibility(", initialize_body)
-        self.assertIn("HMI_CHART_MODE_SPECTRUM", initialize_body)
+        self.assertIn("HMI_CHART_MODE_ONE_CYCLE", initialize_body)
         self.assertNotIn("hmi_chart_build_hide_all(", initialize_body)
+        visibility_start = self.chart.index(
+            "hmi_chart_status_t hmi_chart_build_visibility"
+        )
+        visibility_body = self.chart[visibility_start:]
+        self.assertIn(
+            "? HMI_CHART_T3_OBJECT : HMI_CHART_T1_OBJECT",
+            visibility_body,
+        )
+        self.assertIn(
+            "? HMI_CHART_T1_OBJECT : HMI_CHART_T3_OBJECT",
+            visibility_body,
+        )
+        self.assertIn(
+            "#define HMI_CHART_HIDE_BACKGROUND_FALLBACK 0u",
+            (ROOT / "Core/User/hmi_chart.h").read_text(encoding="utf-8"),
+        )
+        self.assertIn("background_object,", visibility_body)
+        self.assertIn("foreground_object, 0u", visibility_body)
+        self.assertIn("foreground_object, 1u", visibility_body)
+        self.assertIn("HMI_CHART_SPECTRUM_OBJECT, 1u", visibility_body)
 
     def test_screen_reconnect_probe_replays_cached_display(self):
         self.assertIn('"sendme"', self.source)
@@ -234,11 +254,7 @@ class HmiRuntimeContractTest(unittest.TestCase):
             "sizeof(hmi_task2_loaded_valid));",
             self.source,
         )
-        self.assertIn(
-            "hmi_task2_waveform_redraw_pending =\n"
-            "        hmi_task2_display_requested;",
-            self.source,
-        )
+        self.assertIn("hmi_task2_visibility_pending = 1u;", self.source)
         for field in (
             "probe_count",
             "probe_reply_count",
@@ -278,7 +294,7 @@ class HmiRuntimeContractTest(unittest.TestCase):
             self.assertEqual(assignments, [variable_name])
             self.assertNotIn("HAL_UART_", body)
 
-    def test_stable_latch_updates_text_and_spectrum_but_freezes_waveform(self):
+    def test_stable_latch_updates_text_and_all_three_charts(self):
         self.assertIn("hmi_task2_loaded_sequence[4]", self.source)
         self.assertIn("hmi_task2_loaded_valid[4]", self.source)
         self.assertIn("hmi_task2_preload_complete()", self.source)
@@ -286,23 +302,15 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn("#define HMI_TASK2_STABLE_FRAME_COUNT  3u", self.source)
         self.assertIn("hmi_task2_snapshots_are_stable", self.source)
         self.assertIn("hmi_task2_text_valid = 0u;", self.source)
-        self.assertIn(
-            "hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] = 0u;",
-            self.source,
-        )
         stable_refresh = self.source.index(
-            "新的稳定输入只自动刷新数字和频谱一次"
+            "新的稳定输入同时刷新数字、一周期、三周期和频谱"
         )
         next_function = self.source.index(
             "static void hmi_task2_parse_commands", stable_refresh
         )
-        self.assertNotIn(
-            "hmi_task2_waveform_redraw_pending = 1u;",
-            self.source[stable_refresh:next_function],
-        )
         self.assertIn(
-            "mode != HMI_CHART_MODE_SPECTRUM",
-            self.chart,
+            "hmi_task2_invalidate_all_charts();",
+            self.source[stable_refresh:next_function],
         )
         self.assertIn(
             "&& (hmi_task2_preload_complete() == 0u)",
@@ -312,7 +320,7 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn("found_match", self.source)
         self.assertIn("无序匹配", self.source)
 
-    def test_start_and_period_buttons_are_only_waveform_redraw_triggers(self):
+    def test_period_buttons_only_switch_foreground_and_start_redraws_all(self):
         select_start = self.source.index(
             "static hmi_tx_action_t hmi_task2_select_action"
         )
@@ -321,8 +329,8 @@ class HmiRuntimeContractTest(unittest.TestCase):
         )
         select_body = self.source[select_start:select_end]
         self.assertLess(
-            select_body.index("return HMI_TX_ACTION_VISIBILITY;"),
             select_body.index("HMI_TX_ACTION_ONE_CYCLE"),
+            select_body.index("return HMI_TX_ACTION_VISIBILITY;"),
         )
         parse_start = self.source.index(
             "static void hmi_task2_parse_commands"
@@ -332,13 +340,28 @@ class HmiRuntimeContractTest(unittest.TestCase):
         )
         parse_body = self.source[parse_start:parse_end]
         self.assertEqual(
-            parse_body.count("hmi_task2_waveform_redraw_pending = 1u;"),
-            2,
+            parse_body.count("hmi_task2_invalidate_all_charts();"),
+            1,
         )
         self.assertIn(
             "== HMI_TASK2_COMMAND_START",
             parse_body,
         )
+        period_branch = parse_body[parse_body.index(
+            "hmi_task2_diagnostics.requested_mode ="
+        ):]
+        self.assertIn("hmi_task2_visibility_pending = 1u;", period_branch)
+        self.assertNotIn("hmi_task2_invalidate_all_charts();", period_branch)
+
+    def test_chart_chunks_do_not_change_overlap_layering(self):
+        chunk_start = self.chart.index(
+            "hmi_chart_status_t hmi_chart_build_waveform_chunk"
+        )
+        chunk_end = self.chart.index(
+            "hmi_chart_status_t hmi_chart_build_visibility", chunk_start
+        )
+        chunk_body = self.chart[chunk_start:chunk_end]
+        self.assertNotIn("hmi_chart_append_visibility(", chunk_body)
 
     def test_system_pipeline_is_fpga_then_conversion_then_hmi(self):
         fpga_index = self.system.index("fpga_link_process();")

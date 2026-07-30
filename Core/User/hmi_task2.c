@@ -1,10 +1,10 @@
 /**
  * @file hmi_task2.c
- * @brief G 题淘晶驰串口屏稳定锁存显示与按键切换实现。
+ * @brief G 题淘晶驰串口屏双时域常显、稳定锁存刷新与前景切换实现。
  *
  * 模块用途：连续接收测量快照，首帧立即显示、后续连续三帧稳定后锁存；
- *          参数和独立频谱只重画一次。
- *          波形上电隐藏，按开始键后显示，之后仅在一周期/三周期按键到达时重画。
+ *          每份接受的稳定快照同时刷新数字、一周期、三周期和频谱。
+ *          一周期/三周期键只切换重叠控件前景，启动键仅强制重画三条曲线。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init() 并绑定 huart1。
@@ -36,12 +36,12 @@
 /*
  * 稳定锁存显示状态机的核心规则：
  *
- * 1. 上电立即显示独立频谱背景，两个时域控件保持隐藏；
+ * 1. 上电立即显示两个重叠时域控件和独立频谱，默认一周期处于前景；
  * 2. 首份有效数据立即成为工作快照，后续变化需连续三帧稳定；
- * 3. 首帧只显示独立频谱控件；一周期和三周期控件保持隐藏；
+ * 3. 每份接受的工作快照依次刷新数字、一周期、三周期和频谱；
  * 4. 曲线按 32 点小批量发送，整条曲线完成后才记为“已装载”；
- * 5. 开始键首次显示波形；周期键只选择并重画一周期或三周期；
- * 6. 新输入连续三帧稳定后只自动更新参数和频谱一次，已显示波形保持冻结；
+ * 5. 周期键只选择前景，不清空或重画曲线；启动键只强制重画三条曲线；
+ * 6. 三条曲线完成后再恢复用户选择的前景，避免分批发送期间反复切层；
  * 7. 一份工作快照未显示完整前不换新快照，避免 FPGA 持续产帧导致当前帧永远发不完。
  *
  * 中断回调只写事件标志，所有解析、构帧和状态迁移均在主循环执行。
@@ -117,10 +117,6 @@ static uint8_t hmi_task2_work_valid;
 static uint8_t hmi_task2_visibility_pending;
 /** 非零表示需要把当前已校准/未校准状态写入 t_nihe。 */
 static uint8_t hmi_task2_calibration_pending;
-/** 收到首个一周期/三周期按键后置位；在此之前两个时域控件始终隐藏。 */
-static uint8_t hmi_task2_display_requested;
-/** 仅由开始键或周期切换键置位；新 FPGA 帧本身不会让可见波形重画。 */
-static uint8_t hmi_task2_waveform_redraw_pending;
 /** 候选快照是否有效及其连续稳定帧数。 */
 static uint8_t hmi_task2_candidate_valid;
 static uint8_t hmi_task2_candidate_count;
@@ -274,6 +270,19 @@ static uint8_t hmi_task2_append_command(uint8_t *buffer,
 }
 
 /**
+ * @brief 让一周期、三周期和频谱三份屏幕缓存全部失效并安排最终前景恢复。
+ * @param 无。
+ * @return 无。
+ *
+ * @note 该函数只修改 HMI 软件缓存，不影响 FPGA SPI、测量快照或正在进行的 DMA。
+ */
+static void hmi_task2_invalidate_all_charts(void)
+{
+    memset(hmi_task2_loaded_valid, 0, sizeof(hmi_task2_loaded_valid));
+    hmi_task2_visibility_pending = 1u;
+}
+
+/**
  * @brief 屏幕重新上电后，使STM32忘记“已经发送过”的显示缓存并安排完整重放。
  * @param 无。
  * @return 无。
@@ -292,8 +301,6 @@ static void hmi_task2_request_display_replay(void)
     hmi_task2_chart_next_point = 0u;
     hmi_task2_tx_chart_emitted_points = 0u;
     hmi_task2_next_chart_tx_ms = HAL_GetTick();
-    hmi_task2_waveform_redraw_pending =
-        hmi_task2_display_requested;
     hmi_task2_diagnostics.visible_mode = 0u;
     hmi_task2_diagnostics.state = (hmi_task2_work_valid != 0u)
         ? HMI_TASK2_STATE_PRELOADING : HMI_TASK2_STATE_WAIT_DATA;
@@ -454,7 +461,7 @@ static void hmi_task2_format_frequency(uint32_t value_mhz,
 }
 
 /**
- * @brief 生成上电显示频谱背景、隐藏时域波形并显示等待状态的命令。
+ * @brief 生成上电双时域常显、默认一周期前景并显示等待状态的命令。
  * @param frame_size 输出实际字节数。
  * @return 成功返回 1，失败返回 0。
  */
@@ -463,7 +470,7 @@ static uint8_t hmi_task2_build_initialize(uint16_t *frame_size)
     uint16_t size = 0u;
 
     if (hmi_chart_build_visibility(
-            HMI_CHART_MODE_SPECTRUM,
+            HMI_CHART_MODE_ONE_CYCLE,
             hmi_task2_tx_buffer,
             HMI_CHART_FRAME_MAX_BYTES,
             &size) != HMI_CHART_STATUS_OK)
@@ -801,7 +808,7 @@ static uint8_t hmi_task2_snapshots_are_stable(
 /**
  * @brief 判断当前工作快照是否已完整显示。
  * @param 无。
- * @return 参数、当前波形和独立频谱均完成返回 1，否则返回 0。
+ * @return 参数、两个时域波形、独立频谱和前景恢复均完成返回 1，否则返回 0。
  */
 static uint8_t hmi_task2_preload_complete(void)
 {
@@ -809,7 +816,7 @@ static uint8_t hmi_task2_preload_complete(void)
     uint8_t requested_mode = hmi_task2_diagnostics.requested_mode;
 
     if ((requested_mode < (uint8_t)HMI_CHART_MODE_ONE_CYCLE)
-        || (requested_mode > (uint8_t)HMI_CHART_MODE_SPECTRUM))
+        || (requested_mode > (uint8_t)HMI_CHART_MODE_THREE_CYCLE))
     {
         return 0u;
     }
@@ -817,6 +824,12 @@ static uint8_t hmi_task2_preload_complete(void)
     if ((hmi_task2_work_valid == 0u)
         || (hmi_task2_text_valid == 0u)
         || (hmi_task2_text_sequence != sequence)
+        || (hmi_task2_loaded_valid[HMI_CHART_MODE_ONE_CYCLE] == 0u)
+        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_ONE_CYCLE]
+            != sequence)
+        || (hmi_task2_loaded_valid[HMI_CHART_MODE_THREE_CYCLE] == 0u)
+        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_THREE_CYCLE]
+            != sequence)
         || (hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] == 0u)
         || (hmi_task2_loaded_sequence[HMI_CHART_MODE_SPECTRUM]
             != sequence))
@@ -824,16 +837,8 @@ static uint8_t hmi_task2_preload_complete(void)
         return 0u;
     }
 
-    if (hmi_task2_display_requested == 0u)
-    {
-        return (uint8_t)(
-            hmi_task2_diagnostics.visible_mode
-            == (uint8_t)HMI_CHART_MODE_SPECTRUM);
-    }
-
     if ((hmi_task2_diagnostics.visible_mode != requested_mode)
-        || (hmi_task2_loaded_valid[requested_mode] == 0u)
-        || (hmi_task2_waveform_redraw_pending != 0u))
+        || (hmi_task2_visibility_pending != 0u))
     {
         return 0u;
     }
@@ -885,8 +890,7 @@ static void hmi_task2_refresh_work_snapshot(void)
         hmi_task2_diagnostics.stable_candidate_count = 0u;
         hmi_task2_diagnostics.stable_accept_count++;
         hmi_task2_text_valid = 0u;
-        hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] = 0u;
-        hmi_task2_visibility_pending = 1u;
+        hmi_task2_invalidate_all_charts();
         hmi_task2_diagnostics.last_source_sequence =
             hmi_task2_work_snapshot.frame_sequence;
         hmi_task2_diagnostics.state = HMI_TASK2_STATE_PRELOADING;
@@ -946,22 +950,9 @@ static void hmi_task2_refresh_work_snapshot(void)
     hmi_task2_candidate_count = 0u;
     hmi_task2_diagnostics.stable_candidate_count = 0u;
     hmi_task2_diagnostics.stable_accept_count++;
-    /*
-     * 新的稳定输入只自动刷新数字和频谱一次。时域波形保持冻结，直到用户按开始、
-     * 一周期或三周期；这样不会因FPGA持续产帧而闪烁。
-     */
+    /* 新的稳定输入同时刷新数字、一周期、三周期和频谱。 */
     hmi_task2_text_valid = 0u;
-    hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] = 0u;
-    if ((hmi_task2_display_requested == 0u)
-        && (hmi_task2_diagnostics.visible_mode
-            != (uint8_t)HMI_CHART_MODE_SPECTRUM))
-    {
-        /*
-         * 首帧到达后只显示独立频谱；一周期和三周期继续隐藏，
-         * 直到用户第一次按下对应按键。
-         */
-        hmi_task2_visibility_pending = 1u;
-    }
+    hmi_task2_invalidate_all_charts();
     hmi_task2_diagnostics.last_source_sequence =
         hmi_task2_work_snapshot.frame_sequence;
     hmi_task2_diagnostics.state = HMI_TASK2_STATE_PRELOADING;
@@ -1044,9 +1035,11 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
                 else if (hmi_task2_command_candidate
                     == HMI_TASK2_COMMAND_START)
                 {
-                    hmi_task2_display_requested = 1u;
-                    hmi_task2_visibility_pending = 1u;
-                    hmi_task2_waveform_redraw_pending = 1u;
+                    /*
+                     * 启动键只强制重画当前工作快照的三条曲线，不触发FPGA重新测量，
+                     * 也不改变一周期/三周期的前景选择。
+                     */
+                    hmi_task2_invalidate_all_charts();
                 }
                 else if (hmi_task2_command_candidate
                          == (uint8_t)HMI_CHART_MODE_SPECTRUM)
@@ -1060,12 +1053,10 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
                     hmi_task2_diagnostics.requested_mode =
                         hmi_task2_command_candidate;
                     /*
-                     * 一周期/三周期键本身也是明确的显示请求。这样即使用户没有先按
-                     * “启动”，周期键也能直接显示相应波形；上电且未按任何键时仍隐藏。
+                     * 一周期/三周期键只切换两个完全重叠控件的前景层级。
+                     * 两份350点缓存保持不变，不清空、不重画，也不触发FPGA重新测量。
                      */
-                    hmi_task2_display_requested = 1u;
                     hmi_task2_visibility_pending = 1u;
-                    hmi_task2_waveform_redraw_pending = 1u;
                 }
             }
             else
@@ -1131,9 +1122,7 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
 
         case HMI_TX_ACTION_VISIBILITY:
             return (uint8_t)(hmi_chart_build_visibility(
-                (hmi_task2_display_requested != 0u)
-                    ? (hmi_chart_mode_t)hmi_task2_diagnostics.requested_mode
-                    : HMI_CHART_MODE_SPECTRUM,
+                (hmi_chart_mode_t)hmi_task2_diagnostics.requested_mode,
                 hmi_task2_tx_buffer,
                 HMI_CHART_FRAME_MAX_BYTES,
                 frame_size) == HMI_CHART_STATUS_OK);
@@ -1185,7 +1174,7 @@ static uint8_t hmi_task2_build_action(hmi_tx_action_t action,
 }
 
 /**
- * @brief 选择当前最重要的动作；先保证控件可见，再向可见控件写数据。
+ * @brief 选择当前最重要的动作；三图完整刷新后再恢复所选时域控件前景。
  * @param 无。
  * @return 待执行动作，无任务返回 HMI_TX_ACTION_NONE。
  */
@@ -1212,15 +1201,6 @@ static hmi_tx_action_t hmi_task2_select_action(void)
     }
 
     sequence = hmi_task2_work_snapshot.frame_sequence;
-    if ((hmi_task2_visibility_pending != 0u)
-        || ((hmi_task2_display_requested != 0u)
-            && (hmi_task2_diagnostics.visible_mode != requested_mode))
-        || ((hmi_task2_display_requested == 0u)
-            && (hmi_task2_diagnostics.visible_mode
-                != (uint8_t)HMI_CHART_MODE_SPECTRUM)))
-    {
-        return HMI_TX_ACTION_VISIBILITY;
-    }
     if ((hmi_task2_text_valid == 0u)
         || (hmi_task2_text_sequence != sequence))
     {
@@ -1237,18 +1217,30 @@ static hmi_tx_action_t hmi_task2_select_action(void)
             + hmi_task2_chart_active_mode - 1u);
     }
 
-    if ((hmi_task2_display_requested != 0u)
-        && (hmi_task2_waveform_redraw_pending != 0u))
+    if ((hmi_task2_loaded_valid[HMI_CHART_MODE_ONE_CYCLE] == 0u)
+        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_ONE_CYCLE]
+            != sequence))
     {
-        hmi_task2_begin_chart((hmi_chart_mode_t)requested_mode);
-        return (hmi_tx_action_t)(HMI_TX_ACTION_ONE_CYCLE
-            + requested_mode - 1u);
+        hmi_task2_begin_chart(HMI_CHART_MODE_ONE_CYCLE);
+        return HMI_TX_ACTION_ONE_CYCLE;
+    }
+    if ((hmi_task2_loaded_valid[HMI_CHART_MODE_THREE_CYCLE] == 0u)
+        || (hmi_task2_loaded_sequence[HMI_CHART_MODE_THREE_CYCLE]
+            != sequence))
+    {
+        hmi_task2_begin_chart(HMI_CHART_MODE_THREE_CYCLE);
+        return HMI_TX_ACTION_THREE_CYCLE;
     }
     if ((hmi_task2_loaded_valid[HMI_CHART_MODE_SPECTRUM] == 0u)
         || (hmi_task2_loaded_sequence[HMI_CHART_MODE_SPECTRUM] != sequence))
     {
         hmi_task2_begin_chart(HMI_CHART_MODE_SPECTRUM);
         return HMI_TX_ACTION_SPECTRUM;
+    }
+    if ((hmi_task2_visibility_pending != 0u)
+        || (hmi_task2_diagnostics.visible_mode != requested_mode))
+    {
+        return HMI_TX_ACTION_VISIBILITY;
     }
     if ((int32_t)(HAL_GetTick() - hmi_task2_next_probe_ms) >= 0)
     {
@@ -1271,7 +1263,7 @@ static void hmi_task2_complete_action(void)
         case HMI_TX_ACTION_INITIALIZE:
             hmi_task2_initialize_done = 1u;
             hmi_task2_diagnostics.visible_mode =
-                (uint8_t)HMI_CHART_MODE_SPECTRUM;
+                (uint8_t)HMI_CHART_MODE_ONE_CYCLE;
             break;
 
         case HMI_TX_ACTION_ONE_CYCLE:
@@ -1310,12 +1302,6 @@ static void hmi_task2_complete_action(void)
                     hmi_task2_chart_active_mode = 0u;
                     hmi_task2_chart_passes_remaining = 0u;
                     hmi_task2_chart_next_point = 0u;
-                    if ((mode == hmi_task2_diagnostics.requested_mode)
-                        && (mode
-                            != (uint8_t)HMI_CHART_MODE_SPECTRUM))
-                    {
-                        hmi_task2_waveform_redraw_pending = 0u;
-                    }
                 }
             }
             break;
@@ -1335,9 +1321,7 @@ static void hmi_task2_complete_action(void)
 
         case HMI_TX_ACTION_VISIBILITY:
             hmi_task2_diagnostics.visible_mode =
-                (hmi_task2_display_requested != 0u)
-                    ? hmi_task2_diagnostics.requested_mode
-                    : (uint8_t)HMI_CHART_MODE_SPECTRUM;
+                hmi_task2_diagnostics.requested_mode;
             hmi_task2_diagnostics.last_visible_sequence =
                 hmi_task2_tx_source_sequence;
             hmi_task2_visibility_pending = 0u;
@@ -1460,8 +1444,6 @@ void hmi_task2_init(void)
     hmi_task2_work_valid = 0u;
     hmi_task2_visibility_pending = 0u;
     hmi_task2_calibration_pending = 0u;
-    hmi_task2_display_requested = 0u;
-    hmi_task2_waveform_redraw_pending = 0u;
     hmi_task2_candidate_valid = 0u;
     hmi_task2_candidate_count = 0u;
     hmi_task2_last_examined_sequence = UINT32_MAX;
@@ -1482,7 +1464,7 @@ void hmi_task2_init(void)
 
 /**
  * @brief 打开或关闭脱离 FPGA 的串口屏三图自检模式。
- * @param enable 非零时使用内部测试曲线，并主动显示；零时恢复正式数据链路。
+ * @param enable 非零时使用内部测试曲线；零时恢复正式数据链路。
  * @return 无。
  *
  * @note 正式比赛代码应保持关闭。该接口仅用于排除 FPGA/SPI 之前的屏幕链路问题。
@@ -1497,10 +1479,7 @@ void hmi_task2_set_chart_self_test(uint8_t enable)
            sizeof(hmi_task2_loaded_valid));
     hmi_task2_text_sequence = 0u;
     hmi_task2_text_valid = 0u;
-    hmi_task2_display_requested =
-        (hmi_task2_self_test_enabled != 0u) ? 1u : 0u;
-    hmi_task2_visibility_pending = hmi_task2_display_requested;
-    hmi_task2_waveform_redraw_pending = hmi_task2_display_requested;
+    hmi_task2_visibility_pending = 1u;
     hmi_task2_candidate_valid = 0u;
     hmi_task2_candidate_count = 0u;
     hmi_task2_last_examined_sequence = UINT32_MAX;
