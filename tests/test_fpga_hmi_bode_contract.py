@@ -250,16 +250,22 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         status_body = self.link[status_start:status_end]
         self.assertLess(
             status_body.index("fpga_link_cs_low();"),
-            status_body.index("HAL_SPI_Transmit("),
-        )
-        self.assertLess(
-            status_body.index("HAL_SPI_Transmit("),
             status_body.index("HAL_SPI_TransmitReceive("),
         )
         self.assertLess(
             status_body.index("HAL_SPI_TransmitReceive("),
             status_body.index("fpga_link_cs_high();"),
         )
+        self.assertIn("uint8_t command_rx[2];", status_body)
+        frame_start = self.link.index(
+            "static uint8_t fpga_link_start_frame_dma"
+        )
+        frame_end = self.link.index(
+            "static uint8_t fpga_link_send_ack", frame_start
+        )
+        frame_body = self.link[frame_start:frame_end]
+        self.assertIn("HAL_SPI_TransmitReceive(", frame_body)
+        self.assertIn("uint8_t command_rx[2];", frame_body)
         self.assertIn("HAL_SPI_TransmitReceive_DMA", self.link)
         self.assertIn("fpga_link_dummy_tx_cache_line", self.link)
 

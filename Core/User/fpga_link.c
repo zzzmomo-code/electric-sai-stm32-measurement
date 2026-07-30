@@ -241,12 +241,18 @@ static fpga_protocol_result_t fpga_link_read_status(
         FPGA_PROTOCOL_COMMAND_PREFIX,
         FPGA_PROTOCOL_COMMAND_GET_STATUS
     };
+    uint8_t command_rx[2];
     HAL_StatusTypeDef hal_status;
 
     fpga_link_diagnostics.status_read_count++;
     fpga_link_cs_low();
-    hal_status = HAL_SPI_Transmit(
-        fpga_link_spi, command, sizeof(command),
+    /*
+     * SPI3 为双线全双工模式。命令阶段也必须同时读取并丢弃 MISO，
+     * 避免纯发送后 RX FIFO 残留数据或置位 OVR，影响紧随其后的状态响应。
+     * 这不改变线协议：仍然是在同一次 CS 内先发送 A5 01，再读取16字节。
+     */
+    hal_status = HAL_SPI_TransmitReceive(
+        fpga_link_spi, command, command_rx, sizeof(command),
         FPGA_LINK_SPI_TIMEOUT_MS);
     if (hal_status == HAL_OK)
     {
@@ -283,6 +289,7 @@ static uint8_t fpga_link_start_frame_dma(uint32_t now)
         FPGA_PROTOCOL_COMMAND_PREFIX,
         FPGA_PROTOCOL_COMMAND_READ_FRAME
     };
+    uint8_t command_rx[2];
     HAL_StatusTypeDef hal_status;
 
     if ((fpga_link_current_status.frame_length == 0u)
@@ -295,8 +302,13 @@ static uint8_t fpga_link_start_frame_dma(uint32_t now)
     fpga_link_clear_dma_flags();
     fpga_link_prepare_dma_cache();
     fpga_link_cs_low();
-    hal_status = HAL_SPI_Transmit(
-        fpga_link_spi, command, sizeof(command),
+    /*
+     * 与 GET_STATUS 相同，READ_FRAME 的 A5 02 命令阶段使用全双工
+     * 阻塞收发并丢弃两个返回字节。CS 保持低，随后 DMA 的 rx[0]
+     * 仍对应 FPGA frame[0]，没有增加 dummy，也没有改变响应偏移。
+     */
+    hal_status = HAL_SPI_TransmitReceive(
+        fpga_link_spi, command, command_rx, sizeof(command),
         FPGA_LINK_SPI_TIMEOUT_MS);
     if (hal_status == HAL_OK)
     {
@@ -331,6 +343,7 @@ static uint8_t fpga_link_start_frame_dma(uint32_t now)
 static uint8_t fpga_link_send_ack(uint32_t frame_sequence)
 {
     uint8_t frame[8];
+    uint8_t discard_rx[8];
     uint16_t crc;
     HAL_StatusTypeDef hal_status;
 
@@ -342,8 +355,12 @@ static uint8_t fpga_link_send_ack(uint32_t frame_sequence)
     frame[7] = (uint8_t)(crc >> 8);
 
     fpga_link_cs_low();
-    hal_status = HAL_SPI_Transmit(
-        fpga_link_spi, frame, sizeof(frame),
+    /*
+     * ACK 同样在全双工模式下消费接收字节，确保事务结束时 RX FIFO
+     * 为空，下一次 GET_STATUS 不会继承 OVR 或旧字节。
+     */
+    hal_status = HAL_SPI_TransmitReceive(
+        fpga_link_spi, frame, discard_rx, sizeof(frame),
         FPGA_LINK_SPI_TIMEOUT_MS);
     fpga_link_cs_high();
 
