@@ -1,9 +1,9 @@
 /**
  * @file hmi_task2.h
- * @brief G 题淘晶驰串口屏双时域同步刷新、稳定平均与显示切换接口。
+ * @brief G 题淘晶驰串口屏双时域启动锁存、短时平均与显示切换接口。
  *
- * 模块用途：经 USART1 DMA 立即显示首帧、平均后续连续五帧稳定的数字、
- *          一周期、三周期和频谱；周期键只切换重叠时域控件的显示。
+ * 模块用途：经 USART1 DMA 立即显示首帧；启动键锁存最新完整数据并在三帧内
+ *          小幅平均文字参数；周期键只切换重叠时域控件的显示。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init()，再绑定 huart1。
@@ -21,7 +21,7 @@
 #include "stm32h7xx_hal_uart.h"
 #endif
 
-/** 串口屏稳定锁存显示状态。 */
+/** 串口屏启动锁存显示状态。 */
 typedef enum
 {
     HMI_TASK2_STATE_WAIT_DATA = 0,
@@ -41,9 +41,13 @@ typedef struct
     uint32_t tx_complete_count;    /**< TX DMA 完成次数。 */
     uint32_t tx_error_count;       /**< TX 启动、超时或 UART 错误次数。 */
     uint32_t preload_complete_count; /**< 当前波形、频谱和参数完整刷新次数。 */
-    uint32_t stable_accept_count;  /**< 首帧、五帧稳定平均或超时兜底锁存的次数。 */
-    uint32_t stable_reject_count;  /**< 候选组失稳并重新开始累计的次数。 */
-    uint32_t stable_force_count;   /**< 输入变化后800 ms仍不稳定而强制锁存的次数。 */
+    uint32_t stable_accept_count;  /**< 首帧、启动锁存及微调小帧接受总次数。 */
+    uint32_t stable_reject_count;  /**< 微调期间遇到大变化并冻结的次数。 */
+    uint32_t stable_force_count;   /**< 800 ms微调窗口超时结束的次数。 */
+    uint32_t start_latch_count;    /**< 启动键成功锁存最新完整快照的次数。 */
+    uint32_t fine_tune_accept_count; /**< 启动后加入三帧平均的小变化帧数。 */
+    uint32_t fine_tune_abort_count; /**< 启动后因大变化而放弃微调的次数。 */
+    uint32_t fine_tune_timeout_count; /**< 启动后因800 ms到期而结束微调的次数。 */
     uint32_t calibration_toggle_count; /**< 已校准/未校准按键切换次数。 */
     uint32_t probe_count;          /**< 已发送的 sendme 在线探测次数。 */
     uint32_t probe_reply_count;    /**< 已收到的页面号回复次数。 */
@@ -53,13 +57,14 @@ typedef struct
     uint32_t last_source_sequence; /**< 当前刷新工作快照序号。 */
     uint32_t last_visible_sequence;/**< 当前可见曲线对应的快照序号。 */
     uint32_t last_frame_interval_ms; /**< 最近两份有效 FPGA 显示快照的到达间隔。 */
-    uint32_t last_stable_wait_ms;  /**< 最近一次五帧或超时锁存实际等待的时间。 */
+    uint32_t last_stable_wait_ms;  /**< 最近一次微调完成、放弃或超时的等待时间。 */
     uint16_t last_tx_bytes;        /**< 最近一次 DMA 发送字节数。 */
     uint16_t last_chart_point;     /**< 当前曲线已经确认发送到的点下标。 */
     uint8_t last_command;          /**< 最近一次有效命令：1/2/3/4为图形/开始，0x10保留，0x20切换校准。 */
     uint8_t requested_mode;        /**< 用户要求置于前景的时域模式：1或2。 */
     uint8_t visible_mode;          /**< 最近已向屏幕确认的前景时域模式。 */
-    uint8_t stable_candidate_count;/**< 当前候选结果已连续稳定的帧数，范围0~5。 */
+    uint8_t stable_candidate_count;/**< 当前启动微调组已接受帧数，范围0~3。 */
+    uint8_t fine_tune_active;      /**< 1=处于启动后800 ms三帧小幅平均窗口。 */
     uint8_t calibration_enabled;   /**< 当前数字显示模式：1=已校准，0=未校准。 */
     uint8_t screen_online;         /**< 1=屏幕在线，0=未连接或回复已超时。 */
     uint8_t current_page;          /**< 最近一次 sendme 返回的页面号。 */

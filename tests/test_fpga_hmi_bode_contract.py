@@ -415,6 +415,9 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("last_time_offset_binary", self.conversion_h)
         self.assertIn("last_time_rail_sample_count", self.conversion_h)
         self.assertIn("last_time_display_clip_count", self.conversion_h)
+        self.assertIn("last_spectrum_rail_bin_count", self.conversion_h)
+        self.assertIn("last_component_spectrum_raw", self.conversion_h)
+        self.assertIn("UINT16_MAX", self.conversion)
         self.assertIn("measurement_conversion_interpolate_time", self.conversion)
         self.assertIn(
             "measurement_conversion_resample_periodic", self.conversion

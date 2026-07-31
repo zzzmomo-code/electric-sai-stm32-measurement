@@ -1,10 +1,10 @@
 /**
  * @file hmi_task2.c
- * @brief G 题淘晶驰串口屏双时域同步刷新、稳定平均与显示切换实现。
+ * @brief G 题淘晶驰串口屏双时域启动锁存、短时平均与显示切换实现。
  *
- * 模块用途：连续接收测量快照，首帧立即显示、后续连续五帧稳定后平均锁存；
- *          每份接受的稳定快照同时刷新数字、一周期、三周期和频谱。
- *          一周期/三周期键只切换重叠控件显示，启动键强制刷新文字和三条曲线。
+ * 模块用途：连续接收测量快照，首帧立即显示；之后由启动键锁存最新完整快照，
+ *          并在三帧内只对小变化文字参数平均，遇到大变化立即冻结。
+ *          一周期/三周期键只切换重叠控件显示，不改变锁存的测量结果。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
  * 初始化方法：system_init() 调用 hmi_task2_init() 并绑定 huart1。
@@ -24,8 +24,8 @@
 #define HMI_TASK2_COMMAND_START       0x04u
 #define HMI_TASK2_COMMAND_MODE_UNUSED 0x10u
 #define HMI_TASK2_COMMAND_CALIBRATION 0x20u
-#define HMI_TASK2_STABLE_FRAME_COUNT  5u
-#define HMI_TASK2_STABLE_FORCE_TIMEOUT_MS 800u
+#define HMI_TASK2_FINE_TUNE_FRAME_COUNT  3u
+#define HMI_TASK2_FINE_TUNE_TIMEOUT_MS   800u
 #define HMI_TASK2_FREQUENCY_FLOOR_MHZ 100000u
 #define HMI_TASK2_VOLTAGE_FLOOR_UV    1000u
 #define HMI_TASK2_CHART_PASS_COUNT    2u
@@ -35,16 +35,16 @@
 #define HMI_TASK2_PAGE_REPLY_HEAD     0x66u
 
 /*
- * 稳定锁存显示状态机的核心规则：
+ * 启动锁存显示状态机的核心规则：
  *
  * 1. 上电默认显示一周期控件和独立频谱，三周期控件同步接收缓存数据；
- * 2. 首份有效数据立即成为工作快照，后续连续五帧稳定后平均文字参数；
- *    输入变化后800 ms仍不能凑齐五帧时，用最近候选组兜底，避免旧值长期不更新；
- * 3. 每份接受的工作快照依次刷新数字、一周期、三周期和频谱；
+ * 2. 首份有效数据只自动显示一次；之后不按启动键，屏幕结果保持不变；
+ * 3. 启动键立即锁存最新完整快照，并在800 ms内最多用三帧小变化数据平均文字参数；
+ *    微调期间一旦出现大变化，立即放弃后续微调，保留大变化前的最新平均值；
  * 4. 曲线按 32 点小批量发送，整条曲线完成后才记为“已装载”；
- * 5. 周期键只切换显示，不清空或重画曲线；启动键强制刷新文字和三条曲线；
+ * 5. 周期键只切换显示，不清空或重画曲线；启动键刷新文字和三条曲线；
  * 6. 周期键在当前32点批次结束后立即切换，后台曲线从原进度继续；
- * 7. 一份工作快照未显示完整前不换新快照，避免 FPGA 持续产帧导致当前帧永远发不完。
+ * 7. FPGA仍连续采集和换算；只有显示工作快照被启动键锁存，不向FPGA发送重测命令。
  *
  * 中断回调只写事件标志，所有解析、构帧和状态迁移均在主循环执行。
  */
@@ -92,9 +92,9 @@ static uint8_t hmi_task2_tx_buffer[HMI_TASK2_TX_STORAGE_BYTES]
 
 /** 当前正在发送的一份稳定显示快照。 */
 static measurement_display_snapshot_t hmi_task2_work_snapshot;
-/** 正在进行连续稳定性确认的候选快照。 */
+/** 启动后微调阶段最近一份已接受的小变化快照。 */
 static measurement_display_snapshot_t hmi_task2_candidate_snapshot;
-/** 当前连续稳定候选组的文字参数累加值。 */
+/** 启动后最多三帧文字参数的累加值。 */
 static hmi_task2_scalar_accumulator_t
     hmi_task2_candidate_scalar_sum;
 
@@ -133,15 +133,16 @@ static uint8_t hmi_task2_work_valid;
 static uint8_t hmi_task2_visibility_pending;
 /** 非零表示需要把当前已校准/未校准状态写入 t_nihe。 */
 static uint8_t hmi_task2_calibration_pending;
-/** 候选快照是否有效及其连续稳定帧数。 */
+/** 微调基准是否有效及当前累计帧数。 */
 static uint8_t hmi_task2_candidate_valid;
 static uint8_t hmi_task2_candidate_count;
-/** 当前候选组、输入变化窗口以及最近一帧到达的主循环毫秒时间。 */
+/** 本次微调开始时间以及最近一帧到达的主循环毫秒时间。 */
 static uint32_t hmi_task2_candidate_started_ms;
-static uint32_t hmi_task2_change_started_ms;
 static uint32_t hmi_task2_last_examined_ms;
-/** 非零表示当前输入已经明显偏离屏幕上的工作快照。 */
-static uint8_t hmi_task2_change_pending;
+/** 启动键已经收到，等待当前UART小批次结束后锁存最新快照。 */
+static uint8_t hmi_task2_start_update_pending;
+/** 非零表示当前处于启动后的三帧小幅平均窗口。 */
+static uint8_t hmi_task2_fine_tune_active;
 /** 最近已经参加稳定性判断的源帧序号。 */
 static uint32_t hmi_task2_last_examined_sequence;
 static uint8_t hmi_task2_self_test_enabled;
@@ -828,7 +829,7 @@ static uint8_t hmi_task2_snapshots_are_stable(
 }
 
 /**
- * @brief 清零连续稳定候选组的文字参数累加值。
+ * @brief 清零启动后微调组的文字参数累加值。
  * @param 无。
  * @return 无。
  */
@@ -839,7 +840,7 @@ static void hmi_task2_reset_scalar_average(void)
 }
 
 /**
- * @brief 把一帧文字参数加入当前稳定候选组。
+ * @brief 把一帧文字参数加入启动后微调组。
  * @param snapshot 已按谐波次数排序的显示快照。
  * @return 无。
  */
@@ -865,12 +866,12 @@ static void hmi_task2_add_scalar_average(
 }
 
 /**
- * @brief 将稳定候选组的文字参数平均值写入最新帧副本。
- * @param snapshot 已复制最新波形和频谱的工作快照。
- * @param count 当前稳定候选组帧数。
+ * @brief 将启动后微调组的文字参数平均值写入工作快照。
+ * @param snapshot 启动时锁存的完整工作快照。
+ * @param count 当前微调组帧数。
  * @return 无。
  *
- * @note 只平均文字数值；波形、频谱、标志和序号均保留候选组最新完整帧。
+ * @note 只平均文字数值；波形、频谱、标志和序号均保留启动瞬间的完整帧。
  */
 static void hmi_task2_apply_scalar_average(
     measurement_display_snapshot_t *snapshot,
@@ -954,7 +955,7 @@ static uint8_t hmi_task2_preload_complete(void)
 }
 
 /**
- * @brief 在上一份显示刷新结束后获取最新快照，避免连续新帧造成发送饥饿。
+ * @brief 上电锁存首帧，并只在启动后的短窗口内微调工作快照。
  * @param 无。
  * @return 无。
  */
@@ -962,7 +963,6 @@ static void hmi_task2_refresh_work_snapshot(void)
 {
     const measurement_display_snapshot_t *latest;
     uint32_t now_ms;
-    uint8_t force_accept = 0u;
 
     if (hmi_task2_self_test_enabled != 0u)
     {
@@ -978,11 +978,80 @@ static void hmi_task2_refresh_work_snapshot(void)
     {
         return;
     }
+    now_ms = HAL_GetTick();
+
+    /*
+     * 启动键允许锁存当前已经存在的最新帧，不要求FPGA恰好再产生一帧。若UART正在
+     * 发送旧曲线的小批次，则等待该批次结束再切换工作快照，避免混合两帧曲线进度。
+     */
+    if ((hmi_task2_start_update_pending != 0u)
+        && (hmi_task2_tx_active != 0u))
+    {
+        return;
+    }
+    if (hmi_task2_start_update_pending != 0u)
+    {
+        if ((hmi_task2_last_examined_sequence != UINT32_MAX)
+            && (latest->frame_sequence
+                != hmi_task2_last_examined_sequence))
+        {
+            hmi_task2_diagnostics.last_frame_interval_ms =
+                now_ms - hmi_task2_last_examined_ms;
+        }
+        memcpy(&hmi_task2_work_snapshot, latest,
+               sizeof(hmi_task2_work_snapshot));
+        memcpy(&hmi_task2_candidate_snapshot, latest,
+               sizeof(hmi_task2_candidate_snapshot));
+        hmi_task2_work_valid = 1u;
+        hmi_task2_candidate_valid = 1u;
+        hmi_task2_candidate_count = 1u;
+        hmi_task2_candidate_started_ms = now_ms;
+        hmi_task2_start_update_pending = 0u;
+        hmi_task2_fine_tune_active = 1u;
+        hmi_task2_reset_scalar_average();
+        hmi_task2_add_scalar_average(latest);
+        hmi_task2_diagnostics.stable_candidate_count = 1u;
+        hmi_task2_diagnostics.stable_accept_count++;
+        hmi_task2_diagnostics.start_latch_count++;
+        hmi_task2_diagnostics.fine_tune_active = 1u;
+        hmi_task2_chart_active_mode = 0u;
+        hmi_task2_chart_passes_remaining = 0u;
+        hmi_task2_chart_next_point = 0u;
+        hmi_task2_tx_chart_emitted_points = 0u;
+        hmi_task2_text_valid = 0u;
+        hmi_task2_invalidate_all_charts();
+        hmi_task2_diagnostics.last_source_sequence =
+            hmi_task2_work_snapshot.frame_sequence;
+        hmi_task2_diagnostics.state = HMI_TASK2_STATE_PRELOADING;
+        hmi_task2_last_examined_ms = now_ms;
+        hmi_task2_last_examined_sequence = latest->frame_sequence;
+        return;
+    }
+
+    /*
+     * 即使没有新帧，也要按800 ms结束微调窗口。超时不会强制接受新值，只保留当前
+     * 已经显示的最近平均值，随后保持冻结直到下一次启动。
+     */
+    if ((hmi_task2_fine_tune_active != 0u)
+        && ((uint32_t)(now_ms - hmi_task2_candidate_started_ms)
+            >= HMI_TASK2_FINE_TUNE_TIMEOUT_MS))
+    {
+        hmi_task2_fine_tune_active = 0u;
+        hmi_task2_candidate_valid = 0u;
+        hmi_task2_candidate_count = 0u;
+        hmi_task2_reset_scalar_average();
+        hmi_task2_diagnostics.stable_candidate_count = 0u;
+        hmi_task2_diagnostics.stable_force_count++;
+        hmi_task2_diagnostics.fine_tune_timeout_count++;
+        hmi_task2_diagnostics.fine_tune_active = 0u;
+        hmi_task2_diagnostics.last_stable_wait_ms =
+            now_ms - hmi_task2_candidate_started_ms;
+    }
+
     if (latest->frame_sequence == hmi_task2_last_examined_sequence)
     {
         return;
     }
-    now_ms = HAL_GetTick();
     if (hmi_task2_last_examined_sequence != UINT32_MAX)
     {
         hmi_task2_diagnostics.last_frame_interval_ms =
@@ -992,122 +1061,77 @@ static void hmi_task2_refresh_work_snapshot(void)
     hmi_task2_last_examined_sequence = latest->frame_sequence;
 
     /*
-     * 第一份有效数据不等待五帧稳定门限。否则 FPGA 只发布一次或新数据到达较慢时，
-     * 文字可能来自旧状态，而频谱和波形始终没有工作快照可画。后续输入变化仍使用
-     * 五帧稳定平均锁存，避免频繁清空曲线导致闪烁。
+     * 第一份有效数据只自动显示一次，保证上电后无需按键也有结果。此后即使FPGA
+     * 连续发布新帧，只要没有启动微调窗口，屏幕工作快照就保持不变。
      */
     if (hmi_task2_work_valid == 0u)
     {
         memcpy(&hmi_task2_work_snapshot, latest,
                sizeof(hmi_task2_work_snapshot));
         hmi_task2_work_valid = 1u;
-        hmi_task2_candidate_valid = 0u;
-        hmi_task2_candidate_count = 0u;
-        hmi_task2_change_pending = 0u;
-        hmi_task2_reset_scalar_average();
-        hmi_task2_diagnostics.stable_candidate_count = 0u;
-        hmi_task2_diagnostics.stable_accept_count++;
         hmi_task2_text_valid = 0u;
         hmi_task2_invalidate_all_charts();
+        hmi_task2_diagnostics.stable_accept_count++;
         hmi_task2_diagnostics.last_source_sequence =
             hmi_task2_work_snapshot.frame_sequence;
         hmi_task2_diagnostics.state = HMI_TASK2_STATE_PRELOADING;
         return;
     }
 
-    /*
-     * 只在最新帧明显偏离当前屏幕值时启动800 ms总时限。候选组因大跳变
-     * 重新累计时不重启这个总时限，因此持续抖动也不会让屏幕永远停在旧值；
-     * 若信号又回到当前屏幕值附近，则取消本次变化窗口。
-     */
-    if (hmi_task2_snapshots_are_stable(
-            latest, &hmi_task2_work_snapshot) == 0u)
-    {
-        if (hmi_task2_change_pending == 0u)
-        {
-            hmi_task2_change_pending = 1u;
-            hmi_task2_change_started_ms = now_ms;
-        }
-    }
-    else
-    {
-        hmi_task2_change_pending = 0u;
-    }
-
-    if ((hmi_task2_candidate_valid != 0u)
-        && (hmi_task2_snapshots_are_stable(
-                latest, &hmi_task2_candidate_snapshot) != 0u))
-    {
-        if (hmi_task2_candidate_count < HMI_TASK2_STABLE_FRAME_COUNT)
-        {
-            hmi_task2_candidate_count++;
-            hmi_task2_add_scalar_average(latest);
-            memcpy(&hmi_task2_candidate_snapshot, latest,
-                   sizeof(hmi_task2_candidate_snapshot));
-        }
-    }
-    else
-    {
-        if (hmi_task2_candidate_valid != 0u)
-        {
-            hmi_task2_diagnostics.stable_reject_count++;
-        }
-        memcpy(&hmi_task2_candidate_snapshot, latest,
-               sizeof(hmi_task2_candidate_snapshot));
-        hmi_task2_candidate_valid = 1u;
-        hmi_task2_candidate_count = 1u;
-        hmi_task2_candidate_started_ms = now_ms;
-        hmi_task2_reset_scalar_average();
-        hmi_task2_add_scalar_average(latest);
-    }
-    hmi_task2_diagnostics.stable_candidate_count =
-        hmi_task2_candidate_count;
-
-    if (hmi_task2_candidate_count < HMI_TASK2_STABLE_FRAME_COUNT)
-    {
-        if ((hmi_task2_change_pending == 0u)
-            || ((uint32_t)(
-                    HAL_GetTick() - hmi_task2_change_started_ms)
-                < HMI_TASK2_STABLE_FORCE_TIMEOUT_MS))
-        {
-            return;
-        }
-        force_accept = 1u;
-    }
-    if ((hmi_task2_work_valid != 0u)
-        && (hmi_task2_preload_complete() == 0u))
+    if ((hmi_task2_fine_tune_active == 0u)
+        || (hmi_task2_candidate_valid == 0u))
     {
         return;
     }
 
-    memcpy(&hmi_task2_work_snapshot, &hmi_task2_candidate_snapshot,
-           sizeof(hmi_task2_work_snapshot));
-    hmi_task2_apply_scalar_average(
-        &hmi_task2_work_snapshot, hmi_task2_candidate_count);
-    hmi_task2_work_valid = 1u;
-    hmi_task2_candidate_valid = 0u;
-    hmi_task2_candidate_count = 0u;
-    hmi_task2_change_pending = 0u;
-    hmi_task2_reset_scalar_average();
-    hmi_task2_diagnostics.stable_candidate_count = 0u;
-    hmi_task2_diagnostics.stable_accept_count++;
-    if (force_accept != 0u)
+    /*
+     * 微调只接受相对上一份已接受快照的小变化。大变化出现时不把该帧加入平均，
+     * 直接结束本轮微调，所以屏幕保留大变化之前的最新平均结果。
+     */
+    if (hmi_task2_snapshots_are_stable(
+            latest, &hmi_task2_candidate_snapshot) == 0u)
     {
-        hmi_task2_diagnostics.stable_force_count++;
+        hmi_task2_fine_tune_active = 0u;
+        hmi_task2_candidate_valid = 0u;
+        hmi_task2_candidate_count = 0u;
+        hmi_task2_reset_scalar_average();
+        hmi_task2_diagnostics.stable_candidate_count = 0u;
+        hmi_task2_diagnostics.stable_reject_count++;
+        hmi_task2_diagnostics.fine_tune_abort_count++;
+        hmi_task2_diagnostics.fine_tune_active = 0u;
         hmi_task2_diagnostics.last_stable_wait_ms =
-            now_ms - hmi_task2_change_started_ms;
+            now_ms - hmi_task2_candidate_started_ms;
+        return;
     }
-    else
+
+    if (hmi_task2_candidate_count
+        < HMI_TASK2_FINE_TUNE_FRAME_COUNT)
     {
+        hmi_task2_candidate_count++;
+        hmi_task2_add_scalar_average(latest);
+        memcpy(&hmi_task2_candidate_snapshot, latest,
+               sizeof(hmi_task2_candidate_snapshot));
+        hmi_task2_apply_scalar_average(
+            &hmi_task2_work_snapshot, hmi_task2_candidate_count);
+        hmi_task2_text_valid = 0u;
+        hmi_task2_diagnostics.stable_candidate_count =
+            hmi_task2_candidate_count;
+        hmi_task2_diagnostics.stable_accept_count++;
+        hmi_task2_diagnostics.fine_tune_accept_count++;
+    }
+
+    if (hmi_task2_candidate_count
+        >= HMI_TASK2_FINE_TUNE_FRAME_COUNT)
+    {
+        hmi_task2_fine_tune_active = 0u;
+        hmi_task2_candidate_valid = 0u;
+        hmi_task2_candidate_count = 0u;
+        hmi_task2_reset_scalar_average();
+        hmi_task2_diagnostics.stable_candidate_count = 0u;
+        hmi_task2_diagnostics.fine_tune_active = 0u;
         hmi_task2_diagnostics.last_stable_wait_ms =
             now_ms - hmi_task2_candidate_started_ms;
     }
-    /* 新的稳定或超时兜底输入同时刷新数字、一周期、三周期和频谱。 */
-    hmi_task2_text_valid = 0u;
-    hmi_task2_invalidate_all_charts();
-    hmi_task2_diagnostics.last_source_sequence =
-        hmi_task2_work_snapshot.frame_sequence;
-    hmi_task2_diagnostics.state = HMI_TASK2_STATE_PRELOADING;
 }
 
 /**
@@ -1188,11 +1212,10 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
                     == HMI_TASK2_COMMAND_START)
                 {
                     /*
-                     * 启动键强制重发当前工作快照的全部文字和三条曲线，
-                     * 不触发FPGA重新测量，也不改变一/三周期前景选择。
+                     * 启动键只登记一次主循环锁存请求。FPGA仍连续测量；主循环在当前
+                     * UART小批次结束后复制最新完整快照，并开启三帧小幅平均窗口。
                      */
-                    hmi_task2_text_valid = 0u;
-                    hmi_task2_invalidate_all_charts();
+                    hmi_task2_start_update_pending = 1u;
                 }
                 else if (hmi_task2_command_candidate
                          == (uint8_t)HMI_CHART_MODE_SPECTRUM)
@@ -1605,9 +1628,9 @@ void hmi_task2_init(void)
     hmi_task2_candidate_valid = 0u;
     hmi_task2_candidate_count = 0u;
     hmi_task2_candidate_started_ms = 0u;
-    hmi_task2_change_started_ms = 0u;
     hmi_task2_last_examined_ms = 0u;
-    hmi_task2_change_pending = 0u;
+    hmi_task2_start_update_pending = 0u;
+    hmi_task2_fine_tune_active = 0u;
     hmi_task2_reset_scalar_average();
     hmi_task2_last_examined_sequence = UINT32_MAX;
     hmi_task2_self_test_enabled = 0u;
@@ -1646,9 +1669,9 @@ void hmi_task2_set_chart_self_test(uint8_t enable)
     hmi_task2_candidate_valid = 0u;
     hmi_task2_candidate_count = 0u;
     hmi_task2_candidate_started_ms = 0u;
-    hmi_task2_change_started_ms = 0u;
     hmi_task2_last_examined_ms = 0u;
-    hmi_task2_change_pending = 0u;
+    hmi_task2_start_update_pending = 0u;
+    hmi_task2_fine_tune_active = 0u;
     hmi_task2_reset_scalar_average();
     hmi_task2_last_examined_sequence = UINT32_MAX;
     hmi_task2_chart_active_mode = 0u;

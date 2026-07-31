@@ -163,17 +163,17 @@ class HmiRuntimeContractTest(unittest.TestCase):
         first_snapshot = self.source.index(
             "if (hmi_task2_work_valid == 0u)"
         )
-        stability_gate = self.source.index(
-            "hmi_task2_snapshots_are_stable(", first_snapshot
+        fine_tune_gate = self.source.index(
+            "if ((hmi_task2_fine_tune_active == 0u)",
+            first_snapshot,
         )
-        self.assertLess(first_snapshot, stability_gate)
         self.assertIn(
             "hmi_task2_work_snapshot, latest",
-            self.source[first_snapshot:stability_gate],
+            self.source[first_snapshot:fine_tune_gate],
         )
         self.assertIn(
             "hmi_task2_invalidate_all_charts();",
-            self.source[first_snapshot:stability_gate],
+            self.source[first_snapshot:fine_tune_gate],
         )
         invalidate_start = self.source.index(
             "static void hmi_task2_invalidate_all_charts"
@@ -293,14 +293,17 @@ class HmiRuntimeContractTest(unittest.TestCase):
             self.assertEqual(assignments, [variable_name])
             self.assertNotIn("HAL_UART_", body)
 
-    def test_stable_latch_updates_text_and_all_three_charts(self):
+    def test_start_latch_and_three_frame_fine_tune_freeze_display(self):
         self.assertIn("hmi_task2_loaded_sequence[4]", self.source)
         self.assertIn("hmi_task2_loaded_valid[4]", self.source)
         self.assertIn("hmi_task2_preload_complete()", self.source)
         self.assertIn("hmi_task2_work_snapshot", self.source)
-        self.assertIn("#define HMI_TASK2_STABLE_FRAME_COUNT  5u", self.source)
         self.assertIn(
-            "#define HMI_TASK2_STABLE_FORCE_TIMEOUT_MS 800u",
+            "#define HMI_TASK2_FINE_TUNE_FRAME_COUNT  3u",
+            self.source,
+        )
+        self.assertIn(
+            "#define HMI_TASK2_FINE_TUNE_TIMEOUT_MS   800u",
             self.source,
         )
         self.assertIn("hmi_task2_snapshots_are_stable", self.source)
@@ -309,32 +312,81 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn("component_frequency_mhz", self.source)
         self.assertIn("component_amplitude_uv", self.source)
         self.assertIn("hmi_task2_text_valid = 0u;", self.source)
-        stable_refresh = self.source.index(
-            "新的稳定或超时兜底输入同时刷新数字、一周期、三周期和频谱"
+        refresh_start = self.source.index(
+            "static void hmi_task2_refresh_work_snapshot"
         )
         next_function = self.source.index(
-            "static void hmi_task2_parse_commands", stable_refresh
+            "static void hmi_task2_parse_commands", refresh_start
+        )
+        refresh_body = self.source[refresh_start:next_function]
+        start_latch = refresh_body.index(
+            "if (hmi_task2_start_update_pending != 0u)"
+        )
+        first_snapshot = refresh_body.index(
+            "if (hmi_task2_work_valid == 0u)",
+            start_latch,
+        )
+        self.assertLess(start_latch, first_snapshot)
+        self.assertIn(
+            "memcpy(&hmi_task2_work_snapshot, latest",
+            refresh_body,
+        )
+        self.assertEqual(
+            refresh_body.count(
+                "memcpy(&hmi_task2_work_snapshot, latest"
+            ),
+            2,
+        )
+        self.assertGreaterEqual(
+            refresh_body.count(
+                "hmi_task2_invalidate_all_charts();"
+            ),
+            2,
+        )
+        fine_tune_start = refresh_body.index(
+            "if (hmi_task2_snapshots_are_stable("
+        )
+        fine_tune_body = refresh_body[fine_tune_start:]
+        self.assertIn(
+            "hmi_task2_fine_tune_active = 0u;",
+            fine_tune_body,
         )
         self.assertIn(
+            "hmi_task2_diagnostics.fine_tune_abort_count++;",
+            fine_tune_body,
+        )
+        self.assertIn(
+            "hmi_task2_apply_scalar_average(",
+            fine_tune_body,
+        )
+        self.assertIn(
+            "hmi_task2_text_valid = 0u;",
+            fine_tune_body,
+        )
+        self.assertNotIn(
             "hmi_task2_invalidate_all_charts();",
-            self.source[stable_refresh:next_function],
+            fine_tune_body,
+        )
+        self.assertNotIn(
+            "memcpy(&hmi_task2_work_snapshot",
+            fine_tune_body,
         )
         self.assertIn(
-            "&& (hmi_task2_preload_complete() == 0u)",
-            self.source,
+            "latest->frame_sequence == hmi_task2_last_examined_sequence",
+            refresh_body,
         )
         self.assertIn("matched_right_mask", self.source)
         self.assertIn("found_match", self.source)
         self.assertIn("无序匹配", self.source)
-        self.assertIn("stable_force_count", self.header)
+        self.assertIn("fine_tune_timeout_count", self.header)
+        self.assertIn("start_latch_count", self.header)
         self.assertIn("last_frame_interval_ms", self.header)
-        self.assertIn("hmi_task2_change_started_ms", self.source)
         self.assertIn(
-            "HAL_GetTick() - hmi_task2_change_started_ms",
+            "now_ms - hmi_task2_candidate_started_ms",
             self.source,
         )
 
-    def test_period_buttons_only_switch_foreground_and_start_redraws_all(self):
+    def test_period_buttons_switch_foreground_and_start_requests_latest_latch(self):
         select_start = self.source.index(
             "static hmi_tx_action_t hmi_task2_select_action"
         )
@@ -355,7 +407,7 @@ class HmiRuntimeContractTest(unittest.TestCase):
         parse_body = self.source[parse_start:parse_end]
         self.assertEqual(
             parse_body.count("hmi_task2_invalidate_all_charts();"),
-            1,
+            0,
         )
         self.assertIn(
             "== HMI_TASK2_COMMAND_START",
@@ -366,7 +418,11 @@ class HmiRuntimeContractTest(unittest.TestCase):
         ):parse_body.index(
             "== (uint8_t)HMI_CHART_MODE_SPECTRUM"
         )]
-        self.assertIn("hmi_task2_text_valid = 0u;", start_branch)
+        self.assertIn(
+            "hmi_task2_start_update_pending = 1u;",
+            start_branch,
+        )
+        self.assertNotIn("hmi_task2_text_valid = 0u;", start_branch)
         period_branch = parse_body[parse_body.index(
             "hmi_task2_diagnostics.requested_mode ="
         ):]

@@ -2,7 +2,7 @@
  * @file system.c
  * @brief G 题 STM32 正式数据链路的统一初始化和主循环入口。
  *
- * 模块用途：连接“FPGA SPI3 连续测量帧 -> 350 点显示快照 -> USART1 串口屏稳定锁存显示”。
+ * 模块用途：连接“FPGA SPI3 连续测量帧 -> 350 点显示快照 -> USART1 串口屏启动锁存显示”。
  * GPIO 引脚映射：PC10/SPI3_SCK、PC11/SPI3_MISO、PC12/SPI3_MOSI、
  *          PA15/FPGA_CS_N、PD1/FPGA_DATA_READY、PA9/USART1_TX、PA10/USART1_RX。
  * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0 625 kHz 双向 DMA，PD1 EXTI1；
@@ -54,11 +54,11 @@ void system_init(void)
 }
 
 /**
- * @brief 推进“FPGA 接收 -> 显示换算 -> 串口屏稳定锁存显示”的非阻塞数据链路。
+ * @brief 推进“FPGA 接收 -> 显示换算 -> 串口屏启动锁存显示”的非阻塞数据链路。
  * @param 无。
  * @return 无。
  *
- * @note FPGA 快照只有序号变化时才换算一次；串口屏模块自行保存稳定工作快照，
+ * @note FPGA 快照只有序号变化时才换算一次；串口屏模块自行保存启动时的工作快照，
  *       因此 FPGA 继续更新不会破坏正在进行的 UART DMA 发送。
  */
 void system_process(void)
@@ -85,8 +85,8 @@ void system_process(void)
     }
 
     /*
-     * 第三步：首帧立即显示，后续连续五帧稳定并平均文字后刷新三条曲线。
-     * 周期键即时切换重叠控件前景，启动键重发文字和三条曲线；均不会触发 FPGA 重新计算。
+     * 第三步：首帧立即显示；之后只有启动键锁存最新完整结果，并在三帧内小幅平均文字。
+     * 周期键即时切换重叠控件前景；两类按键均不会触发 FPGA 重新计算。
      */
     hmi_task2_process();
 }

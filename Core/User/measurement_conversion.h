@@ -55,6 +55,8 @@ typedef struct
     int16_t last_time_min; /**< 最近时域帧的最小原始码。 */
     int16_t last_time_max; /**< 最近时域帧的最大原始码。 */
     uint16_t last_spectrum_max; /**< 最近 1312 点频谱的最大值。 */
+    uint16_t last_spectrum_rail_bin_count; /**< 最近频谱中等于65535的饱和bin数量。 */
+    uint16_t last_component_spectrum_raw[FPGA_PROTOCOL_COMPONENT_MAX]; /**< 三个有效分量所在FFT bin的原始uint16谱值。 */
     uint16_t last_one_cycle_samples; /**< 最近一次截取的一周期原始点数。 */
     uint16_t last_time_rail_sample_count; /**< 最近一帧接近正负满量程的样点数。 */
     uint16_t last_time_display_clip_count; /**< 最近一帧超出±15000显示量程的样点数。 */

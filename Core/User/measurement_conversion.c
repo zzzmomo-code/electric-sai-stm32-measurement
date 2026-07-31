@@ -539,6 +539,7 @@ uint8_t measurement_conversion_update(
     int16_t time_maximum;
     uint16_t time_rail_sample_count = 0u;
     uint16_t time_display_clip_count = 0u;
+    uint16_t spectrum_rail_bin_count = 0u;
     uint8_t time_offset_binary;
     uint8_t output_component_index = 0u;
 
@@ -591,6 +592,15 @@ uint8_t measurement_conversion_update(
             source->spectrum,
             source->header.spectrum_count,
             target->spectrum_display);
+    for (index = 0u; index < source->header.spectrum_count; index++)
+    {
+        if (source->spectrum[index] == UINT16_MAX)
+        {
+            spectrum_rail_bin_count++;
+        }
+    }
+    measurement_conversion_diagnostics.last_spectrum_rail_bin_count =
+        spectrum_rail_bin_count;
 
     target->frame_sequence = source->header.frame_seq;
     target->timestamp_50m = source->header.timestamp_50mhz;
@@ -622,6 +632,19 @@ uint8_t measurement_conversion_update(
     }
     target->component_count = output_component_index;
     measurement_conversion_sort_components(target);
+    for (index = 0u; index < FPGA_PROTOCOL_COMPONENT_MAX; index++)
+    {
+        measurement_conversion_diagnostics
+            .last_component_spectrum_raw[index] = 0u;
+        if ((index < target->component_count)
+            && (target->component[index].fft_bin
+                < source->header.spectrum_count))
+        {
+            measurement_conversion_diagnostics
+                .last_component_spectrum_raw[index] =
+                    source->spectrum[target->component[index].fft_bin];
+        }
+    }
 
     target->valid = 1u;
     /* 保证数组和参数先写完，再让读取者看到新的活动索引。 */
