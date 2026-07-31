@@ -394,6 +394,10 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             self.conversion_h,
             r"MEASUREMENT_TIME_AUTO_MIN_HALF_RANGE\s+64u",
         )
+        self.assertRegex(
+            self.conversion_h,
+            r"MEASUREMENT_SPECTRUM_EDGE_PADDING\s+8u",
+        )
         for name in (
             "waveform_1cycle",
             "waveform_3cycle",
@@ -415,6 +419,9 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             "component->amplitude_peak_uv",
             self.conversion,
         )
+        self.assertIn("spectrum_first_point", self.conversion)
+        self.assertIn("spectrum_last_point", self.conversion)
+        self.assertIn("spectrum_usable_width", self.conversion)
         self.assertNotIn(
             "measurement_conversion_compress_spectrum",
             self.conversion,

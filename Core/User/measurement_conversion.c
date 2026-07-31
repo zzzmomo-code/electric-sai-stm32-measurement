@@ -417,6 +417,7 @@ static uint8_t measurement_conversion_find_cycle_window(
  *
  * @note 横坐标只取 component.frequency_mhz，纵坐标只取
  *       component.amplitude_peak_uv；原始 spectrum[] 不参与屏幕高度计算。
+ *       左右各保留8个基线点，极低频和极高频分量也不会贴住控件边框。
  */
 static void measurement_conversion_build_component_spectrum(
     const measurement_display_snapshot_t *snapshot,
@@ -424,6 +425,13 @@ static void measurement_conversion_build_component_spectrum(
     uint8_t *output)
 {
     uint32_t maximum_amplitude_uv = 0u;
+    const uint16_t spectrum_first_point =
+        MEASUREMENT_SPECTRUM_EDGE_PADDING;
+    const uint16_t spectrum_last_point =
+        MEASUREMENT_DISPLAY_POINT_COUNT - 1u
+        - MEASUREMENT_SPECTRUM_EDGE_PADDING;
+    const uint16_t spectrum_usable_width =
+        spectrum_last_point - spectrum_first_point;
     uint16_t output_index;
     uint8_t component_index;
 
@@ -465,16 +473,17 @@ static void measurement_conversion_build_component_spectrum(
 
         if (component->frequency_mhz >= spectrum_span_mhz)
         {
-            horizontal_index = MEASUREMENT_DISPLAY_POINT_COUNT - 1u;
+            horizontal_index = spectrum_last_point;
         }
         else
         {
             scaled_frequency =
                 (uint64_t)component->frequency_mhz
-                * (MEASUREMENT_DISPLAY_POINT_COUNT - 1u);
+                * spectrum_usable_width;
             horizontal_index = (uint16_t)(
-                (scaled_frequency + (spectrum_span_mhz / 2u))
-                / spectrum_span_mhz);
+                spectrum_first_point
+                + ((scaled_frequency + (spectrum_span_mhz / 2u))
+                   / spectrum_span_mhz));
         }
 
         /*

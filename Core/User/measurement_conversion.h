@@ -27,6 +27,8 @@
 #define MEASUREMENT_TIME_DISPLAY_LIMIT  32768
 /** 自适应纵轴的最小单边范围，防止无输入时把底噪放大到满屏。 */
 #define MEASUREMENT_TIME_AUTO_MIN_HALF_RANGE 64u
+/** 频谱左右固定保留的基线点数，避免极低频/极高频谱线贴住边框。 */
+#define MEASUREMENT_SPECTRUM_EDGE_PADDING 8u
 
 /** 已转换的完整显示快照。 */
 typedef struct
