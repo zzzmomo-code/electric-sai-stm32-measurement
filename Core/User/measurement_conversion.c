@@ -36,37 +36,71 @@ volatile measurement_conversion_diagnostics_t
  */
 
 /**
- * @brief 按 FPGA 完整int16二补码量程对应的物理微伏范围映射时域值。
+ * @brief 按当前周期自适应中心和单边范围映射时域值。
  * @param value_uv 当前样点换算后的物理电压，单位 uV。
- * @param full_scale_uv 32768码对应的单边显示量程，单位 uV。
- * @return 8~201；超量程输入先限幅，零值固定落在纵轴中部。
+ * @param center_uv 当前周期纵轴中心，单位 uV。
+ * @param half_range_uv 当前周期纵轴单边显示范围，单位 uV。
+ * @return 8~201；超范围输入先限幅，周期中心固定落在纵轴中部。
  */
 static uint8_t measurement_conversion_map_time(
     int32_t value_uv,
-    uint32_t full_scale_uv)
+    int32_t center_uv,
+    uint32_t half_range_uv)
 {
-    uint32_t scaled;
+    int64_t centered_uv = (int64_t)value_uv - center_uv;
+    uint64_t scaled;
 
-    if (full_scale_uv == 0u)
+    if (half_range_uv == 0u)
     {
         return (uint8_t)((MEASUREMENT_DISPLAY_Y_MIN
                           + MEASUREMENT_DISPLAY_Y_MAX) / 2u);
     }
-    if (value_uv < -(int32_t)full_scale_uv)
+    if (centered_uv < -(int64_t)half_range_uv)
     {
-        value_uv = -(int32_t)full_scale_uv;
+        centered_uv = -(int64_t)half_range_uv;
     }
-    else if (value_uv > (int32_t)full_scale_uv)
+    else if (centered_uv > (int64_t)half_range_uv)
     {
-        value_uv = (int32_t)full_scale_uv;
+        centered_uv = (int64_t)half_range_uv;
     }
 
-    scaled = (((uint32_t)(value_uv + (int32_t)full_scale_uv)
+    scaled = (((uint64_t)(centered_uv + half_range_uv)
                * (MEASUREMENT_DISPLAY_Y_MAX
                   - MEASUREMENT_DISPLAY_Y_MIN))
-              + full_scale_uv)
-             / (2u * full_scale_uv);
+              + half_range_uv)
+             / (2u * half_range_uv);
     return (uint8_t)(MEASUREMENT_DISPLAY_Y_MIN + scaled);
+}
+
+/**
+ * @brief 根据完整单周期最小值和最大值选择稳定的自适应纵轴。
+ * @param minimum 单周期最小原始码。
+ * @param maximum 单周期最大原始码。
+ * @param center 输出纵轴中心原始码。
+ * @param half_range 输出带余量的单边范围原始码。
+ * @return 无。
+ *
+ * @note 在实际半幅上增加约12.5%余量，并设置64码最小范围，兼顾小信号可见性
+ *       和无输入时的底噪抑制。一周期与三周期必须共用本函数的同一组结果。
+ */
+static void measurement_conversion_select_time_scale(
+    int16_t minimum,
+    int16_t maximum,
+    int32_t *center,
+    uint32_t *half_range)
+{
+    uint32_t peak_to_peak =
+        (uint32_t)((int32_t)maximum - (int32_t)minimum);
+    uint32_t selected_half_range = (peak_to_peak + 1u) / 2u;
+    uint32_t margin = (selected_half_range + 7u) / 8u;
+
+    *center = ((int32_t)minimum + (int32_t)maximum) / 2;
+    selected_half_range += margin;
+    if (selected_half_range < MEASUREMENT_TIME_AUTO_MIN_HALF_RANGE)
+    {
+        selected_half_range = MEASUREMENT_TIME_AUTO_MIN_HALF_RANGE;
+    }
+    *half_range = selected_half_range;
 }
 
 /**
@@ -165,9 +199,12 @@ static int32_t measurement_conversion_interpolate_time(
  * @param source 原始时域样点。
  * @param source_count 原始点数。
  * @param start_q16 起始 Q16.16 样点位置。
- * @param span_q16 覆盖的 Q16.16 样点跨度。
+ * @param period_q16 单周期 Q16.16 样点跨度。
+ * @param cycle_count 横轴需要显示的周期数量。
  * @param offset_binary 非零表示载荷实际为偏移二进制。
  * @param time_uv_per_lsb 本帧时域量化系数，单位 uV/LSB。
+ * @param display_center_code 当前周期自适应纵轴中心原始码。
+ * @param display_half_range_code 当前周期带余量的纵轴单边范围原始码。
  * @param output 350点显示缓存。
  * @return 无。
  */
@@ -179,12 +216,16 @@ static void measurement_conversion_resample_periodic(
     uint8_t cycle_count,
     uint8_t offset_binary,
     uint16_t time_uv_per_lsb,
+    int32_t display_center_code,
+    uint32_t display_half_range_code,
     uint8_t *output)
 {
     uint16_t output_index;
     uint64_t span_q16 = (uint64_t)period_q16 * cycle_count;
-    uint32_t full_scale_uv =
-        (uint32_t)MEASUREMENT_TIME_DISPLAY_LIMIT
+    int32_t display_center_uv =
+        display_center_code * (int32_t)time_uv_per_lsb;
+    uint32_t display_half_range_uv =
+        display_half_range_code
         * (uint32_t)time_uv_per_lsb;
 
     for (output_index = 0u;
@@ -214,7 +255,8 @@ static void measurement_conversion_resample_periodic(
         output[output_index] = measurement_conversion_map_time(
             measurement_conversion_time_code_to_uv(
                 interpolated, time_uv_per_lsb),
-            full_scale_uv);
+            display_center_uv,
+            display_half_range_uv);
     }
 }
 
@@ -522,6 +564,8 @@ uint8_t measurement_conversion_update(
     uint32_t period_q16;
     int16_t time_minimum;
     int16_t time_maximum;
+    int32_t time_display_center;
+    uint32_t time_display_half_range;
     uint16_t time_rail_sample_count = 0u;
     uint16_t time_display_clip_count = 0u;
     uint16_t spectrum_rail_bin_count = 0u;
@@ -556,6 +600,9 @@ uint8_t measurement_conversion_update(
         measurement_conversion_diagnostics.invalid_source_count++;
         return 0u;
     }
+    measurement_conversion_select_time_scale(
+        time_minimum, time_maximum,
+        &time_display_center, &time_display_half_range);
 
     measurement_conversion_resample_periodic(
         source->time_samples,
@@ -565,6 +612,8 @@ uint8_t measurement_conversion_update(
         3u,
         time_offset_binary,
         source->header.time_uv_per_lsb,
+        time_display_center,
+        time_display_half_range,
         target->waveform_3cycle);
 
     measurement_conversion_resample_periodic(
@@ -575,6 +624,8 @@ uint8_t measurement_conversion_update(
         1u,
         time_offset_binary,
         source->header.time_uv_per_lsb,
+        time_display_center,
+        time_display_half_range,
         target->waveform_1cycle);
     for (index = 0u; index < source->header.spectrum_count; index++)
     {
@@ -658,6 +709,10 @@ uint8_t measurement_conversion_update(
         source->header.spectrum_uv_per_lsb;
     measurement_conversion_diagnostics.last_time_min = time_minimum;
     measurement_conversion_diagnostics.last_time_max = time_maximum;
+    measurement_conversion_diagnostics.last_time_display_center =
+        (int16_t)time_display_center;
+    measurement_conversion_diagnostics.last_time_display_half_range =
+        (uint16_t)time_display_half_range;
     for (index = 0u; index < source->header.time_count; index++)
     {
         int16_t sample = measurement_conversion_decode_time_sample(

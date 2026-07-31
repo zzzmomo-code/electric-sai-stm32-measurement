@@ -25,6 +25,8 @@
 #define MEASUREMENT_DISPLAY_Y_MAX       201u
 /** FPGA 时域二补码的单边显示量程，覆盖完整 -32768~+32767 载荷范围。 */
 #define MEASUREMENT_TIME_DISPLAY_LIMIT  32768
+/** 自适应纵轴的最小单边范围，防止无输入时把底噪放大到满屏。 */
+#define MEASUREMENT_TIME_AUTO_MIN_HALF_RANGE 64u
 
 /** 已转换的完整显示快照。 */
 typedef struct
@@ -55,6 +57,8 @@ typedef struct
     uint32_t last_spectrum_max_uv; /**< 最近频谱最大峰值，单位 uV_peak。 */
     int16_t last_time_min; /**< 最近时域帧的最小原始码。 */
     int16_t last_time_max; /**< 最近时域帧的最大原始码。 */
+    int16_t last_time_display_center; /**< 最近时域自适应纵轴中心原始码。 */
+    uint16_t last_time_display_half_range; /**< 最近时域自适应纵轴单边范围原始码。 */
     uint16_t last_time_uv_per_lsb; /**< 最近时域量化系数，单位 uV/LSB。 */
     uint16_t last_spectrum_uv_per_lsb; /**< 最近频谱量化系数，单位 uV_peak/LSB。 */
     uint16_t last_spectrum_max; /**< 最近 1312 点频谱的最大值。 */

@@ -421,11 +421,12 @@ FPGA 完成新测量并发布新 frame_seq
 
 不再使用 `time_count/3` 推断周期，因此FPGA缓存即使包含很多周期，400 kHz等高频输入
 也只会铺满准确的1个或3个周期。周期延拓不要求FPGA额外发送最后一个闭合端点，
-因此400～500 kHz的三周期短缓存仍可正常显示。频谱采用区间最大值而不是平均值，
-避免窄谱峰被稀释。
+因此400～500 kHz的三周期短缓存仍可正常显示。
 
 时域载荷严格按小端 `int16_t` 二补码解释，先按本帧 `time_uv_per_lsb` 转换为32位微伏，
-再按完整 `-32768～+32767` 码域映射。STM32不再根据波形形状猜测偏移二进制编码；
+纵轴再根据完整单周期的最小值和最大值自动选择中心与单边范围，并增加约12.5%余量。
+最小单边范围为64码，避免无输入时把底噪放大到满屏；一周期和三周期共用同一比例。
+STM32仍接受完整 `-32768～+32767` 协议码域，且不根据波形形状猜测编码；
 `last_time_offset_binary` 和 `last_time_display_clip_count` 在合规V1.0帧中应均为0。
 右侧频谱不再使用原始 `spectrum[1312]` 计算高度。STM32按三个有效分量中的最大
 `amplitude_peak_uv` 归一化，横坐标取 `frequency_mhz`；因此文字幅值相同的分量
@@ -528,7 +529,7 @@ CPU 读到 DMA 写入的新数据；DMA 发送前 Clean，确保 DMA 读到 CPU 
 |---|---|
 | SPI 命令、帧字段、CRC 规则 | `fpga_protocol.h/.c` |
 | SPI 超时、重试次数、DMA事务 | `fpga_link.c` |
-| 曲线点数、纵轴上下限 | `measurement_conversion.h` |
+| 曲线点数、纵轴安全范围和自适应最小量程 | `measurement_conversion.h` |
 | 一周期截取、重采样、三分量频谱生成 | `measurement_conversion.c` |
 | 打表后的拟合系数 | `measurement_calibration.c` 文件顶部的五组 `calibration_*_curve` |
 | 上电默认已校准/未校准 | `measurement_calibration.h` 的 `MEASUREMENT_CALIBRATION_DEFAULT_ENABLED` |
@@ -583,16 +584,19 @@ hmi_task2_diagnostics
 | `invalid_source_count` | 输入点数或字段不合法次数 |
 | `last_frame_sequence` | 最近成功换算的 FPGA 帧序号 |
 | `last_time_uv_per_lsb` / `last_spectrum_uv_per_lsb` | 最近帧实际量化系数，应为250/125 |
-| `last_time_min` / `last_time_max` | 最近时域原始数据范围 |
+| `last_time_min` / `last_time_max` | 最近完整周期的原始最小值和最大值 |
+| `last_time_display_center` | 最近时域自适应纵轴中心原始码 |
+| `last_time_display_half_range` | 最近时域自适应纵轴单边范围原始码 |
 | `last_spectrum_max` | 最近频谱最大原始幅值 |
 | `last_spectrum_max_uv` | 按帧头系数换算后的频谱最大峰值微伏 |
 | `last_spectrum_rail_bin_count` | 最近频谱中等于65535的饱和bin数量 |
 | `last_component_spectrum_raw[3]` | 三个有效分量所在FFT bin的原始频谱值 |
 | `last_one_cycle_samples` | 本次估算的一周期原始点数 |
 
-如果 SPI 已收到有效帧但图形像一条直线，先看 `last_time_min` 是否等于
-`last_time_max`，或 `last_spectrum_max` 是否为 0，再判断是 FPGA 数据本身恒定还是
-屏幕映射问题。
+如果 SPI 已收到有效帧但时域图仍像一条直线，先看 `last_time_min` 是否等于
+`last_time_max`。只要两者不同，自适应纵轴就会按
+`last_time_display_center ± last_time_display_half_range` 放大显示；两者相等说明
+FPGA给出的完整周期本身没有可见变化。
 
 ### 串口屏诊断
 

@@ -390,6 +390,10 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             self.conversion_h,
             r"MEASUREMENT_TIME_DISPLAY_LIMIT\s+32768",
         )
+        self.assertRegex(
+            self.conversion_h,
+            r"MEASUREMENT_TIME_AUTO_MIN_HALF_RANGE\s+64u",
+        )
         for name in (
             "waveform_1cycle",
             "waveform_3cycle",
@@ -450,6 +454,11 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn(
             "measurement_conversion_resample_periodic", self.conversion
         )
+        self.assertIn(
+            "measurement_conversion_select_time_scale", self.conversion
+        )
+        self.assertIn("time_display_center", self.conversion)
+        self.assertIn("time_display_half_range", self.conversion)
         self.assertIn("phase_q16 %= period_q16;", self.conversion)
         self.assertIn(
             "measurement_conversion_resample_periodic(\n"
@@ -466,11 +475,11 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             self.conversion,
         )
         self.assertIn(
-            "value_uv = -(int32_t)full_scale_uv;",
+            "centered_uv = -(int64_t)half_range_uv;",
             self.conversion,
         )
         self.assertIn(
-            "value_uv = (int32_t)full_scale_uv;",
+            "centered_uv = (int64_t)half_range_uv;",
             self.conversion,
         )
         self.assertNotIn("padding = (span + 9u) / 10u;", self.conversion)
