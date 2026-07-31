@@ -307,13 +307,13 @@ class HmiRuntimeContractTest(unittest.TestCase):
             self.assertEqual(assignments, [variable_name])
             self.assertNotIn("HAL_UART_", body)
 
-    def test_start_latch_and_three_frame_fine_tune_freeze_display(self):
+    def test_start_latch_and_five_frame_fine_tune_freeze_display(self):
         self.assertIn("hmi_task2_loaded_sequence[4]", self.source)
         self.assertIn("hmi_task2_loaded_valid[4]", self.source)
         self.assertIn("hmi_task2_preload_complete()", self.source)
         self.assertIn("hmi_task2_work_snapshot", self.source)
         self.assertIn(
-            "#define HMI_TASK2_FINE_TUNE_FRAME_COUNT  3u",
+            "#define HMI_TASK2_FINE_TUNE_FRAME_COUNT  5u",
             self.source,
         )
         self.assertIn(

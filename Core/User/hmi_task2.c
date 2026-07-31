@@ -3,7 +3,7 @@
  * @brief G 题淘晶驰串口屏双时域启动锁存、短时平均与显示切换实现。
  *
  * 模块用途：连续接收测量快照，首帧立即显示；之后由启动键锁存最新完整快照，
- *          并在三帧内只对小变化文字参数平均，遇到大变化立即冻结。
+ *          并在五帧内只对小变化文字参数平均，遇到大变化立即冻结。
  *          一周期/三周期键只切换重叠控件显示，不改变锁存的测量结果。
  * GPIO 引脚映射：PA9/USART1_TX 接屏幕 RX，PA10/USART1_RX 接屏幕 TX。
  * 依赖的外设和 CubeIDE 配置：USART1 512000 baud、8N1、TX/RX DMA、USART1 全局中断。
@@ -24,7 +24,7 @@
 #define HMI_TASK2_COMMAND_START       0x04u
 #define HMI_TASK2_COMMAND_MODE_UNUSED 0x10u
 #define HMI_TASK2_COMMAND_CALIBRATION 0x20u
-#define HMI_TASK2_FINE_TUNE_FRAME_COUNT  3u
+#define HMI_TASK2_FINE_TUNE_FRAME_COUNT  5u
 #define HMI_TASK2_FINE_TUNE_TIMEOUT_MS   800u
 #define HMI_TASK2_FREQUENCY_FLOOR_MHZ 100000u
 #define HMI_TASK2_VOLTAGE_FLOOR_UV    1000u
@@ -39,7 +39,7 @@
  *
  * 1. 上电默认显示一周期控件和独立频谱，三周期控件同步接收缓存数据；
  * 2. 首份有效数据只自动显示一次；之后不按启动键，屏幕结果保持不变；
- * 3. 启动键立即锁存最新完整快照，并在800 ms内最多用三帧小变化数据平均文字参数；
+ * 3. 启动键立即锁存最新完整快照，并在800 ms内最多用五帧小变化数据平均文字参数；
  *    微调期间一旦出现大变化，立即放弃后续微调，保留大变化前的最新平均值；
  * 4. 曲线按 32 点小批量发送，整条曲线完成后才记为“已装载”；
  * 5. 周期键只切换显示，不清空或重画曲线；启动键刷新文字和三条曲线；
@@ -94,7 +94,7 @@ static uint8_t hmi_task2_tx_buffer[HMI_TASK2_TX_STORAGE_BYTES]
 static measurement_display_snapshot_t hmi_task2_work_snapshot;
 /** 启动后微调阶段最近一份已接受的小变化快照。 */
 static measurement_display_snapshot_t hmi_task2_candidate_snapshot;
-/** 启动后最多三帧文字参数的累加值。 */
+/** 启动后最多五帧文字参数的累加值。 */
 static hmi_task2_scalar_accumulator_t
     hmi_task2_candidate_scalar_sum;
 
@@ -141,7 +141,7 @@ static uint32_t hmi_task2_candidate_started_ms;
 static uint32_t hmi_task2_last_examined_ms;
 /** 启动键已经收到，等待当前UART小批次结束后锁存最新快照。 */
 static uint8_t hmi_task2_start_update_pending;
-/** 非零表示当前处于启动后的三帧小幅平均窗口。 */
+/** 非零表示当前处于启动后的五帧小幅平均窗口。 */
 static uint8_t hmi_task2_fine_tune_active;
 /** 最近已经参加稳定性判断的源帧序号。 */
 static uint32_t hmi_task2_last_examined_sequence;
@@ -1200,7 +1200,7 @@ static void hmi_task2_parse_commands(const uint8_t *data, uint16_t length)
                 {
                     /*
                      * 启动键只登记一次主循环锁存请求。FPGA仍连续测量；主循环在当前
-                     * UART小批次结束后复制最新完整快照，并开启三帧小幅平均窗口。
+                     * UART小批次结束后复制最新完整快照，并开启五帧小幅平均窗口。
                      */
                     hmi_task2_start_update_pending = 1u;
                 }
