@@ -478,7 +478,11 @@ class HmiRuntimeContractTest(unittest.TestCase):
             ROOT / "Core/User/measurement_conversion.c"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            "MEASUREMENT_DISPLAY_POINT_COUNT - 1u - output_index",
+            "measurement_conversion_build_component_spectrum",
+            conversion,
+        )
+        self.assertIn(
+            "MEASUREMENT_DISPLAY_POINT_COUNT - 1u - horizontal_index",
             conversion,
         )
         self.assertIn("output[display_index]", conversion)

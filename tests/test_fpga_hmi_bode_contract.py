@@ -399,7 +399,22 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
                 f"{name}[MEASUREMENT_DISPLAY_POINT_COUNT]",
                 self.conversion_h,
             )
-        self.assertIn("bucket_maximum", self.conversion)
+        self.assertIn(
+            "measurement_conversion_build_component_spectrum",
+            self.conversion,
+        )
+        self.assertIn(
+            "component->frequency_mhz",
+            self.conversion,
+        )
+        self.assertIn(
+            "component->amplitude_peak_uv",
+            self.conversion,
+        )
+        self.assertNotIn(
+            "measurement_conversion_compress_spectrum",
+            self.conversion,
+        )
         self.assertIn("time_sample_rate_hz", self.conversion)
         self.assertIn("fundamental_mhz", self.conversion)
         self.assertIn("period_q16", self.conversion)

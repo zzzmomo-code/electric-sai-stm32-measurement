@@ -210,7 +210,7 @@ STM32 每秒向屏幕发送一次 `sendme` 在线探测。串口屏断电会清�
 的一周期或三周期波形。这个恢复过程只操作 USART2 串口屏链路，不暂停、不复位、
 也不重新启动 FPGA SPI 链路。
 
-淘晶驰 Waveform 的 `add` 数据会按控件滚动方向排列。频谱压缩缓存已按显示方向反序
+淘晶驰 Waveform 的 `add` 数据会按控件滚动方向排列。分量频谱缓存已按显示方向反序
 发送，最终横轴为左侧低频、右侧高频。
 
 当前使用普通 `cle` + 350 条 `add` 指令，一条曲线最坏不超过 7.8 KB；512000 baud 下
@@ -288,7 +288,7 @@ hmi_task2_process()
 5. `Core/User/fpga_link.c`
    - 看同一 CS 的 GET_STATUS/READ_FRAME/ACK，以及 DMA 重试和双缓冲发布。
 6. `Core/User/measurement_conversion.c`
-   - 看最多 3750 点时域和 1312 点频谱怎样变成三组 350 点。
+   - 看最多 3750 点时域怎样生成一/三周期，以及三个独立分量怎样生成 350 点频谱。
 7. `Core/User/measurement_calibration.c`
    - 文件开头是打表后唯一需要集中修改的拟合系数；
    - 当前统一使用 `y=c0+c1*x+c2*x²+c3*x³`，初始值全部为 `y=x`。
@@ -417,7 +417,7 @@ FPGA 完成新测量并发布新 frame_seq
 
 - 一周期：从相位起点提取一个完整基波周期，Q16.16线性插值为350点；
 - 三周期：把同一完整周期模板连续延拓三次，Q16.16线性插值为350点；
-- 频谱：把 1312 个谱点分成 350 个横向区间，每个区间取最大值。
+- 频谱：只使用与文字区相同的 `component[3]`；频率决定横坐标，独立幅值决定高度。
 
 不再使用 `time_count/3` 推断周期，因此FPGA缓存即使包含很多周期，400 kHz等高频输入
 也只会铺满准确的1个或3个周期。周期延拓不要求FPGA额外发送最后一个闭合端点，
@@ -427,8 +427,9 @@ FPGA 完成新测量并发布新 frame_seq
 时域载荷严格按小端 `int16_t` 二补码解释，先按本帧 `time_uv_per_lsb` 转换为32位微伏，
 再按完整 `-32768～+32767` 码域映射。STM32不再根据波形形状猜测偏移二进制编码；
 `last_time_offset_binary` 和 `last_time_display_clip_count` 在合规V1.0帧中应均为0。
-频谱先按本帧 `spectrum_uv_per_lsb` 转换为32位峰值微伏，再按本帧最大值线性映射。
-FPGA 发来的频谱已经是幅值结果，STM32 不再次开平方。
+右侧频谱不再使用原始 `spectrum[1312]` 计算高度。STM32按三个有效分量中的最大
+`amplitude_peak_uv` 归一化，横坐标取 `frequency_mhz`；因此文字幅值相同的分量
+必然显示为相同高度。原始频谱数组仍接收并保留饱和诊断，但不参与串口屏绘图。
 
 #### 第六步：启动锁存与五帧微调
 
@@ -528,7 +529,7 @@ CPU 读到 DMA 写入的新数据；DMA 发送前 Clean，确保 DMA 读到 CPU 
 | SPI 命令、帧字段、CRC 规则 | `fpga_protocol.h/.c` |
 | SPI 超时、重试次数、DMA事务 | `fpga_link.c` |
 | 曲线点数、纵轴上下限 | `measurement_conversion.h` |
-| 一周期截取、重采样、频谱压缩 | `measurement_conversion.c` |
+| 一周期截取、重采样、三分量频谱生成 | `measurement_conversion.c` |
 | 打表后的拟合系数 | `measurement_calibration.c` 文件顶部的五组 `calibration_*_curve` |
 | 上电默认已校准/未校准 | `measurement_calibration.h` 的 `MEASUREMENT_CALIBRATION_DEFAULT_ENABLED` |
 | 屏幕对象名称 | `hmi_chart.h` |
@@ -676,7 +677,7 @@ hmi_task2_diagnostics
 |---|---|---|
 | 按键显示 1 个或 3 个完整周期 | 根据采样率/基频计算周期，过零对齐提取单周期模板，再周期延拓为1/3周期并插值为350点 | 工程测试通过，待新固件实板确认 |
 | 峰峰值、真有效值、基频 | 直接显示完整测量帧的 `vpp_uV`、`vrms_uV`、`fundamental_mHz` | 显示链路具备，5 mV/1 kHz 误差待校准实测 |
-| 定性电压频谱 | 1312 个正频率谱点按区间最大值压缩为右侧 350 点频谱 | 自检显示通过，多分量相对位置/高度待 FPGA 实测 |
+| 定性电压频谱 | 使用 `component[3]` 的独立频率和幅值生成右侧350点频谱；同幅值等高 | 工程测试通过，实板显示待确认 |
 | 频率分辨率不大于 500 Hz | 协议固定 `bin_spacing_mHz=381470`，即 381.47 Hz/bin | 设计满足 |
 | 最多 3 个频率分量及幅值 | 协议和页面均支持 `component[3]`、`t_comp1`～`t_comp3` | 字段具备，需确认实测长文本不被截断 |
 | 抑制不低于 1 MHz 的 200 mVpp 干扰 | STM32 只接收 FPGA 滤波后的时域、频谱和参数 | 待模拟前端/FPGA 联调 |

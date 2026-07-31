@@ -2,8 +2,8 @@
  * @file measurement_conversion.h
  * @brief FPGA 测量快照到串口屏显示缓存的转换接口。
  *
- * 模块用途：把 FPGA 三周期时域和 1312 点频谱转换成三个 350 点显示缓存，
- *          同时保存 Vpp、Vrms、基频和最多三个分量参数。
+ * 模块用途：把 FPGA 三周期时域和三个独立频率分量转换成三个 350 点显示缓存，
+ *          同时保存 Vpp、Vrms、基频和最多三个分量参数；1312点原始频谱仅作诊断。
  * GPIO 引脚映射：无直接 GPIO 引脚。
  * 依赖的外设和 CubeIDE 配置：无直接外设依赖。
  * 初始化方法：system_init() 调用 measurement_conversion_init()。
@@ -31,7 +31,7 @@ typedef struct
 {
     uint8_t waveform_1cycle[MEASUREMENT_DISPLAY_POINT_COUNT]; /**< 一周期纵轴点。 */
     uint8_t waveform_3cycle[MEASUREMENT_DISPLAY_POINT_COUNT]; /**< 三周期纵轴点。 */
-    uint8_t spectrum_display[MEASUREMENT_DISPLAY_POINT_COUNT]; /**< 频谱纵轴点。 */
+    uint8_t spectrum_display[MEASUREMENT_DISPLAY_POINT_COUNT]; /**< 由三个独立分量频率和幅值生成的频谱纵轴点。 */
     uint32_t frame_sequence; /**< 三组数组共同对应的 FPGA 帧序号。 */
     uint64_t timestamp_50m; /**< FPGA 50 MHz 时钟时间戳。 */
     uint32_t source_flags; /**< FPGA 完整测量帧 flags。 */

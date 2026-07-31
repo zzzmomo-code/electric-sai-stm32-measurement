@@ -4,7 +4,7 @@
  *
  * 模块用途：根据采样率和基频定位上升过零点，从一个完整基波周期周期重采样出
  *          严格的一周期/三周期；
- *          对频谱分桶取最大值，并映射成淘晶驰 Waveform 可接受的 8 位纵轴数据。
+ *          使用与文字区相同的三个独立频率分量生成淘晶驰频谱纵轴数据。
  * GPIO 引脚映射：无直接 GPIO 引脚。
  * 依赖的外设和 CubeIDE 配置：无直接外设依赖。
  * 初始化方法：system_init() 调用 measurement_conversion_init()。
@@ -28,7 +28,7 @@ volatile measurement_conversion_diagnostics_t
  * FPGA快照                           显示快照
  * time_samples[最多3750]  ────────> waveform_3cycle[350]
  * 同相位起点一个周期     ─────────> waveform_1cycle[350]
- * spectrum[1312]          ─────────> spectrum_display[350]
+ * component[3]频率/幅值  ─────────> spectrum_display[350]
  * 帧头参数                ─────────> Vpp/Vrms/基频/三个分量
  *
  * 三个输出数组带同一个 frame_sequence；HMI 只有看到完整发布的显示快照后
@@ -367,90 +367,92 @@ static uint8_t measurement_conversion_find_cycle_window(
 }
 
 /**
- * @brief 将 1312 点频谱分桶取最大值并映射到屏幕控件宽度。
- * @param source 原始频谱。
- * @param source_count 原始点数。
- * @param spectrum_uv_per_lsb 本帧频谱量化系数，单位 uV_peak/LSB。
+ * @brief 使用与文字区相同的独立分量字段生成三线频谱。
+ * @param snapshot 已压紧并排序的有效分量。
+ * @param spectrum_span_mhz 频谱横轴满量程，单位 0.001 Hz。
  * @param output 输出固定宽度显示点。
- * @return 原始频谱最大值。
+ * @return 无。
+ *
+ * @note 横坐标只取 component.frequency_mhz，纵坐标只取
+ *       component.amplitude_peak_uv；原始 spectrum[] 不参与屏幕高度计算。
  */
-static uint16_t measurement_conversion_compress_spectrum(
-    const uint16_t *source,
-    uint16_t source_count,
-    uint16_t spectrum_uv_per_lsb,
+static void measurement_conversion_build_component_spectrum(
+    const measurement_display_snapshot_t *snapshot,
+    uint32_t spectrum_span_mhz,
     uint8_t *output)
 {
-    uint16_t source_maximum = 0u;
-    uint32_t source_maximum_uv;
+    uint32_t maximum_amplitude_uv = 0u;
     uint16_t output_index;
-    uint16_t input_index;
+    uint8_t component_index;
 
-    for (input_index = 0u; input_index < source_count; input_index++)
-    {
-        if (source[input_index] > source_maximum)
-        {
-            source_maximum = source[input_index];
-        }
-    }
-    source_maximum_uv =
-        (uint32_t)source_maximum * (uint32_t)spectrum_uv_per_lsb;
-
-    /*
-     * 频谱与时域不同：每个横向桶取最大值而不是均值，避免很窄的谐波谱线
-     * 在 1312 点频谱压缩过程中被平均掉。
-     */
     for (output_index = 0u;
          output_index < MEASUREMENT_DISPLAY_POINT_COUNT;
          output_index++)
     {
-        uint16_t display_index = (uint16_t)(
-            MEASUREMENT_DISPLAY_POINT_COUNT - 1u - output_index);
-        uint32_t begin =
-            ((uint32_t)output_index * source_count)
-            / MEASUREMENT_DISPLAY_POINT_COUNT;
-        uint32_t end =
-            ((uint32_t)(output_index + 1u) * source_count)
-            / MEASUREMENT_DISPLAY_POINT_COUNT;
-        uint16_t bucket_maximum = 0u;
-        uint32_t index;
+        output[output_index] = MEASUREMENT_DISPLAY_Y_MIN;
+    }
 
-        if (end <= begin)
+    for (component_index = 0u;
+         component_index < snapshot->component_count;
+         component_index++)
+    {
+        if (snapshot->component[component_index].amplitude_peak_uv
+            > maximum_amplitude_uv)
         {
-            end = begin + 1u;
-        }
-        if (end > source_count)
-        {
-            end = source_count;
-        }
-        for (index = begin; index < end; index++)
-        {
-            if (source[index] > bucket_maximum)
-            {
-                bucket_maximum = source[index];
-            }
-        }
-
-        if (source_maximum_uv == 0u)
-        {
-            output[display_index] = MEASUREMENT_DISPLAY_Y_MIN;
-        }
-        else
-        {
-            /*
-             * 淘晶驰曲线控件使用add逐点滚动，最终屏幕上的横向排列与发送数组相反。
-             * 因此这里反向存储，使低频落在左侧、高频落在右侧。
-             */
-            output[display_index] = (uint8_t)(
-                MEASUREMENT_DISPLAY_Y_MIN
-                + ((((uint32_t)bucket_maximum
-                     * (uint32_t)spectrum_uv_per_lsb)
-                    * (MEASUREMENT_DISPLAY_Y_MAX
-                       - MEASUREMENT_DISPLAY_Y_MIN))
-                   / source_maximum_uv));
+            maximum_amplitude_uv =
+                snapshot->component[component_index].amplitude_peak_uv;
         }
     }
 
-    return source_maximum;
+    if ((maximum_amplitude_uv == 0u) || (spectrum_span_mhz == 0u))
+    {
+        return;
+    }
+
+    for (component_index = 0u;
+         component_index < snapshot->component_count;
+         component_index++)
+    {
+        const fpga_protocol_component_t *component =
+            &snapshot->component[component_index];
+        uint64_t scaled_frequency;
+        uint64_t scaled_amplitude;
+        uint16_t horizontal_index;
+        uint16_t display_index;
+        uint8_t display_height;
+
+        if (component->frequency_mhz >= spectrum_span_mhz)
+        {
+            horizontal_index = MEASUREMENT_DISPLAY_POINT_COUNT - 1u;
+        }
+        else
+        {
+            scaled_frequency =
+                (uint64_t)component->frequency_mhz
+                * (MEASUREMENT_DISPLAY_POINT_COUNT - 1u);
+            horizontal_index = (uint16_t)(
+                (scaled_frequency + (spectrum_span_mhz / 2u))
+                / spectrum_span_mhz);
+        }
+
+        /*
+         * 淘晶驰曲线按发送顺序滚动，因此数组反向存储，使低频仍位于屏幕左侧。
+         * 同一幅值使用完全相同的整数公式，保证三个文字分量相等时谱线等高。
+         */
+        display_index = (uint16_t)(
+            MEASUREMENT_DISPLAY_POINT_COUNT - 1u - horizontal_index);
+        scaled_amplitude =
+            (uint64_t)component->amplitude_peak_uv
+            * (MEASUREMENT_DISPLAY_Y_MAX - MEASUREMENT_DISPLAY_Y_MIN);
+        display_height = (uint8_t)(
+            MEASUREMENT_DISPLAY_Y_MIN
+            + ((scaled_amplitude + (maximum_amplitude_uv / 2u))
+               / maximum_amplitude_uv));
+        if (display_height > output[display_index])
+        {
+            output[display_index] = display_height;
+        }
+    }
 }
 
 /**
@@ -523,6 +525,8 @@ uint8_t measurement_conversion_update(
     uint16_t time_rail_sample_count = 0u;
     uint16_t time_display_clip_count = 0u;
     uint16_t spectrum_rail_bin_count = 0u;
+    uint16_t spectrum_maximum = 0u;
+    uint32_t spectrum_span_mhz;
     const uint8_t time_offset_binary = 0u;
     uint8_t output_component_index = 0u;
 
@@ -572,22 +576,22 @@ uint8_t measurement_conversion_update(
         time_offset_binary,
         source->header.time_uv_per_lsb,
         target->waveform_1cycle);
-    measurement_conversion_diagnostics.last_spectrum_max =
-        measurement_conversion_compress_spectrum(
-            source->spectrum,
-            source->header.spectrum_count,
-            source->header.spectrum_uv_per_lsb,
-            target->spectrum_display);
-    measurement_conversion_diagnostics.last_spectrum_max_uv =
-        (uint32_t)measurement_conversion_diagnostics.last_spectrum_max
-        * (uint32_t)source->header.spectrum_uv_per_lsb;
     for (index = 0u; index < source->header.spectrum_count; index++)
     {
+        if (source->spectrum[index] > spectrum_maximum)
+        {
+            spectrum_maximum = source->spectrum[index];
+        }
         if (source->spectrum[index] == UINT16_MAX)
         {
             spectrum_rail_bin_count++;
         }
     }
+    measurement_conversion_diagnostics.last_spectrum_max =
+        spectrum_maximum;
+    measurement_conversion_diagnostics.last_spectrum_max_uv =
+        (uint32_t)spectrum_maximum
+        * (uint32_t)source->header.spectrum_uv_per_lsb;
     measurement_conversion_diagnostics.last_spectrum_rail_bin_count =
         spectrum_rail_bin_count;
 
@@ -621,6 +625,11 @@ uint8_t measurement_conversion_update(
     }
     target->component_count = output_component_index;
     measurement_conversion_sort_components(target);
+    spectrum_span_mhz = (uint32_t)(
+        (uint64_t)source->header.bin_spacing_mhz
+        * (source->header.spectrum_count - 1u));
+    measurement_conversion_build_component_spectrum(
+        target, spectrum_span_mhz, target->spectrum_display);
     for (index = 0u; index < FPGA_PROTOCOL_COMPONENT_MAX; index++)
     {
         measurement_conversion_diagnostics
