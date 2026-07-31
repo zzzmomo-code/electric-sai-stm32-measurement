@@ -5,7 +5,7 @@
  * 模块用途：在同一个 CS 事务中发送命令并立即读取响应，使用 SPI3
  *          双向 DMA 接收最大 10254 字节测量帧，校验后发布双缓冲快照。
  * GPIO 引脚映射：PC10/SCK、PC11/MISO、PC12/MOSI、PA15/CS_N、PD1/DATA_READY。
- * 依赖的外设和 CubeIDE 配置：SPI3 625 kHz Mode 0；RX DMA Memory Increment
+ * 依赖的外设和 CubeIDE 配置：SPI3 1.25 MHz Mode 0；RX DMA Memory Increment
  *          Enable；TX DMA Memory Increment Disable；EXTI1 Rising。
  * 初始化方法：system_init() 调用 fpga_link_init() 和 fpga_link_bind_spi()。
  * 调用方法：主循环持续调用 fpga_link_process()。

@@ -429,33 +429,20 @@ static uint8_t hmi_task2_append_calibration_state(
 }
 
 /**
- * @brief 把微伏整数格式化为便于比赛现场读取的电压文本。
+ * @brief 把微伏整数无损格式化为固定毫伏文本。
  * @param value_uv 电压值，单位微伏。
  * @param text 输出文本。
  * @param text_size 输出容量。
  * @return 无。
+ * @note 固定保留三位小数，恰好保留整数微伏数据的全部有效位；不再自动切换V或uV单位。
  */
 static void hmi_task2_format_voltage(uint32_t value_uv,
                                      char *text,
                                      size_t text_size)
 {
-    if (value_uv >= 1000000u)
-    {
-        (void)snprintf(text, text_size, "%lu.%03lu V",
-                       (unsigned long)(value_uv / 1000000u),
-                       (unsigned long)((value_uv % 1000000u) / 1000u));
-    }
-    else if (value_uv >= 1000u)
-    {
-        (void)snprintf(text, text_size, "%lu.%03lu mV",
-                       (unsigned long)(value_uv / 1000u),
-                       (unsigned long)(value_uv % 1000u));
-    }
-    else
-    {
-        (void)snprintf(text, text_size, "%lu uV",
-                       (unsigned long)value_uv);
-    }
+    (void)snprintf(text, text_size, "%lu.%03lu mV",
+                   (unsigned long)(value_uv / 1000u),
+                   (unsigned long)(value_uv % 1000u));
 }
 
 /**

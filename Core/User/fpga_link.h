@@ -6,7 +6,7 @@
  *          ACK_FRAME，校验完整帧并发布双缓冲测量快照。
  * GPIO 引脚映射：PC10/SPI3_SCK、PC11/SPI3_MISO、PC12/SPI3_MOSI、
  *          PA15/FPGA_CS_N、PD1/FPGA_DATA_READY。
- * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0、625 kHz、8 bit；
+ * 依赖的外设和 CubeIDE 配置：SPI3 Master Mode 0、1.25 MHz、8 bit；
  *          SPI3 RX/TX DMA Normal；PD1 EXTI1 上升沿。
  * 初始化方法：system_init() 调用 fpga_link_init() 并绑定 hspi3。
  * 调用方法：system_process() 持续调用 fpga_link_process()。

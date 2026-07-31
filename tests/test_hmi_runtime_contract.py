@@ -143,6 +143,20 @@ class HmiRuntimeContractTest(unittest.TestCase):
         chart_body = self.source[chart_start:chart_end]
         self.assertNotIn("measurement_calibration_apply_", chart_body)
 
+    def test_all_fpga_voltage_text_is_exact_millivolts(self):
+        formatter_start = self.source.index(
+            "static void hmi_task2_format_voltage"
+        )
+        formatter_end = self.source.index(
+            "static void hmi_task2_format_frequency", formatter_start
+        )
+        formatter_body = self.source[formatter_start:formatter_end]
+        self.assertIn('"%lu.%03lu mV"', formatter_body)
+        self.assertIn("value_uv / 1000u", formatter_body)
+        self.assertIn("value_uv % 1000u", formatter_body)
+        self.assertNotIn('"%lu.%03lu V"', formatter_body)
+        self.assertNotIn('"%lu uV"', formatter_body)
+
     def test_unused_mode_button_is_recognized_but_has_no_action(self):
         parse_start = self.source.index(
             "static void hmi_task2_parse_commands"

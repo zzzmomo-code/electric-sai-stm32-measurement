@@ -20,7 +20,7 @@ TIM 测频和 USART2 FPGA 链路不参与当前正式运行。
 - IDE：STM32CubeIDE 1.19.0；
 - HAL：STM32Cube FW_H7 V1.12.1；
 - 系统时钟：480 MHz；
-- FPGA SPI：当前联调为 625 kHz、Mode 0、8 bit、MSB first（冻结协议目标为 20 MHz）；
+- FPGA SPI：当前测试档为 1.25 MHz、Mode 0、8 bit、MSB first（冻结协议目标为 20 MHz）；
 - 串口屏：512000 baud、8N1。
 
 ## 硬件连接
@@ -58,7 +58,7 @@ FPGA、STM32 和串口屏必须共地，FPGA 接口必须是 3.3 V 逻辑。复�
 - Hardware NSS Disable，PA15 软件控制 CS；
 - Motorola、8 bit、MSB first；
 - CPOL Low、CPHA 1 Edge，即 SPI Mode 0；
-- PLL2P 80 MHz，Prescaler 128，当前 SCK 625 kHz；
+- PLL2P 80 MHz，Prescaler 64，当前 SCK 1.25 MHz；
 - PC10/PC11/PC12：AF Push-Pull、No Pull、Very High Speed；
 - SPI3 RX DMA：Normal、Byte、Memory Increment Enable、Very High；
 - SPI3 TX DMA：Normal、Byte、Memory Increment Disable、High；
@@ -610,7 +610,7 @@ hmi_task2_diagnostics
 ## 资源占用与实时性
 
 - 不使用 `malloc()`，所有大数组静态分配，运行时间和内存占用可预测；
-- 最大 FPGA 帧约 10.3 KB，SPI 625 kHz 纯线缆时间约 131.3 ms；
+- 最大 FPGA 帧约 10.3 KB，SPI 1.25 MHz 纯线缆时间约 65.6 ms；
 - 每条 350 点普通曲线命令最坏不超过 7.8 KB，512000 baud 纯线缆时间约 151 ms；
 - 新输入稳定后只发送一次参数和频谱，完成后不再占用屏幕串口；
 - 启动或周期键只重画一条350点波形，约151 ms；
@@ -625,7 +625,7 @@ hmi_task2_diagnostics
 3. 执行 `Project > Build Project`，确认生成 `.elf`；
 4. 使用 ST-LINK 烧录；
 5. 先只连接串口屏，确认页面对象名称和 512000 baud；
-6. 再连接 FPGA，逻辑分析仪检查 Mode 0、625 kHz 和同一 CS 立即响应；
+6. 再连接 FPGA，逻辑分析仪检查 Mode 0、1.25 MHz 和同一 CS 立即响应；
 7. 在 Expressions 观察 `fpga_link_diagnostics` 和 `hmi_task2_diagnostics`。
 
 关键诊断量：
@@ -660,7 +660,7 @@ hmi_task2_diagnostics
   淘晶驰单字节点超过控件高度后产生削顶；
 - 已加入独立标量校准层和 `A5 20 5A` 切换接口；当前系数为 `y=x`，正式系数仍需
   根据标准仪器打表数据拟合并实板验收；
-- FPGA SPI 正式帧已经能够驱动参数显示；当前 625 kHz 联调速率下的长期稳定性、测量精度和
+- FPGA SPI 正式帧已经能够驱动参数显示；当前 1.25 MHz 测试速率下的长期稳定性、测量精度和
   整机 2 秒指标仍待新固件实板验证；
 - 当前 `HMI_CHART_SELF_TEST_ENABLE=0`，已切回 FPGA 正式数据主链路；
 - 当前 `.ioc`、SPI3/USART1/DMA/GPIO 生成配置已作为本功能基线保留；
