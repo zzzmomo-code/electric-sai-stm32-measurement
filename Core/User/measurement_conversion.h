@@ -23,8 +23,8 @@
 #define MEASUREMENT_DISPLAY_Y_MIN       8u
 /** 210 像素高控件的纵轴最高显示值，保留约 8 个像素上边距。 */
 #define MEASUREMENT_DISPLAY_Y_MAX       201u
-/** FPGA 时域数据的固定显示量程：-15000~+15000。 */
-#define MEASUREMENT_TIME_DISPLAY_LIMIT  15000
+/** FPGA 时域二补码的单边显示量程，覆盖完整 -32768~+32767 载荷范围。 */
+#define MEASUREMENT_TIME_DISPLAY_LIMIT  32768
 
 /** 已转换的完整显示快照。 */
 typedef struct
@@ -52,16 +52,19 @@ typedef struct
     uint32_t conversion_count; /**< 成功生成并发布显示快照的次数。 */
     uint32_t invalid_source_count; /**< 输入快照字段不合法的次数。 */
     uint32_t last_frame_sequence; /**< 最近一次成功转换的 FPGA 帧序号。 */
+    uint32_t last_spectrum_max_uv; /**< 最近频谱最大峰值，单位 uV_peak。 */
     int16_t last_time_min; /**< 最近时域帧的最小原始码。 */
     int16_t last_time_max; /**< 最近时域帧的最大原始码。 */
+    uint16_t last_time_uv_per_lsb; /**< 最近时域量化系数，单位 uV/LSB。 */
+    uint16_t last_spectrum_uv_per_lsb; /**< 最近频谱量化系数，单位 uV_peak/LSB。 */
     uint16_t last_spectrum_max; /**< 最近 1312 点频谱的最大值。 */
     uint16_t last_spectrum_rail_bin_count; /**< 最近频谱中等于65535的饱和bin数量。 */
     uint16_t last_component_spectrum_raw[FPGA_PROTOCOL_COMPONENT_MAX]; /**< 三个有效分量所在FFT bin的原始uint16谱值。 */
     uint16_t last_one_cycle_samples; /**< 最近一次截取的一周期原始点数。 */
     uint16_t last_time_rail_sample_count; /**< 最近一帧接近正负满量程的样点数。 */
-    uint16_t last_time_display_clip_count; /**< 最近一帧超出±15000显示量程的样点数。 */
-    uint8_t last_time_offset_binary; /**< 1=按偏移二进制解码，0=按二补码解码。 */
-    uint32_t offset_binary_frame_count; /**< 自动修正偏移二进制的累计帧数。 */
+    uint16_t last_time_display_clip_count; /**< 最近一帧超出int16协议量程的样点数，正常恒为0。 */
+    uint8_t last_time_offset_binary; /**< 协议确认二补码后固定为0，保留供实板诊断。 */
+    uint32_t offset_binary_frame_count; /**< 历史兼容诊断量，新协议下不再递增。 */
 } measurement_conversion_diagnostics_t;
 
 /** 转换层公开诊断量，可加入 CubeIDE Expressions。 */

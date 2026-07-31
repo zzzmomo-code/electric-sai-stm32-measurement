@@ -198,12 +198,12 @@ frame_length = 2754 + time_count×2
 | `0x18` | 4 | flags | 见 header flags |
 | `0x1C` | 4 | time_sample_rate_hz | `12500000` |
 | `0x20` | 2 | time_count | `75～3750` |
-| `0x22` | 2 | time_uV_per_lsb | `10` |
+| `0x22` | 2 | time_uV_per_lsb | `250` |
 | `0x24` | 4 | fft_sample_rate_hz | `1562500` |
 | `0x28` | 2 | fft_length | `4096` |
 | `0x2A` | 2 | spectrum_count | `1312` |
 | `0x2C` | 4 | bin_spacing_mHz | `381470` |
-| `0x30` | 2 | spectrum_uV_per_lsb | `10`，峰值幅度 |
+| `0x30` | 2 | spectrum_uV_per_lsb | `125`，峰值幅度 |
 | `0x32` | 1 | component_count | `0～3` |
 | `0x33` | 1 | reserved0 | `0` |
 | `0x34` | 4 | vpp_uV | 峰峰值，µV |
@@ -273,7 +273,7 @@ STM32 不得假定 `component[0]` 一定是基波。需要在 component 槽位�
 - 固定采样率 12.5 MSPS；
 - 内容为 FPGA 已完成数字低通的连续 3 周期数据；
 - 每点是 little-endian `int16_t` 二进制补码；
-- 比例为 10 µV/LSB；
+- 比例为 250 µV/LSB；
 - 数组从偏移 128 开始；
 - 样点 `i` 的偏移：`128 + i×2`。
 
@@ -282,7 +282,7 @@ STM32 不得假定 `component[0]` 一定是基波。需要在 component 槽位�
 - 4096 点 FFT，采样率 1.5625 MSPS；
 - 发送 bin 0～1311，共 1312 点；
 - 每点是 little-endian `uint16_t`；
-- 比例为 10 µV_peak/LSB；
+- 比例为 125 µV_peak/LSB；
 - bin 间隔精确值为 381.4697265625 Hz，头中四舍五入写 `381470 mHz`；
 - 首个频谱点偏移：`128 + time_count×2`。
 

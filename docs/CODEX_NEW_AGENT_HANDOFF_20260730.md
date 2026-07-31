@@ -197,7 +197,7 @@ fpga_link_process()
 - 搜索稳定的上升过零附近作为周期起点；
 - 使用Q16.16线性插值重采样为严格一周期350点；
 - 三周期缓存由同一个周期模板重复三次；
-- 固定按原始码 `-15000～+15000` 映射到控件安全纵轴范围，超出点限幅并计数。
+- 严格按小端 `int16_t` 二补码解析，并按完整 `-32768～+32767` 码域映射到控件安全纵轴范围。
 
 主要实现：
 
@@ -205,9 +205,10 @@ fpga_link_process()
 
 2026-07-30实板诊断证据：500.004 kHz帧声明采样率12.5 MHz，STM32计算的一周期
 为25点，周期长度计算正确；但FPGA原始 `time_samples[]` 已出现
-`min=-8529`、`max=32767`、384/599点接近16位满量程、516/599点超出±15000，
-且连续样点重复。因此当前锯齿、正向削顶和上下不对称首先发生在FPGA时域载荷，
-不能靠STM32插值恢复。待FPGA检查位宽截取、符号扩展、增益、饱和顺序及重复写入。
+`min=-8529`、`max=32767`、384/599点接近16位满量程且连续样点重复。FPGA随后确认
+V1.0载荷为小端二补码，合法范围是 `-32768～+32767`，约±15000只是常见幅度而非协议边界。
+STM32已移除编码自动猜测并按完整int16范围显示；若新FPGA仍大量出现±满量程点，应结合
+`ADC_SATURATION`、`last_time_rail_sample_count`继续检查FPGA数字链路是否真实限幅。
 
 ### 5.2 频谱
 
@@ -219,9 +220,9 @@ fpga_link_process()
 
 公开诊断量 `last_spectrum_rail_bin_count` 直接统计等于65535的饱和bin数量，
 `last_component_spectrum_raw[3]` 保存三个有效分量各自FFT bin的原始频谱值。
-2026-07-30实板已观察到 `last_spectrum_max=65535`；同帧300.003 kHz分量幅值
-为1.580864 V_peak，而V1频谱 `uint16 × 10 µV/LSB` 只能表示到655.35 mV_peak，
-因此当前FPGA频谱载荷确认存在量程饱和。
+2026-07-30旧FPGA实板曾观察到 `last_spectrum_max=65535`。2026-07-31新协议把
+频谱比例改为125 µV_peak/LSB，理论满量程变为8.191875 V_peak；重新烧写新FPGA后
+必须复测饱和计数，不能沿用旧10 µV/LSB结论。
 
 ### 5.3 当前启动锁存
 
@@ -242,34 +243,25 @@ fpga_link_process()
 
 当前默认“已校准”。
 
-实测稳健拟合：
+2026-07-31新FPGA协议已经把Vpp、Vrms、直流和分量峰值定义为物理uV，旧打表的
+raw/mV公式不再参与SPI解码。当前只保留用户确认的约2倍前端参考面补偿：
 
 ```text
-K_Upp  = 6405.50
-K_Urms = 6404.76
-K_spec = 6399.19
+Upp_input_uV  = fpga_vpp_uV / 2.0
+Urms_input_uV = fpga_vrms_uV / 2.0
+Ui_input_uV   = fpga_peak_uV / 2.0
 ```
 
-比赛代码统一采用：
+代码中的三个前端增益统一为：
 
 ```c
-Upp_mV  = raw_upp  / 6400.0f;
-Urms_mV = raw_rms  / 6400.0f;
-Ui_mV   = raw_spec / 6400.0f;
-f_Hz    = raw_freq / 1000.0f;
+MEASUREMENT_FRONTEND_VPP_GAIN        2.0
+MEASUREMENT_FRONTEND_VRMS_GAIN       2.0
+MEASUREMENT_FRONTEND_COMPONENT_GAIN  2.0
 ```
 
-频谱 `Ui` 是正弦峰值幅度，不是Vpp。
-
-剔除异常数据后的最大绝对误差：
-
-- Upp：1.226 mV；
-- Urms：2.281 mV；
-- Ui：3.636 mV。
-
-重要风险：
-
-当前除以6400的前提是FPGA字段仍发送“打表原始码”。如果FPGA以后改成直接发送真实微伏值，STM32继续除6400会造成二次缩放。联调时必须和FPGA队友确认字段单位。
+频谱 `Ui` 是正弦峰值幅度，不是Vpp。若FPGA已经补偿同一个2倍模拟增益，STM32
+三个增益必须改成1.0，避免重复补偿。
 
 ---
 

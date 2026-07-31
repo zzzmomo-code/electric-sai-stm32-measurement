@@ -21,19 +21,19 @@ class MeasurementCalibrationContractTest(unittest.TestCase):
             encoding="utf-8"
         )
 
-    def test_default_is_calibrated_and_voltage_scales_halve_old_values(self):
+    def test_default_is_calibrated_and_frontend_gain_halves_uv_values(self):
         self.assertIn(
             "#define MEASUREMENT_CALIBRATION_DEFAULT_ENABLED 1u",
             self.header,
         )
-        for scale_name in (
-            "MEASUREMENT_CALIBRATION_VPP_RAW_PER_MV",
-            "MEASUREMENT_CALIBRATION_VRMS_RAW_PER_MV",
-            "MEASUREMENT_CALIBRATION_COMPONENT_RAW_PER_MV",
+        for gain_name in (
+            "MEASUREMENT_FRONTEND_VPP_GAIN",
+            "MEASUREMENT_FRONTEND_VRMS_GAIN",
+            "MEASUREMENT_FRONTEND_COMPONENT_GAIN",
         ):
             self.assertRegex(
                 self.source,
-                rf"#define\s+{scale_name}\s+12800\.0",
+                rf"#define\s+{gain_name}\s+2\.0",
             )
 
         identity_curves = re.findall(
@@ -43,9 +43,9 @@ class MeasurementCalibrationContractTest(unittest.TestCase):
         )
         self.assertEqual(len(identity_curves), 2)
 
-    def test_voltage_raw_codes_are_converted_to_microvolts(self):
+    def test_fpga_microvolts_are_corrected_by_inverse_frontend_gain(self):
         self.assertIn(
-            "output_uv = ((double)raw_value * 1000.0) / raw_per_mv;",
+            "output_uv = (double)fpga_uv / frontend_gain;",
             self.source,
         )
         self.assertIn(
@@ -53,13 +53,12 @@ class MeasurementCalibrationContractTest(unittest.TestCase):
             self.source,
         )
 
-        # 12800 raw/mV 等价于把原拟合结果统一除以 2。
-        for raw_value, expected_uv in (
-            (6400, 500),
-            (640000, 50000),
-            (21120000, 1650000),
+        for fpga_uv, expected_uv in (
+            (1000, 500),
+            (100000, 50000),
+            (3300000, 1650000),
         ):
-            actual_uv = round(raw_value * 1000.0 / 12800.0)
+            actual_uv = round(fpga_uv / 2.0)
             self.assertEqual(actual_uv, expected_uv)
 
     def test_curve_formula_uses_horner_evaluation(self):
@@ -73,7 +72,7 @@ class MeasurementCalibrationContractTest(unittest.TestCase):
 
     def test_frequency_keeps_millihertz_contract(self):
         self.assertIn(
-            "input_hz = (double)raw_mhz / 1000.0;",
+            "input_hz = (double)fpga_mhz / 1000.0;",
             self.source,
         )
         self.assertIn(
@@ -93,8 +92,8 @@ class MeasurementCalibrationContractTest(unittest.TestCase):
             ),
             3,
         )
-        for raw_name in ("raw_uv", "raw_mhz"):
-            self.assertIn(f"return {raw_name};", self.source)
+        for fpga_name in ("fpga_uv", "fpga_mhz"):
+            self.assertIn(f"return {fpga_name};", self.source)
 
     def test_all_scalar_display_interfaces_are_exposed_and_used(self):
         interfaces = (

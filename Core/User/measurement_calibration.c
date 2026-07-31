@@ -15,26 +15,18 @@
 #include <string.h>
 
 /**
- * 打表后优先修改下面这组“每 mV 对应的 FPGA 原始码值”。
+ * FPGA 新协议中的 vpp_uv、vrms_uv 和 component.amplitude_peak_uv
+ * 已经是物理微伏值，不再是 ADC 或 FFT 原始码。
  *
- * 2026-07-30 原始打表稳健拟合结果：
- *     K_UPP  = 6405.50 raw/mV
- *     K_URMS = 6404.76 raw/mV
- *     K_SPEC = 6399.19 raw/mV
+ * 2026-07-30 实板复核确认旧打表参考面存在约 2 倍阻抗匹配误差，因此已校准
+ * 模式仍按用户要求把三类电压除以 2；这里把它明确描述成“uV 到 uV 的前端
+ * 逆增益”，不能再使用旧的 raw/mV 或 /12800 解释。
  *
- * 实板复核发现打表时阻抗匹配错误，测得电压是端口真实值的两倍。
- * 因此在原 6400 raw/mV 基础上统一乘 2，等价于所有显示电压除以 2：
- *     K_CORRECTED = 12800 raw/mV
- *
- * 三类电压统一使用同一个比例，避免样本较少时过拟合。
- * 校准接口对外仍返回 uV，因此内部换算为：
- *     calibrated_uV = raw_value * 1000 / raw_per_mV
- *
- * 如果后续重新打表，只需要修改下面三个常量，不需要改 HMI 或调用接口。
+ * 若 FPGA 已经补偿同一个 2 倍增益，应把下面三个增益统一改为 1.0，避免重复补偿。
  */
-#define MEASUREMENT_CALIBRATION_VPP_RAW_PER_MV       12800.0
-#define MEASUREMENT_CALIBRATION_VRMS_RAW_PER_MV      12800.0
-#define MEASUREMENT_CALIBRATION_COMPONENT_RAW_PER_MV 12800.0
+#define MEASUREMENT_FRONTEND_VPP_GAIN        2.0
+#define MEASUREMENT_FRONTEND_VRMS_GAIN       2.0
+#define MEASUREMENT_FRONTEND_COMPONENT_GAIN  2.0
 
 /**
  * 频率和直流偏置继续保留通用多项式接口。
@@ -127,23 +119,27 @@ static int32_t measurement_calibration_saturate_i32(double value)
 }
 
 /**
- * @brief 按打表比例把 FPGA 原始电压码值换算为 uV。
- * @param raw_value FPGA 原始码值；未校准模式下原样返回。
- * @param raw_per_mv 每 1 mV 对应的 FPGA 原始码值。
- * @return 校准后的电压，单位 uV；未校准模式返回原始码值。
+ * @brief 对 FPGA 已换算的微伏值应用模拟前端逆增益。
+ * @param fpga_uv FPGA 发送的物理电压，单位 uV。
+ * @param frontend_gain 从信号输入参考面到 FPGA 测量参考面的电压增益。
+ * @return 校准后的输入端电压，单位 uV；未校准模式原样返回 FPGA 微伏值。
  */
-static uint32_t measurement_calibration_apply_voltage_scale(
-    uint32_t raw_value,
-    double raw_per_mv)
+static uint32_t measurement_calibration_apply_inverse_frontend_gain(
+    uint32_t fpga_uv,
+    double frontend_gain)
 {
     double output_uv;
 
     if (measurement_calibration_enabled == 0u)
     {
-        return raw_value;
+        return fpga_uv;
+    }
+    if (frontend_gain <= 0.0)
+    {
+        return fpga_uv;
     }
 
-    output_uv = ((double)raw_value * 1000.0) / raw_per_mv;
+    output_uv = (double)fpga_uv / frontend_gain;
     measurement_calibration_diagnostics.apply_count++;
     return measurement_calibration_saturate_u32(output_uv);
 }
@@ -201,42 +197,42 @@ uint8_t measurement_calibration_is_enabled(void)
 
 /**
  * @brief 对峰峰值应用当前校准策略。
- * @param raw_uv FPGA 原始峰峰值码值。
- * @return 已校准模式返回 uV；未校准模式原样返回码值。
+ * @param fpga_uv FPGA 已换算的峰峰值，单位 uV。
+ * @return 已校准模式返回输入端峰峰值；未校准模式原样返回 FPGA 微伏值。
  */
-uint32_t measurement_calibration_apply_vpp_uv(uint32_t raw_uv)
+uint32_t measurement_calibration_apply_vpp_uv(uint32_t fpga_uv)
 {
-    return measurement_calibration_apply_voltage_scale(
-        raw_uv, MEASUREMENT_CALIBRATION_VPP_RAW_PER_MV);
+    return measurement_calibration_apply_inverse_frontend_gain(
+        fpga_uv, MEASUREMENT_FRONTEND_VPP_GAIN);
 }
 
 /**
  * @brief 对真有效值应用当前校准策略。
- * @param raw_uv FPGA 原始真有效值码值。
- * @return 已校准模式返回 uV；未校准模式原样返回码值。
+ * @param fpga_uv FPGA 已换算的真有效值，单位 uV。
+ * @return 已校准模式返回输入端有效值；未校准模式原样返回 FPGA 微伏值。
  */
-uint32_t measurement_calibration_apply_vrms_uv(uint32_t raw_uv)
+uint32_t measurement_calibration_apply_vrms_uv(uint32_t fpga_uv)
 {
-    return measurement_calibration_apply_voltage_scale(
-        raw_uv, MEASUREMENT_CALIBRATION_VRMS_RAW_PER_MV);
+    return measurement_calibration_apply_inverse_frontend_gain(
+        fpga_uv, MEASUREMENT_FRONTEND_VRMS_GAIN);
 }
 
 /**
  * @brief 对基频或分量频率应用当前校准策略。
- * @param raw_mhz FPGA 原始频率，单位 0.001 Hz。
- * @return 拟合值或原始值，单位 0.001 Hz。
+ * @param fpga_mhz FPGA 频率，单位 0.001 Hz。
+ * @return 拟合值或 FPGA 原值，单位 0.001 Hz。
  */
-uint32_t measurement_calibration_apply_frequency_mhz(uint32_t raw_mhz)
+uint32_t measurement_calibration_apply_frequency_mhz(uint32_t fpga_mhz)
 {
     double input_hz;
     double output_hz;
 
     if (measurement_calibration_enabled == 0u)
     {
-        return raw_mhz;
+        return fpga_mhz;
     }
 
-    input_hz = (double)raw_mhz / 1000.0;
+    input_hz = (double)fpga_mhz / 1000.0;
     output_hz = measurement_calibration_evaluate(
         &calibration_frequency_curve, input_hz);
     measurement_calibration_diagnostics.apply_count++;
@@ -245,32 +241,32 @@ uint32_t measurement_calibration_apply_frequency_mhz(uint32_t raw_mhz)
 
 /**
  * @brief 对频率分量峰值幅度应用当前校准策略。
- * @param raw_uv FPGA 原始分量峰值幅度码值；表示正弦峰值而非峰峰值。
- * @return 已校准模式返回峰值幅度 uV；未校准模式原样返回码值。
+ * @param fpga_peak_uv FPGA 已换算的正弦峰值幅度，单位 uV；不是峰峰值。
+ * @return 已校准模式返回输入端峰值；未校准模式原样返回 FPGA 微伏值。
  */
 uint32_t measurement_calibration_apply_component_amplitude_uv(
-    uint32_t raw_uv)
+    uint32_t fpga_peak_uv)
 {
-    return measurement_calibration_apply_voltage_scale(
-        raw_uv, MEASUREMENT_CALIBRATION_COMPONENT_RAW_PER_MV);
+    return measurement_calibration_apply_inverse_frontend_gain(
+        fpga_peak_uv, MEASUREMENT_FRONTEND_COMPONENT_GAIN);
 }
 
 /**
  * @brief 对直流偏置应用当前校准策略。
- * @param raw_uv FPGA 原始直流偏置，单位 uV。
- * @return 拟合值或原始值，单位 uV。
+ * @param fpga_uv FPGA 已换算的直流偏置，单位 uV。
+ * @return 拟合值或 FPGA 原值，单位 uV。
  */
-int32_t measurement_calibration_apply_dc_offset_uv(int32_t raw_uv)
+int32_t measurement_calibration_apply_dc_offset_uv(int32_t fpga_uv)
 {
     double input_v;
     double output_v;
 
     if (measurement_calibration_enabled == 0u)
     {
-        return raw_uv;
+        return fpga_uv;
     }
 
-    input_v = (double)raw_uv / 1000000.0;
+    input_v = (double)fpga_uv / 1000000.0;
     output_v = measurement_calibration_evaluate(
         &calibration_dc_offset_curve, input_v);
     measurement_calibration_diagnostics.apply_count++;

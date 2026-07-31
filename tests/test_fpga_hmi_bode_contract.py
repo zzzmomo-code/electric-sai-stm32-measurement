@@ -87,8 +87,8 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             "FPGA_PROTOCOL_MAX_TIME_SAMPLES": "3750u",
             "FPGA_PROTOCOL_SPECTRUM_COUNT": "1312u",
             "FPGA_PROTOCOL_MAX_FRAME_BYTES": "10254u",
-            "FPGA_PROTOCOL_TIME_UV_PER_LSB": "10u",
-            "FPGA_PROTOCOL_SPECTRUM_UV_PER_LSB": "10u",
+            "FPGA_PROTOCOL_TIME_UV_PER_LSB": "250u",
+            "FPGA_PROTOCOL_SPECTRUM_UV_PER_LSB": "125u",
         }
         for name, value in expected.items():
             self.assertRegex(
@@ -388,7 +388,7 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         )
         self.assertRegex(
             self.conversion_h,
-            r"MEASUREMENT_TIME_DISPLAY_LIMIT\s+15000",
+            r"MEASUREMENT_TIME_DISPLAY_LIMIT\s+32768",
         )
         for name in (
             "waveform_1cycle",
@@ -403,7 +403,7 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("time_sample_rate_hz", self.conversion)
         self.assertIn("fundamental_mhz", self.conversion)
         self.assertIn("period_q16", self.conversion)
-        self.assertIn(
+        self.assertNotIn(
             "measurement_conversion_detect_time_encoding",
             self.conversion,
         )
@@ -411,7 +411,20 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             "measurement_conversion_decode_time_sample",
             self.conversion,
         )
+        self.assertIn(
+            "measurement_conversion_time_code_to_uv",
+            self.conversion,
+        )
+        self.assertIn(
+            "source->header.time_uv_per_lsb",
+            self.conversion,
+        )
+        self.assertIn(
+            "source->header.spectrum_uv_per_lsb",
+            self.conversion,
+        )
         self.assertIn("raw ^= 0x8000u;", self.conversion)
+        self.assertIn("const uint8_t time_offset_binary = 0u;", self.conversion)
         self.assertIn("last_time_offset_binary", self.conversion_h)
         self.assertIn("last_time_rail_sample_count", self.conversion_h)
         self.assertIn("last_time_display_clip_count", self.conversion_h)
@@ -438,11 +451,11 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             self.conversion,
         )
         self.assertIn(
-            "value = -MEASUREMENT_TIME_DISPLAY_LIMIT;",
+            "value_uv = -(int32_t)full_scale_uv;",
             self.conversion,
         )
         self.assertIn(
-            "value = MEASUREMENT_TIME_DISPLAY_LIMIT;",
+            "value_uv = (int32_t)full_scale_uv;",
             self.conversion,
         )
         self.assertNotIn("padding = (span + 9u) / 10u;", self.conversion)

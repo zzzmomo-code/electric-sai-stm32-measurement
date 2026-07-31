@@ -132,8 +132,8 @@ V1 固定约束：
 
 - 帧头 magic：ASCII `G26F`；
 - `header_bytes=128`；
-- `time_count<=3750`，时域数据为 10 µV/LSB；
-- `spectrum_count=1312`，频谱数据为 10 µV_peak/LSB；
+- `time_count<=3750`，时域数据为有符号二补码、250 µV/LSB；
+- `spectrum_count=1312`，频谱数据为无符号幅值、125 µV_peak/LSB；
 - `fft_length=4096`，`bin_spacing_mHz=381470`；
 - 最大帧长 10254 字节。
 
@@ -179,21 +179,22 @@ printh A5 20 5A  // 已校准/未校准切换
 在显示一周期或三周期时都会保持可见。`b_t4`“切换模式”当前发送 `A5 10 5A`，
 本版固件有意忽略，留作以后扩展。
 
-校准模式上电默认是“已校准”。2026-07-30 打表结果已经接入独立校准模块：
+校准模式上电默认是“已校准”。2026-07-31 起 FPGA 标量电压字段已经直接使用
+uV；STM32 不再按旧 raw/mV 码值换算，只保留用户确认的约2倍前端误差补偿：
 
 ```text
-Upp_mV  = raw_upp  / 6400
-Urms_mV = raw_rms  / 6400
-Ui_mV   = raw_spec / 6400   // 正弦峰值幅度，不是峰峰值
-f_Hz    = raw_freq / 1000   // 协议字段为 mHz
+Upp_input_uV  = fpga_vpp_uV  / 2.0
+Urms_input_uV = fpga_vrms_uV / 2.0
+Ui_input_uV   = fpga_peak_uV / 2.0  // 正弦峰值，不是峰峰值
+f_Hz          = fpga_freq_mHz / 1000
 ```
 
-三个电压量的稳健拟合斜率分别约为 6405.50、6404.76 和 6399.19 raw/mV，
-因此统一采用 6400 raw/mV，减少样本较少时的过拟合。需要重新打表时，只修改
-`Core/User/measurement_calibration.c` 顶部的三个 `RAW_PER_MV` 常量。
+这里的2.0是信号输入端到FPGA测量参考面的前端增益，不属于SPI协议解码。若FPGA
+已经补偿同一个2倍误差，必须把 `Core/User/measurement_calibration.c` 顶部三个
+`MEASUREMENT_FRONTEND_*_GAIN` 改为1.0，禁止两端重复补偿。
 
 - `已校准`：`t_vpp`、`t_vrms`、`t_freq` 以及三个有效分量的频率/幅度显示拟合值；
-- `未校准`：上述电压文本直接显示 FPGA 原始码值，便于继续打表；
+- `未校准`：上述电压文本直接显示 FPGA 已换算的物理微伏值；
 - 时域波形和频谱曲线不参与标量拟合，切换时不清空、不重画，避免曲线闪烁；
 - 切换不会向 FPGA 发命令，也不会重新采样或重新计算。
 
@@ -315,8 +316,8 @@ hmi_task2_process()
 `fpga_measurement_snapshot_t` 是已经校验并拆字段后的测量数据：
 
 - 头部参数已经从小端字节转换成 MCU 整数；
-- `time_samples[]` 仍是 FPGA 的有符号时域码；
-- `spectrum[]` 仍是 FPGA 的无符号幅值；
+- `time_samples[]` 是 FPGA 的有符号时域码，按帧头 `time_uv_per_lsb` 换算；
+- `spectrum[]` 是 FPGA 的无符号幅值码，按帧头 `spectrum_uv_per_lsb` 换算；
 - Vpp、Vrms、基频和三个分量保留 FPGA 约定的 µV、mHz 单位。
 
 这一层不含淘晶驰控件名，也不关心 350 像素。
@@ -421,9 +422,11 @@ FPGA 完成新测量并发布新 frame_seq
 因此400～500 kHz的三周期短缓存仍可正常显示。频谱采用区间最大值而不是平均值，
 避免窄谱峰被稀释。
 
-时域纵轴固定按 FPGA 原始码 `-15000～+15000` 映射，超出范围的点会限幅并计入
-`last_time_display_clip_count`；这样不同幅度帧使用同一比例。频谱用本帧最大值
-线性映射。FPGA 发来的频谱已经是幅值结果，STM32 不再次开平方。
+时域载荷严格按小端 `int16_t` 二补码解释，先按本帧 `time_uv_per_lsb` 转换为32位微伏，
+再按完整 `-32768～+32767` 码域映射。STM32不再根据波形形状猜测偏移二进制编码；
+`last_time_offset_binary` 和 `last_time_display_clip_count` 在合规V1.0帧中应均为0。
+频谱先按本帧 `spectrum_uv_per_lsb` 转换为32位峰值微伏，再按本帧最大值线性映射。
+FPGA 发来的频谱已经是幅值结果，STM32 不再次开平方。
 
 #### 第六步：启动锁存与三帧微调
 
@@ -576,8 +579,10 @@ hmi_task2_diagnostics
 | `conversion_count` | 成功生成 350 点显示快照的次数 |
 | `invalid_source_count` | 输入点数或字段不合法次数 |
 | `last_frame_sequence` | 最近成功换算的 FPGA 帧序号 |
+| `last_time_uv_per_lsb` / `last_spectrum_uv_per_lsb` | 最近帧实际量化系数，应为250/125 |
 | `last_time_min` / `last_time_max` | 最近时域原始数据范围 |
 | `last_spectrum_max` | 最近频谱最大原始幅值 |
+| `last_spectrum_max_uv` | 按帧头系数换算后的频谱最大峰值微伏 |
 | `last_spectrum_rail_bin_count` | 最近频谱中等于65535的饱和bin数量 |
 | `last_component_spectrum_raw[3]` | 三个有效分量所在FFT bin的原始频谱值 |
 | `last_one_cycle_samples` | 本次估算的一周期原始点数 |

@@ -14,7 +14,7 @@
 
 #include <stdint.h>
 
-/** 上电默认使用拟合后的校准结果；改为 0 可默认显示 FPGA 原始结果。 */
+/** 上电默认使用前端增益校准结果；改为 0 可默认显示 FPGA 侧物理量。 */
 #define MEASUREMENT_CALIBRATION_DEFAULT_ENABLED 1u
 
 /** 校准层诊断量，可直接加入 STM32CubeIDE Expressions。 */
@@ -25,7 +25,7 @@ typedef struct
     uint8_t enabled;       /**< 当前模式：1=已校准，0=未校准。 */
 } measurement_calibration_diagnostics_t;
 
-/** 当前校准开关，1 表示显示拟合结果，0 表示显示 FPGA 原始结果。 */
+/** 当前校准开关，1 表示显示输入端校准值，0 表示显示 FPGA 侧物理量。 */
 extern volatile uint8_t measurement_calibration_enabled;
 
 /** 校准层公开诊断量。 */
@@ -62,39 +62,39 @@ uint8_t measurement_calibration_toggle(void);
 uint8_t measurement_calibration_is_enabled(void);
 
 /**
- * @brief 对峰峰值原始码执行打表比例校准。
- * @param raw_uv FPGA 原始峰峰值码值。
- * @return 已校准模式返回 uV；未校准模式原样返回码值。
+ * @brief 对 FPGA 峰峰值微伏数应用前端逆增益。
+ * @param fpga_uv FPGA 已换算的峰峰值，单位 uV。
+ * @return 已校准模式返回输入端 uV；未校准模式返回 FPGA 侧 uV。
  */
-uint32_t measurement_calibration_apply_vpp_uv(uint32_t raw_uv);
+uint32_t measurement_calibration_apply_vpp_uv(uint32_t fpga_uv);
 
 /**
- * @brief 对真有效值原始码执行打表比例校准。
- * @param raw_uv FPGA 原始真有效值码值。
- * @return 已校准模式返回 uV；未校准模式原样返回码值。
+ * @brief 对 FPGA 真有效值微伏数应用前端逆增益。
+ * @param fpga_uv FPGA 已换算的真有效值，单位 uV。
+ * @return 已校准模式返回输入端 uV；未校准模式返回 FPGA 侧 uV。
  */
-uint32_t measurement_calibration_apply_vrms_uv(uint32_t raw_uv);
+uint32_t measurement_calibration_apply_vrms_uv(uint32_t fpga_uv);
 
 /**
  * @brief 对频率执行拟合，供基频和各频率分量共用。
- * @param raw_mhz FPGA 原始频率，单位 0.001 Hz。
+ * @param fpga_mhz FPGA 频率，单位 0.001 Hz。
  * @return 当前显示模式对应的频率，单位 0.001 Hz。
  */
-uint32_t measurement_calibration_apply_frequency_mhz(uint32_t raw_mhz);
+uint32_t measurement_calibration_apply_frequency_mhz(uint32_t fpga_mhz);
 
 /**
- * @brief 对频率分量的峰值幅度原始码执行打表比例校准。
- * @param raw_uv FPGA 原始分量峰值幅度码值；它是正弦峰值而非峰峰值。
- * @return 已校准模式返回峰值幅度 uV；未校准模式原样返回码值。
+ * @brief 对 FPGA 分量峰值微伏数应用前端逆增益。
+ * @param fpga_peak_uv FPGA 已换算的峰值幅度，单位 uV；不是峰峰值。
+ * @return 已校准模式返回输入端峰值 uV；未校准模式返回 FPGA 侧峰值 uV。
  */
 uint32_t measurement_calibration_apply_component_amplitude_uv(
-    uint32_t raw_uv);
+    uint32_t fpga_peak_uv);
 
 /**
  * @brief 对直流偏置执行拟合，预留给后续页面显示。
- * @param raw_uv FPGA 原始直流偏置，单位 uV。
+ * @param fpga_uv FPGA 已换算的直流偏置，单位 uV。
  * @return 当前显示模式对应的直流偏置，单位 uV。
  */
-int32_t measurement_calibration_apply_dc_offset_uv(int32_t raw_uv);
+int32_t measurement_calibration_apply_dc_offset_uv(int32_t fpga_uv);
 
 #endif /* MEASUREMENT_CALIBRATION_H */
