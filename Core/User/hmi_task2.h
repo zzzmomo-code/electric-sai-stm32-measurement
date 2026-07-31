@@ -41,8 +41,9 @@ typedef struct
     uint32_t tx_complete_count;    /**< TX DMA 完成次数。 */
     uint32_t tx_error_count;       /**< TX 启动、超时或 UART 错误次数。 */
     uint32_t preload_complete_count; /**< 当前波形、频谱和参数完整刷新次数。 */
-    uint32_t stable_accept_count;  /**< 首帧立即接受或后续五帧稳定平均锁存的次数。 */
+    uint32_t stable_accept_count;  /**< 首帧、五帧稳定平均或超时兜底锁存的次数。 */
     uint32_t stable_reject_count;  /**< 候选组失稳并重新开始累计的次数。 */
+    uint32_t stable_force_count;   /**< 输入变化后800 ms仍不稳定而强制锁存的次数。 */
     uint32_t calibration_toggle_count; /**< 已校准/未校准按键切换次数。 */
     uint32_t probe_count;          /**< 已发送的 sendme 在线探测次数。 */
     uint32_t probe_reply_count;    /**< 已收到的页面号回复次数。 */
@@ -51,6 +52,8 @@ typedef struct
     uint32_t chart_pass_count;     /**< 已完成的整条 350 点曲线发送遍数。 */
     uint32_t last_source_sequence; /**< 当前刷新工作快照序号。 */
     uint32_t last_visible_sequence;/**< 当前可见曲线对应的快照序号。 */
+    uint32_t last_frame_interval_ms; /**< 最近两份有效 FPGA 显示快照的到达间隔。 */
+    uint32_t last_stable_wait_ms;  /**< 最近一次五帧或超时锁存实际等待的时间。 */
     uint16_t last_tx_bytes;        /**< 最近一次 DMA 发送字节数。 */
     uint16_t last_chart_point;     /**< 当前曲线已经确认发送到的点下标。 */
     uint8_t last_command;          /**< 最近一次有效命令：1/2/3/4为图形/开始，0x10保留，0x20切换校准。 */

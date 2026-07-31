@@ -299,6 +299,10 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn("hmi_task2_preload_complete()", self.source)
         self.assertIn("hmi_task2_work_snapshot", self.source)
         self.assertIn("#define HMI_TASK2_STABLE_FRAME_COUNT  5u", self.source)
+        self.assertIn(
+            "#define HMI_TASK2_STABLE_FORCE_TIMEOUT_MS 800u",
+            self.source,
+        )
         self.assertIn("hmi_task2_snapshots_are_stable", self.source)
         self.assertIn("hmi_task2_add_scalar_average", self.source)
         self.assertIn("hmi_task2_apply_scalar_average", self.source)
@@ -306,7 +310,7 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn("component_amplitude_uv", self.source)
         self.assertIn("hmi_task2_text_valid = 0u;", self.source)
         stable_refresh = self.source.index(
-            "新的稳定输入同时刷新数字、一周期、三周期和频谱"
+            "新的稳定或超时兜底输入同时刷新数字、一周期、三周期和频谱"
         )
         next_function = self.source.index(
             "static void hmi_task2_parse_commands", stable_refresh
@@ -322,6 +326,13 @@ class HmiRuntimeContractTest(unittest.TestCase):
         self.assertIn("matched_right_mask", self.source)
         self.assertIn("found_match", self.source)
         self.assertIn("无序匹配", self.source)
+        self.assertIn("stable_force_count", self.header)
+        self.assertIn("last_frame_interval_ms", self.header)
+        self.assertIn("hmi_task2_change_started_ms", self.source)
+        self.assertIn(
+            "HAL_GetTick() - hmi_task2_change_started_ms",
+            self.source,
+        )
 
     def test_period_buttons_only_switch_foreground_and_start_redraws_all(self):
         select_start = self.source.index(
@@ -332,8 +343,8 @@ class HmiRuntimeContractTest(unittest.TestCase):
         )
         select_body = self.source[select_start:select_end]
         self.assertLess(
-            select_body.index("HMI_TX_ACTION_ONE_CYCLE"),
             select_body.index("return HMI_TX_ACTION_VISIBILITY;"),
+            select_body.index("if (hmi_task2_chart_active_mode != 0u)"),
         )
         parse_start = self.source.index(
             "static void hmi_task2_parse_commands"
@@ -350,6 +361,12 @@ class HmiRuntimeContractTest(unittest.TestCase):
             "== HMI_TASK2_COMMAND_START",
             parse_body,
         )
+        start_branch = parse_body[parse_body.index(
+            "== HMI_TASK2_COMMAND_START"
+        ):parse_body.index(
+            "== (uint8_t)HMI_CHART_MODE_SPECTRUM"
+        )]
+        self.assertIn("hmi_task2_text_valid = 0u;", start_branch)
         period_branch = parse_body[parse_body.index(
             "hmi_task2_diagnostics.requested_mode ="
         ):]

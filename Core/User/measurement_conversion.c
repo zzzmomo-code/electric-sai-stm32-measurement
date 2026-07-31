@@ -36,41 +36,28 @@ volatile measurement_conversion_diagnostics_t
  */
 
 /**
- * @brief 将一个时域原始值映射到保留上下边距的 8 位纵轴。
+ * @brief 按 FPGA 固定±15000量程映射一个时域原始值。
  * @param value 当前样点。
- * @param minimum 当前快照最小值。
- * @param maximum 当前快照最大值。
- * @return 8~201；常量输入返回中点。
+ * @return 8~201；超量程输入先限幅，零值固定落在纵轴中部。
  */
-static uint8_t measurement_conversion_map_time(
-    int32_t value,
-    int32_t minimum,
-    int32_t maximum)
+static uint8_t measurement_conversion_map_time(int32_t value)
 {
-    uint32_t padding;
-    uint32_t span;
     uint32_t scaled;
 
-    if (maximum <= minimum)
+    if (value < -MEASUREMENT_TIME_DISPLAY_LIMIT)
     {
-        return (uint8_t)(
-            (MEASUREMENT_DISPLAY_Y_MIN + MEASUREMENT_DISPLAY_Y_MAX)
-            / 2u);
+        value = -MEASUREMENT_TIME_DISPLAY_LIMIT;
+    }
+    else if (value > MEASUREMENT_TIME_DISPLAY_LIMIT)
+    {
+        value = MEASUREMENT_TIME_DISPLAY_LIMIT;
     }
 
-    /*
-     * 每帧极值若直接映射到控件上下限，会形成视觉上的“削顶/削底”。
-     * 在真实极值两侧各留 10% 余量，既保留幅度变化，也便于观察原始数据是否饱和。
-     */
-    span = (uint32_t)(maximum - minimum);
-    padding = (span + 9u) / 10u;
-    minimum -= (int32_t)padding;
-    maximum += (int32_t)padding;
-    span = (uint32_t)(maximum - minimum);
-    scaled = ((uint32_t)(value - minimum)
-              * (MEASUREMENT_DISPLAY_Y_MAX
-                 - MEASUREMENT_DISPLAY_Y_MIN))
-             / span;
+    scaled = (((uint32_t)(value + MEASUREMENT_TIME_DISPLAY_LIMIT)
+               * (MEASUREMENT_DISPLAY_Y_MAX
+                  - MEASUREMENT_DISPLAY_Y_MIN))
+              + MEASUREMENT_TIME_DISPLAY_LIMIT)
+             / (2u * MEASUREMENT_TIME_DISPLAY_LIMIT);
     return (uint8_t)(MEASUREMENT_DISPLAY_Y_MIN + scaled);
 }
 
@@ -210,8 +197,6 @@ static int32_t measurement_conversion_interpolate_time(
  * @param start_q16 起始 Q16.16 样点位置。
  * @param span_q16 覆盖的 Q16.16 样点跨度。
  * @param offset_binary 非零表示载荷实际为偏移二进制。
- * @param minimum 三周期窗口最小值。
- * @param maximum 三周期窗口最大值。
  * @param output 350点显示缓存。
  * @return 无。
  */
@@ -222,8 +207,6 @@ static void measurement_conversion_resample_periodic(
     uint32_t period_q16,
     uint8_t cycle_count,
     uint8_t offset_binary,
-    int16_t minimum,
-    int16_t maximum,
     uint8_t *output)
 {
     uint16_t output_index;
@@ -253,8 +236,8 @@ static void measurement_conversion_resample_periodic(
                 source, source_count, position_q16,
                 offset_binary);
 
-        output[output_index] = measurement_conversion_map_time(
-            interpolated, minimum, maximum);
+        output[output_index] =
+            measurement_conversion_map_time(interpolated);
     }
 }
 
@@ -555,6 +538,7 @@ uint8_t measurement_conversion_update(
     int16_t time_minimum;
     int16_t time_maximum;
     uint16_t time_rail_sample_count = 0u;
+    uint16_t time_display_clip_count = 0u;
     uint8_t time_offset_binary;
     uint8_t output_component_index = 0u;
 
@@ -592,8 +576,6 @@ uint8_t measurement_conversion_update(
         period_q16,
         3u,
         time_offset_binary,
-        time_minimum,
-        time_maximum,
         target->waveform_3cycle);
 
     measurement_conversion_resample_periodic(
@@ -603,8 +585,6 @@ uint8_t measurement_conversion_update(
         period_q16,
         1u,
         time_offset_binary,
-        time_minimum,
-        time_maximum,
         target->waveform_1cycle);
     measurement_conversion_diagnostics.last_spectrum_max =
         measurement_conversion_compress_spectrum(
@@ -662,9 +642,16 @@ uint8_t measurement_conversion_update(
         {
             time_rail_sample_count++;
         }
+        if ((sample < -MEASUREMENT_TIME_DISPLAY_LIMIT)
+            || (sample > MEASUREMENT_TIME_DISPLAY_LIMIT))
+        {
+            time_display_clip_count++;
+        }
     }
     measurement_conversion_diagnostics.last_time_rail_sample_count =
         time_rail_sample_count;
+    measurement_conversion_diagnostics.last_time_display_clip_count =
+        time_display_clip_count;
     measurement_conversion_diagnostics.last_time_offset_binary =
         time_offset_binary;
     if (time_offset_binary != 0u)

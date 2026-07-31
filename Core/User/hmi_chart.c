@@ -237,8 +237,8 @@ hmi_chart_status_t hmi_chart_build_waveform(
  * @param emitted_points 本批实际发送点数。
  * @return 构帧状态；本函数不直接启动 UART。
  *
- * @note 分批绘图期间不发送 vis，避免两个完全重叠的时域控件在每个小批次之间
- *       反复争抢前景。三条曲线完成后由 hmi_task2 单独恢复用户选择的前景。
+ * @note 本函数只构建曲线批次、不夹带 vis。按键到达时由 hmi_task2 在两个
+ *       DMA小批次之间单独发送一次显示切换，随后继续原曲线进度。
  */
 hmi_chart_status_t hmi_chart_build_waveform_chunk(
     hmi_chart_mode_t mode,

@@ -386,6 +386,10 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             self.conversion_h,
             r"MEASUREMENT_DISPLAY_Y_MAX\s+201u",
         )
+        self.assertRegex(
+            self.conversion_h,
+            r"MEASUREMENT_TIME_DISPLAY_LIMIT\s+15000",
+        )
         for name in (
             "waveform_1cycle",
             "waveform_3cycle",
@@ -410,6 +414,7 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
         self.assertIn("raw ^= 0x8000u;", self.conversion)
         self.assertIn("last_time_offset_binary", self.conversion_h)
         self.assertIn("last_time_rail_sample_count", self.conversion_h)
+        self.assertIn("last_time_display_clip_count", self.conversion_h)
         self.assertIn("measurement_conversion_interpolate_time", self.conversion)
         self.assertIn(
             "measurement_conversion_resample_periodic", self.conversion
@@ -429,6 +434,15 @@ class FpgaSpiHmiContractTest(unittest.TestCase):
             "time_count / FPGA_PROTOCOL_CAPTURED_CYCLES",
             self.conversion,
         )
+        self.assertIn(
+            "value = -MEASUREMENT_TIME_DISPLAY_LIMIT;",
+            self.conversion,
+        )
+        self.assertIn(
+            "value = MEASUREMENT_TIME_DISPLAY_LIMIT;",
+            self.conversion,
+        )
+        self.assertNotIn("padding = (span + 9u) / 10u;", self.conversion)
         self.assertNotIn("sqrt", self.conversion)
 
     def test_chart_buffer_covers_worst_case_350_ascii_add_commands(self):
